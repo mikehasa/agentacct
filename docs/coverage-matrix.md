@@ -29,6 +29,7 @@ Generated from the capability manifest; last reviewed 2026-07-17. Integration br
 | Hermes | experimental | verified_partial | experimental | verified_partial | experimental | experimental | experimental | experimental |
 | OpenCode | experimental | experimental | experimental | verified_partial | experimental | experimental | experimental | experimental |
 | OpenClaw | experimental | experimental | — | verified_partial | experimental | experimental | experimental | — |
+| DeepSeek Harness | experimental | experimental | — | verified_partial | experimental | experimental | experimental | verified_partial |
 | Cursor | verified_partial | — | experimental | experimental | verified_partial | — | — | — |
 | Gemini CLI | — | — | — | — | — | — | — | — |
 | GitHub Copilot CLI | — | — | — | — | — | — | — | — |
@@ -77,6 +78,14 @@ Generated from the capability manifest; last reviewed 2026-07-17. Integration br
 - **Usage / cost basis:** `client_reported` / `client_reported`
 - **Validation scope:** `dated_mcp_smoke_only` (2026-06-28)
 - Remain experimental until real fixtures, namespace hardening, routing, and per-model lanes exist.
+
+### DeepSeek Harness
+
+- **Collection path:** `Zstandard-compressed assistant/message JSONL`
+- **Session scope:** Usage-bearing assistant/message events in per-session dsh logs.
+- **Usage / cost basis:** `client_reported` / `unknown`
+- **Validation scope:** `single_machine_live_observation` (2026-09-16)
+- Usage-import lanes remain synthetic-fixture experimental until a live dsh usage-log smoke and namespace hardening exist; the MCP self-reporting lanes are verified on one machine/version.
 
 ### Cursor
 

@@ -111,6 +111,14 @@ def test_help_surfaces_current_handoff_and_refresh_contracts(color):
         assert "--refresh" in output
         assert "Refresh & save usage" not in output
 
+    # The managed-cadence + skip-unchanged knobs are surfaced on `usage watch`.
+    watch_output = unstyle(watch_help.output)
+    assert "--interval-seconds" in watch_output
+    assert "--skip-unchanged" in watch_output
+    assert "--no-skip-unchanged" in watch_output
+    assert "--estimate-costs" in watch_output
+    assert "--no-estimate-costs" in watch_output
+
 
 def test_init_claude_code_respects_legacy_pre_rename_section(tmp_path):
     # Pre-rename "Agent Chronicle" headings are recognized forever: an existing
@@ -557,6 +565,34 @@ def test_validate_policy_model_directly_reports_errors(tmp_path):
     errors = validate_policy(policy)
 
     assert "checkpoints.every_steps must be positive" in errors
+
+
+def test_help_command_and_bare_invocation_print_a_friendly_overview():
+    runner = CliRunner()
+
+    for args in ([], ["help"]):
+        result = runner.invoke(app, args)
+        assert result.exit_code == 0, result.output
+        output = unstyle(result.output)
+        assert "Common commands" in output
+        # The overview must lead a stuck user to the command that revives an
+        # unreachable recorder.
+        assert "onboard" in output
+        assert "start" in output
+        assert "status" in output
+
+
+def test_top_level_help_still_lists_every_command_including_help():
+    result = CliRunner().invoke(app, ["--help"])
+
+    assert result.exit_code == 0, result.output
+    output = unstyle(result.output)
+    # `--help` stays the full auto-generated command list, not the curated
+    # overview, and now includes the new `help` command itself.
+    assert "Common commands" not in output
+    assert "help" in output
+    assert "onboard" in output
+    assert "start" in output
 
 
 def test_workflow_docs_and_hermes_skill_template_are_present() -> None:

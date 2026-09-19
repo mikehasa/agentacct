@@ -218,6 +218,7 @@ enum SetupClient: String, CaseIterable, Identifiable {
     case claudeCode = "claude-code"
     case openCode = "opencode"
     case hermes
+    case deepseekHarness = "dsh"
 
     var id: String { rawValue }
 
@@ -227,6 +228,7 @@ enum SetupClient: String, CaseIterable, Identifiable {
         case .claudeCode: return "Claude Code"
         case .openCode: return "OpenCode"
         case .hermes: return "Hermes"
+        case .deepseekHarness: return "DeepSeek Harness"
         }
     }
 }

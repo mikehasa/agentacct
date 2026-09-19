@@ -63,7 +63,7 @@ STORE = Path(_FAKE_HOME) / ".local" / "state" / "agentacct" / "state"
 NOW = time.time()
 OPUS = "claude-opus-4-8"
 OPUS_W = BASELINE_MODEL_WEIGHTS[OPUS]  # %/Mtoken
-SHOTS = ("tui-dashboard", "tui-work", "tui-steps", "tui-usage", "tui-sources")
+SHOTS = ("tui-dashboard", "tui-worksets", "tui-work", "tui-steps", "tui-usage", "tui-sources")
 
 
 def _usage(svc, *, client, model, session, title, tokens, at, cost, project="acme-web"):
@@ -314,6 +314,19 @@ def build_store():
                name=kind, evidence_type=kind)
 
     _seed_sources(NOW)
+    # Two folder-anchored Work groups over the seeded projects (cross-agent:
+    # agentacct-gui has Claude Code + Codex, agentacct has Claude Code + Hermes),
+    # so the Work tab has real cards + timelines to draw.
+    from agentacct.work_ledger import _project_identity as _pi
+    for proj, name, wid in (
+        ("agentacct-gui", "agentacct-gui", "ws_gui"),
+        ("agentacct", "agentacct", "ws_core"),
+    ):
+        svc.record_workset_action(
+            action="create", workset_id=wid, name=name,
+            project_identity=_pi(f"/demo/{proj}"), expected_revision=0,
+            idempotency_key=f"gen:{wid}:create",
+        )
     return svc
 
 
@@ -328,7 +341,14 @@ async def shoot():
         await pilot.pause()
         app.save_screenshot(str(OUT / "tui-dashboard.svg"))
 
-        await pilot.press("2")  # Work — the receipts list + master/detail
+        await pilot.press("2")  # Work — folder-anchored groupings + cross-agent timeline
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        await pilot.pause()
+        app.save_screenshot(str(OUT / "tui-worksets.svg"))
+
+        await pilot.press("3")  # Sessions — the receipts list + master/detail
         await pilot.pause()
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -373,7 +393,7 @@ async def shoot():
         # so — like the artifact, whose frames are each sized to their content —
         # render them in a shorter terminal. This keeps the two capacity/ingestion
         # cards filling the frame instead of floating over a tall black void.
-        await pilot.press("3")  # Usage — capacity meters + recorded usage
+        await pilot.press("4")  # Usage — capacity meters + recorded usage
         await pilot.pause()
         await app.workers.wait_for_complete()
         await pilot.pause()
@@ -383,7 +403,7 @@ async def shoot():
         await pilot.pause()
         app.save_screenshot(str(OUT / "tui-usage.svg"))
 
-        await pilot.press("4")  # Sources — ingestion health
+        await pilot.press("5")  # Diagnostics — ingestion health
         await pilot.pause()
         await pilot.resize_terminal(150, 46)
         await pilot.pause()
@@ -445,6 +465,9 @@ def to_png() -> None:
                 subprocess.run(
                     [chrome, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
                      "--no-default-browser-check", f"--user-data-dir={profile}", "--hide-scrollbars",
+                     # Bound the render so Chrome writes the PNG and exits promptly
+                     # instead of idling until the timeout on some builds.
+                     "--virtual-time-budget=6000",
                      f"--force-device-scale-factor={_SCALE}", f"--screenshot={png}",
                      f"--window-size={w},{h}", svg.as_uri()],
                     check=False, capture_output=True, timeout=90, env=env,

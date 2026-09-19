@@ -230,10 +230,32 @@ struct VersionInfo: Decodable {
     let version: String
     let glanceSchema: String
     let storeDir: String?
+    // Self-update fields — all optional so an older daemon (which omits them)
+    // still decodes. `current` is the clean package version; `version` stays the
+    // fingerprinted build-id handshake key.
+    let current: String?
+    let latest: String?
+    let updateAvailable: Bool?
+    let isDevInstall: Bool?
 
     enum CodingKeys: String, CodingKey {
         case version
         case glanceSchema = "glance_schema"
         case storeDir = "store_dir"
+        case current
+        case latest
+        case updateAvailable = "update_available"
+        case isDevInstall = "is_dev_install"
+    }
+
+    /// The version to show the user: the clean package version when the daemon
+    /// reports it, else the fingerprinted build id.
+    var displayVersion: String? { current ?? version }
+
+    /// Whether the Diagnostics pane offers the one-click Update button: a newer
+    /// release is published AND this is not a dev/editable build. Single-sources
+    /// the "notify + one-click, never silent, never for dev" rule.
+    var offersInAppUpdate: Bool {
+        (updateAvailable == true) && (isDevInstall != true)
     }
 }

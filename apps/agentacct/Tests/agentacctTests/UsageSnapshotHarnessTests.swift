@@ -85,11 +85,11 @@ final class UsageSnapshotHarnessTests: XCTestCase {
             )
             XCTAssertLessThanOrEqual(
                 difference.maximumChannelDelta,
-                VisualSnapshotTolerance.renderingNoise.maximumChannelDelta
+                VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChannelDelta
             )
             XCTAssertLessThanOrEqual(
                 difference.changedChannelFraction,
-                VisualSnapshotTolerance.renderingNoise.maximumChangedChannelFraction
+                VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChangedChannelFraction
             )
         }
         XCTAssertFalse(SnapshotMode.enabled)

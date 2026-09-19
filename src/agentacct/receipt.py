@@ -41,6 +41,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from .task_intelligence import build_task_intelligence
+from .plural import count_noun
 from .task_outcome import (
     EVIDENCE_GRADE_RANK,
     GRADE_CLAIMED,
@@ -542,16 +543,16 @@ def evidence_coverage_ledger(evidence: Mapping[str, Any]) -> str:
     bits: list[str] = []
     hidden = int(evidence.get("hidden_in_subagents") or 0)
     if hidden:
-        bits.append(f"{hidden} step(s) ran in subagents")
+        bits.append(f"{count_noun(int(hidden), 'step')} ran in subagents")
     not_checkable = int(evidence.get("not_checkable") or 0)
     if not_checkable:
         bits.append(f"{not_checkable} non-verifiable (research/docs)")
     unattributed = int(evidence.get("unattributed_checks") or 0)
     if unattributed:
-        bits.append(f"{unattributed} check(s) attach to no step")
+        bits.append(f"{count_noun(int(unattributed), 'check')} attach to no step")
     still_open = int(evidence.get("open_or_incomplete") or 0)
     if still_open:
-        bits.append(f"{still_open} step(s) still open")
+        bits.append(f"{count_noun(int(still_open), 'step')} still open")
     return " · ".join(bits)
 
 
@@ -933,7 +934,7 @@ def _evidence_dimension(checks: list[Mapping[str, Any]], strength: Mapping[str, 
     # would inflate the gap count with impossible asks.
     unchecked_steps = int((strength.get("by_tier") or {}).get("unchecked") or 0)
     if unchecked_steps:
-        gaps.append(f"{unchecked_steps} completed step(s) have no linked passing check.")
+        gaps.append(f"{count_noun(int(unchecked_steps), 'completed step')} {'has' if int(unchecked_steps) == 1 else 'have'} no linked passing check.")
     return {
         "checks": list(checks),
         "checks_total": int(strength.get("checks_total") or 0),
@@ -1012,7 +1013,7 @@ def _roll_up_gaps(
         items.append(
             {
                 "dimension": "actors",
-                "reason": f"{unlinked} work item(s) could not be tied to an exact session.",
+                "reason": f"{count_noun(int(unlinked), 'work item')} could not be tied to an exact session.",
             }
         )
     return {"items": items, "count": len(items)}

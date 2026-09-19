@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import orjson
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -285,9 +286,19 @@ class RawEventLog:
         events: list[dict[str, Any]] = []
         for line in rows:
             try:
-                event = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                continue
+                # READ path only: orjson.loads (~2x json.loads). The WRITE path
+                # (serialize_event) stays stdlib json for ledger byte-parity.
+                # orjson is stricter than json (rejects >64-bit ints, Infinity,
+                # NaN that json accepts), so fall back to json.loads on an orjson
+                # decode error to keep the parsed corpus byte-identical, skipping
+                # only when json.loads also rejects the line — the original
+                # (json.JSONDecodeError, ValueError) skip contract, unchanged.
+                event = orjson.loads(line)
+            except orjson.JSONDecodeError:
+                try:
+                    event = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
             if isinstance(event, dict):
                 events.append(event)
         return events

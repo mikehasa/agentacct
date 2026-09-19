@@ -281,8 +281,8 @@ final class UsageCapacityTests: XCTestCase {
         XCTAssertEqual(rows.last?.client, "client-1")
     }
 
-    func testMainNavigationHasFourPanesAndNoLimitsTab() {
-        XCTAssertEqual(MainPane.allCases, [.dashboard, .work, .usage, .sources])
+    func testMainNavigationPanesAndNoLimitsTab() {
+        XCTAssertEqual(MainPane.allCases, [.dashboard, .worksets, .work, .usage, .sources])
         XCTAssertFalse(MainPane.allCases.map(\.rawValue).contains("Limits"))
     }
 

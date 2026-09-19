@@ -19,7 +19,9 @@ from agentacct.receipt import _actions_dimension, commands_preview
 from agentacct.task_projection import build_task_projection
 from agentacct.tool_activity import (
     _COMMAND_MAX,
+    _SECRET_SUBS,
     _normalize_command,
+    _scrub_command,
     build_commands_by_session,
     drain_tool_activity_spool,
 )
@@ -220,6 +222,61 @@ def test_build_commands_by_session_unions_and_rescrubs() -> None:
     # a command that slipped through un-scrubbed is re-masked on read
     leaky = build_commands_by_session([_event(["deploy --token abcdef1234567890"])])
     assert not any("abcdef1234567890" in c for c in leaky[("opencode", "ses_x")])
+
+
+def _uncached_scrub(command: str) -> str:
+    """The pre-memoization reference: run every _SECRET_SUBS regex directly."""
+    for pattern, repl in _SECRET_SUBS:
+        command = pattern.sub(repl, command)
+    return command
+
+
+def test_scrub_command_cache_byte_identical() -> None:
+    # The lru_cache on _scrub_command must be a pure memoization: identical output
+    # to running the _SECRET_SUBS regexes directly, and repeated inputs hit the cache.
+    commands = [
+        "git status",
+        "ls -la",
+        "pytest -q",
+        "ruff check .",
+        "mypy src",
+        "npm run build",
+        "deploy --token abcdef1234567890xyz",
+        "curl -H 'authorization: Bearer sk-abcdefghijklmnop12345' https://api",
+        "export MY_API_KEY=supersecretvalue123456",
+        "psql postgres://user:hunter2@db:5432/app",
+        "gh auth login --with-token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        "aws --secret-access-key AKIAIOSFODNN7EXAMPLE s3 ls",
+        'echo {"password": "p4ssw0rd-value"}',
+        "stripe --api-key sk_live_abcdefghij1234567890",
+        "run --password $MY_PASS_VAR",  # $var value is kept
+    ]
+    # Repeat the list so the cache is exercised on the second pass.
+    corpus = commands * 3
+
+    _scrub_command.cache_clear()
+    outputs = [_scrub_command(c) for c in corpus]
+
+    # 1) Byte-identical to the uncached reference for every input.
+    assert outputs == [_uncached_scrub(c) for c in corpus]
+    # 2) The cache actually served repeats (distinct keys < total calls).
+    info = _scrub_command.cache_info()
+    assert info.hits > 0
+    assert info.currsize == len(commands)
+
+    # A command emitted 3x in additive batches dedupes to a single scrubbed entry.
+    def _event(cmds: list[str]) -> dict[str, Any]:
+        return {
+            "event_type": "tool_activity_observed",
+            "metadata": {"client": "codex", "client_session_id": "s9", "commands": cmds},
+        }
+
+    same = "deploy --token abcdef1234567890xyz"
+    triple = build_commands_by_session([_event([same]), _event([same]), _event([same])])
+    bucket = triple[("codex", "s9")]
+    assert bucket == [_normalize_command(same)]
+    assert len(bucket) == 1
+    assert "abcdef1234567890xyz" not in bucket[0]
 
 
 # ---------------------------------------------------------------------------

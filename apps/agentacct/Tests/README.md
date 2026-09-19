@@ -388,6 +388,32 @@ open /tmp/agentacct-menu-review
 The canonical CLI owns these images too. A menu UI change is not visually
 verified until the matching source-tree references are reviewed and committed.
 
+## Diagnostics review matrix
+
+The Diagnostics (sources) renderer drives the real `MainWindow` Diagnostics
+pane from two ingestion lanes in the shared fixture: `ingestion_healthy_sources`
+(three reporting sources, a running watcher, no issues) and
+`ingestion_degraded` (six degraded sources that share ONE store-wide
+reconciliation fault, plus one source-scoped identity fault). The degraded lane
+pins that a shared fault renders once, naming its sources, and that the header
+chip yields when every row already wears the same state.
+
+| Artifact | Viewport | Pixel size |
+| --- | --- | --- |
+| `sources-healthy-reference-light.png` | 1120 × 900 pt, light; reporting ledger | 2240 × 1800 px |
+| `sources-healthy-reference-dark.png` | 1120 × 900 pt, dark; same hierarchy | 2240 × 1800 px |
+| `sources-degraded-reference-light.png` | 1120 × 1300 pt, light; shared fault once, six degraded rows | 2240 × 2600 px |
+| `sources-degraded-reference-dark.png` | 1120 × 1300 pt, dark; same hierarchy | 2240 × 2600 px |
+
+For an ad-hoc Diagnostics render that does not compare or update references:
+
+```bash
+swift run agentacct --snapshot-sources-fixture \
+  Tests/agentacctTests/Fixtures/dashboard.json \
+  /tmp/agentacct-sources-review
+open /tmp/agentacct-sources-review
+```
+
 ## About review matrix
 
 The About renderer opens the same native AppKit panel as the live footer

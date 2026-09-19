@@ -128,7 +128,7 @@ struct NativeReviewSurface: View {
                     if showingSourceSetup {
                         NativeSetupFlow(setup: setup, onClose: { showingSourceSetup = false })
                     } else {
-                        SourcesPane(onSetup: { showingSourceSetup = true })
+                        SourcesPane(onSetup: { _ in showingSourceSetup = true })
                     }
                 case .largeDashboard:
                     DashboardPane()

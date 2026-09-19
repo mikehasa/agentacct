@@ -1,77 +1,88 @@
 # agentacct
 
+English · [简体中文](README.zh-CN.md)
+
 [![tests](https://github.com/mikehasa/agentacct/actions/workflows/tests.yml/badge.svg)](https://github.com/mikehasa/agentacct/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/agentacct.svg)](https://pypi.org/project/agentacct/)
 [![Python](https://img.shields.io/pypi/pyversions/agentacct.svg)](https://pypi.org/project/agentacct/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-**See what your coding agents actually did — and whether you can trust it — as one honest Work Receipt per task, across Claude Code, Codex, OpenCode, and Hermes, without any of it leaving your machine.**
+**agentacct answers one simple question: what the fuck are my agents actually doing?**
 
-agentacct is local-first Agent Work Intelligence for coding agents. It reads the session logs your agents already write on disk — Claude Code, Codex, OpenCode, and Hermes — joins them with the work each session records as it goes, and turns the result into one honest **Work Receipt** per task: what it did (the commands it ran, the files it touched, the tools it used), what it cost, and how well that is actually proven. Each receipt reads like an audit record, not a vibe: the decision ("the agent says it's done") and the evidence ("a machine check proves it") are separate axes, and every evidence tier has its own shape — an agent's claim can never dress up as verification. See it in the **macOS app**, a live terminal dashboard (**`agentacct tui`**), or over a local JSON API. No browser tab, no hosted server, no account.
+Your coding agent says it is done. agentacct shows you what it actually did, what it cost, and how much of that is proven: one Work Receipt per task, built from the session logs your coding agents (Claude Code, Codex, OpenCode, Hermes, and others) already write on your machine. No account, no cloud, nothing leaves your computer.
 
-![A Work Receipt in the macOS app — one audit record per task in the adaptive two-column layout: the record detail (a Verified outcome, the claims-supported and check-run tallies, actions broken down by tool type, cost with its basis, the weekly-plan estimate, and the receipt-dimensions ledger with per-field provenance chips) beside the evidence side rail (coverage, the sources each fact came from, and CI status). Verified is reserved for machine-checked completion.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work-receipt.png)
+![The Sessions view: on the left, the task list with one verdict per row (Verified, In Progress, Reported, Observed); on the right, the open receipt for "Add a token-bucket rate limiter to the login API", marked Verified, with two bars (5 steps: 4 self-checked, 1 claimed; 5 checks: 5 passed), the numbered step spine with the latest step expanded to its agent-reported check, exit code, and touched file, and below it the activity timeline where the check cards run from 12 failed to 12 passed, 12 passed, and 38 passed.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work-receipt.png)
 
-**Private by design.** Everything stays on your machine: state is plain local files, the only listener is a loopback-only local JSON API (`127.0.0.1`) that onboarding starts and `agentacct stop` stops, and there is no phone-home telemetry, no account, no cloud sync. agentacct never stores or requests a provider API key.
-
-<sub>Screenshots show a synthetic demo workspace; your own dashboard renders your machine's real local data.</sub>
-
-## What you get
-
-The Work Receipt above is the whole product — the same Task-primary view lives in the macOS app, in **`agentacct tui`** (a live terminal dashboard), and over a local JSON API, across all four agents, in light and dark:
-
-- **One Work Receipt per task — what it did, and whether you can trust it.** Open a task and it reads like an audit record, not a vibe (that's the screenshot at the top): what it was, who ran it, the **actions** it took (commands run, files touched, tools used — read straight from each agent's own store and broken down by type), what it **cost** (with its basis — never an invoice), and the **evidence** — how much of the work carries a real passing check, where each fact came from, and whether anything external verified it. Decision and evidence are deliberately separate axes: an agent reporting *done* files under **Reported** and never raises the evidence bar, and a task only reads **Verified** when every live check passes and postdates the newest recorded work. Most fields wear a provenance chip — a client hook, a transcript scan, or the agent's own MCP records. Read one in the app, or with `agentacct receipt <task>` (add `--markdown` to paste it into a PR or issue). Two worked examples show the whole idea end to end: [Claude Code vs Codex on the same task](docs/examples/compare-claude-code-and-codex.md), and [when an agent says *done*](docs/examples/when-an-agent-says-done.md) — how a re-run and a later edit leave a passing check outdated.
-
-- **The work, not just the tokens.** Each task rolls up into its sessions and the steps the agent recorded as it went. Open the drill-down for every step, its lifecycle (`completed`, `handed off`, `blocked`, or still in progress), its evidence-tier pip, and its checks — with exit codes and honest provenance. A passing check the agent reported for itself is labelled *the agent's own, not independent*, never dressed up as verification; the checks ledger leads with current failures, folds routine checks behind a *Show N more* control, and keeps superseded history separate.
-
-  ![The Sessions & steps drill-down for a Work Receipt — each recorded step with its lifecycle, an evidence-tier pip, a self-checked/independent grade, and its checks: an exit code, whether the check was agent-reported or independent, and that command details are redacted, plus the files the step touched](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work-sessions-steps.png)
-
-- **Evidence tiers, not vibes.** Every check is graded by how independent it is of the agent that did the work: an agent's own claim < a self-reported check < a hook-observed exit code < CI. The tier travels as a pip shape everywhere (hollow → half → filled → ringed), and green is reserved for live connections and externally verified evidence. A **Sources** pane keeps the store honest about what it *can't* yet verify — a CI-check-run and human-review shelf that reads *not connected* until independent evidence actually lands.
-
-- **A receipts workbench.** Every task your agents touch becomes a row you can hold them to: lifecycle tabs that never inflate a claim (*Verified* stays reserved for machine-checked completion), an evidence column whose pip shape carries the tier, a checks column with real pass/fail tallies, and a cost column where every figure wears its basis (`≈` marks an estimate — a bare `$` is reserved for reported figures). Sorted latest-first, with an attention-first sort one click away when the one blocked task should outrank nine finished ones.
-
-  ![The Work receipts table — lifecycle tabs (Attention / Verified / Reported / In progress / Observed / Stopped), evidence-tier pips with checked ratios, per-client chips, a checks-passed rail, estimated costs, and recency](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work-table.png)
-
-- **A home that opens with what needs review.** The Dashboard is an evidence-first **Shift Brief**: it names the single highest-priority task that needs review — its recorded reason, when it was observed, and where the claim came from — with a **Review evidence** button that opens the task in Work and a **Copy review brief** action that copies only the recorded facts (it never resumes or reruns the task). Beside it, a Signal rail carries four truth-bounded facts — **Working now**, **Capacity**, **Usage change**, and **Evidence trust** — each rendering an explicit *unavailable* state instead of a confident number when its data is missing, stale, or out of range.
-
-  ![The macOS app Dashboard — an evidence-first Shift Brief leading with the single highest-priority task that needs review (recorded reason, observed time, provenance, and a Review evidence / Copy review brief pair), a four-signal rail (Working now · Capacity · Usage change · Evidence trust), a Recent work card, and the daily fresh-token history](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
-
-- **Usage and plan cost in one decision view.** Provider-reported quota windows and reset times sit beside each agent's independently ranged recorded usage; daily history and per-model attribution follow below. Tokens come from the clients' local session files and costs keep their reported/estimated/partial basis — never an invoice or a fabricated zero. agentacct also estimates what fraction of your **weekly Claude plan** each task consumed — learned from your own recorded limit history and shown only once it can calibrate to your account, always labelled an estimate.
-
-  ![The Usage and limits page — current provider capacity by client beside seven-day recorded usage, followed by usage totals, daily history, and per-model attribution](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
-
-- **Attribution you can trust.** Every join between usage and recorded work carries a confidence label (`exact`/`high`/`medium`/`low`). Missing attribution beats wrong attribution: when agentacct cannot prove a link, it shows the gap instead of a guess — absence is always a named state, never a dash or a fabricated zero.
+<sub>Screenshots show a synthetic demo workspace; your install renders your own local data.</sub>
 
 ## Install
 
-### The macOS app — no Python required
-
-The signed, notarized **macOS app** bundles everything. Download the `.dmg` from the [latest release](https://github.com/mikehasa/agentacct/releases/latest), drag agentacct to Applications, and open it — first launch offers one-click setup of the bundled CLI and the coding agents it finds, then shows your Work Receipts in a native window. Requires macOS 14+.
-
-Before its first local data request on each packaged-app launch, agentacct
-validates the embedded CLI and any App-owned installed copy. When the bundle
-contains a newer verified CLI, the App stages it as a complete immutable
-version, atomically retargets the stable launcher, and preserves the previous
-files for already-running MCP and hook processes; it never overwrites their CLI
-directory in place or takes over a user-managed/pipx install. This App/CLI sync
-is implemented and tested. In-App downloads and installation through Sparkle
-are still planned, not shipped; see the [packaging notes](packaging/README.md)
-for the exact layout and recovery boundary.
-
-### The CLI
-
-Requires Python >= 3.11 on macOS or Linux; Windows is supported only via WSL.
-
 ```bash
 pipx install agentacct
-agentacct onboard   # once per machine (global by default)
-agentacct tui       # the live terminal dashboard
+agentacct onboard   # once per machine: finds your agents, sets up a local store, starts the recorder
+agentacct tui       # the terminal app
 ```
 
-No `pipx` yet? Install it first with `brew install pipx` (macOS) or `python3 -m pip install --user pipx` — or skip pipx entirely and use `uv tool install agentacct`. See [INSTALL.md](INSTALL.md) for a plain-`venv` fallback.
+Requires Python >= 3.11 on macOS or Linux; Windows is supported only via WSL. For a native window with no Python, download the signed, notarized **macOS app** from the [latest release](https://github.com/mikehasa/agentacct/releases/latest) (macOS 14+).
 
-`onboard` installs agentacct once per machine (global by default, writing zero files into your repo): it detects your local coding-agent logs, sets up a global store, and runs a first usage sync. Then run **`agentacct tui`** for the live terminal dashboard (onboarding also starts the managed background sync plus a local JSON API on `http://127.0.0.1:8765` — the machine-readable lane native shells and scripts poll). Open a **new** agent session in any repo — MCP servers and hooks bind at session start, so the session that ran onboarding cannot become the first recorded Task. (Prefer a per-repo install? Run `agentacct onboard --scope project` instead.)
+Either way, open a new agent session afterwards: hooks and MCP servers bind at session start.
 
-### Let your coding agent install it
+The per-agent setup, a `--scope project` install, and the `uv`/`venv` alternatives are in [INSTALL.md](INSTALL.md).
+
+## Done, according to whom?
+
+The receipt above answers three questions in order: did it finish, who says so, and is the proof still current.
+
+The agent's own "done" files under **Reported**. A task reads **Verified** only when every current check passes and ran after the last recorded change. A step with no check stays **claimed**, and every check carries its evidence tier: agent-reported, a hook-observed exit code, or CI. In the receipt above, steps 1 to 4 carry agent-reported checks; step 5 is a bare claim, and the receipt says so.
+
+The timeline under the steps keeps the red run. The first test run failed 12; the later runs passed 12, 12, and 38, and nothing is averaged away, so you can see when the proof caught up with the code and when it did not.
+
+## A day's work, across every agent you run
+
+![The Work tab: a "billing-svc" group of 8 sessions from 4 agents over about 9 hours (≈$72.71 as a sum of receipts) on one timeline from 09:05 to 18:20. Two long Claude Code runs anchor the morning and afternoon; shorter Codex and Hermes runs sit inside them; OpenCode runs overlap the edges; the last run, the one that needs attention, carries a red pip.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work.png)
+
+Point a work group at a project folder and every session that ran there lands on one timeline, whichever agent ran it. Each session keeps its own receipt and evidence; the group's total is a sum of 8 receipts, never a combined verdict on the work.
+
+## Start the day with what needs you
+
+![The Dashboard: a Shift Brief leading with "Fix the flaky payment test" (billing-svc, claude-code, 1 failed and 7 passed, recorded reason Failed check, provenance MCP record) with Review evidence and Copy review brief buttons; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table; and a seven-day usage chart.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
+
+The Shift Brief names the one task that most needs a human, its recorded reason, and where that claim came from: here a failed check on "Fix the flaky payment test", recorded over MCP. **Copy review brief** copies only recorded facts and never reruns anything.
+
+## Know your limits before the agent hits them
+
+![Usage & limits: per-client provider windows (codex 5-hour 12% used and weekly 63% used with reset times; claude-code 34% and 59%; opencode and hermes report no provider limit) beside each client's seven-day recorded use, all marked pricing estimate.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
+
+Provider-reported quota windows sit beside what each agent actually used. Tokens are client-reported and costs are pricing-table estimates marked `≈`, never an invoice.
+
+## Also in the terminal
+
+![agentacct tui: a Shift Brief whose primary attention item is a blocked claude-code task with its recorded reason, next step, and MCP-record provenance; a Signal rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table with outcome, evidence, and estimated cost; and a usage history sparkline.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
+
+`agentacct tui` shows the same Shift Brief, receipts, and capacity in your shell — including the folder-anchored **Work** tab, where each group draws its sessions across every agent on one cross-agent timeline you can open (`↵`) and zoom/scrub by keyboard. Press `?` for the keys.
+
+## Honest by design
+
+agentacct is early alpha and would rather show you a gap than a guess.
+
+- **Reported is not Verified.** An agent's claim can never dress up as verification.
+- **Estimates are labeled.** `≈$` is a pricing-table estimate, `~$` a known-partial subtotal; there is no invoice access. [docs/usage-truth-table.md](docs/usage-truth-table.md) says what each path can prove.
+- **Missing beats wrong.** Every join between usage and recorded work carries a confidence label (`exact`, `high`, `medium`, `low`); an unproven link shows as a gap, not a zero.
+- **Support is per capability, not per logo.** Claude Code and Codex carry the fullest receipts today; the [coverage matrix](docs/coverage-matrix.md) rates every lane for OpenCode, Hermes, DeepSeek Harness, OpenClaw, and Cursor separately, and `agentacct capabilities agents` prints the same matrix from your installed version.
+- **It records the work, not the conversation.** Tool names and categories, touched files, credential-scrubbed commands, exit codes, tokens, and recorded steps. Never your prompts, the model's responses, or transcripts; see the [privacy threat model](docs/multi-source-privacy-threat-model.md).
+- **Nothing phones home.** It reads only the local session files of detected clients, listens only on `127.0.0.1`, and never stores or requests a provider API key.
+
+## How it works
+
+agentacct is local-first Agent Work Intelligence: two evidence streams, kept separate and joined on real client ids instead of guesses.
+
+- **What it used** comes from each client's own session files: tokens as the client reported them, costs as pricing-table estimates.
+- **What it did** comes from the steps and checks the agent records over MCP as it works, plus machine checks such as test runs. How a check was observed decides its evidence tier, never the agent's wording.
+- **The join** links the two by session and transcript id and labels every attribution with a confidence. Claude Code binds real ids through an installed hook bridge; Codex and OpenCode are matched from their own session logs at import time; Hermes joins recorded work only on ids the agent passes explicitly. The receipt says which path it used.
+
+Join mechanics, the confidence glossary, and the MCP tool list are in [docs/reference.md](docs/reference.md); per-agent integration detail is in [docs/coding-agent-integrations.md](docs/coding-agent-integrations.md).
+
+## Let your coding agent install it
 
 Paste this into your coding agent:
 
@@ -90,13 +101,9 @@ on this machine. Don't modify my global client config without showing the exact
 command first.
 ```
 
-The agent then follows [INSTALL.md](INSTALL.md), the canonical runbook: the global install, the manual per-client setup, and the full per-client capability matrix. `agentacct setup prompt --agent <client>` prints the same prompt.
+The agent then follows [INSTALL.md](INSTALL.md). `agentacct setup prompt --agent <client>` prints the same prompt.
 
-Want to look around before touching your real data? `agentacct demo` runs a safe local walkthrough in a throwaway temporary store — no provider keys, no paid API calls.
-
-The managed runtime is controlled with `agentacct start` / `status` / `stop` / `repair`; all state lives in the global store (by default `~/.local/state/agentacct/state`; older global stores under `~/.agent-sentinel-global/state` are still recognized). A `--scope project` install keeps its state in the repo's `.agent-sentinel/` directory instead (gitignored; the directory keeps its pre-rename spelling for data compatibility).
-
-### Uninstall
+## Uninstall
 
 ```bash
 agentacct stop                 # stop the managed sync + local API (owned processes only)
@@ -104,77 +111,11 @@ agentacct uninstall-autostart  # only if you installed autostart
 pipx uninstall agentacct
 ```
 
-Then remove what onboarding added. For a global install (the default): delete the global store (`~/.local/state/agentacct/state` — keep it if you want the history) and the agentacct entries in your user config (`~/.claude.json`, the merged blocks in `~/.claude/settings.json`, the `~/.claude/hooks/` wrapper, and `~/.codex/config.toml`). For a `--scope project` install: delete that repo's `.agent-sentinel/` directory (that project's local ledger) and the agentacct entries onboarding added to `.mcp.json` / `.claude/settings.local.json` / `~/.codex/config.toml`. If you installed the standing instruction block, remove it first with `agentacct setup instructions --agent <client> --user --remove`.
+Then delete the store at `~/.local/state/agentacct/state` (keep it if you want the history) and remove the entries that `agentacct onboard` added to your client configs; they are listed per client in [docs/coding-agent-integrations.md](docs/coding-agent-integrations.md). A `--scope project` install keeps everything in that repo's `.agent-sentinel/` directory instead.
 
-## The terminal app
+## More
 
-Prefer the terminal? `agentacct tui` is the full app in your shell — the same work receipts, evidence, and capacity the macOS app shows, keyboard-native. Tabs `1`–`4` switch between the **Dashboard** (what needs you), **Work** (receipts, each carrying a decision × evidence verdict and its full Work Receipt), **Usage** (provider capacity + recorded usage), and **Sources** (what feeds the store). `↑↓` move, `↵` opens a receipt, `/` filters, `?` lists every key, `T` toggles light/dark, `p` saves a shareable snapshot (an SVG that renders anywhere), `q` quits.
-
-![agentacct tui — the Dashboard: what needs attention, live provider capacity, recent work receipts with decision × evidence, and a usage sparkline](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
-
-Open a receipt and press `↵` again to drill into its **sessions & steps** — the checks timeline behind the verdict, with a currently-failing check kept in view under *Needs attention* instead of averaged away:
-
-![agentacct tui — a receipt's sessions & steps: the checks timeline, with the failing check surfaced under Needs attention, the passing checks below, and the files it touched](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-steps.png)
-
-## What it is honest about
-
-agentacct is early alpha, and it would rather show you a gap than a guess:
-
-- **No hosted anything.** No hosted dashboard, no phone-home telemetry, no automatic cloud account sync.
-- **Estimates are labeled as estimates.** There is no exact Claude Code/Codex subscription invoice access; costs come from a local pricing table and are always labeled — never dressed up as an invoice. On the compact surfaces (the menu bar, the workbench table) a sigil carries the basis: a bare `$` marks a complete client-reported (or provider-billed) figure, `≈$` an estimate, `~$` a known-partial subtotal. The full Work Receipt has room to name the basis outright instead — `$27.40 · pricing_table` — so an estimate there reads by its named basis rather than a prefix. Either way the basis is on the figure. See [docs/usage-truth-table.md](docs/usage-truth-table.md) for what each path can and cannot prove.
-- **No silent monitoring.** agentacct only reads the local session files of detected clients and never watches unrelated processes started outside agentacct/integrations. Hard stops apply only to runs agentacct itself launched.
-- **Support is per-capability, not per-logo.** Claude Code and Codex carry a full Work Receipt today — usage, cost, and the actions each session took (commands, edited files, tools). OpenCode contributes independent exit-code checks and its own usage and session lanes, still at an experimental tier; Hermes has a live usage path plus a narrower capture surface; OpenClaw is usage-focused, and Cursor is observation-only (session presence — never tokens or cost); all are explicitly scoped. Integration breadth is not uniform verification: a client can have a proven MCP lane and an experimental usage lane at the same time, and the [coverage matrix](docs/coverage-matrix.md) shows each lane's state without flattening `verified`, `verified_partial`, and `experimental` into one badge. How each fact is captured differs honestly — a live hook, or a scan of the client's own store — and the Receipt says which. Every per-client claim is pinned in [INSTALL.md](INSTALL.md) and [docs/reference.md](docs/reference.md), and `agentacct capabilities agents` prints the same truth for your machine.
-- **What agentacct records — and what it doesn't.** Locally it keeps the detail an audit needs: tool categories and names, the files each step touched, the commands it ran (single-line, credential-scrubbed), exit codes, tokens, and recorded work. It does **not** store your prompts, the model's responses, or full transcripts, and metadata-only hooks omit the agent's thoughts and raw tool arguments. A full Receipt is not full raw-trajectory capture — the [privacy threat model](docs/multi-source-privacy-threat-model.md) lists what each path stores.
-
-Interfaces may change while agentacct is alpha.
-
-## How it works
-
-agentacct keeps two evidence streams separate and joins them on real client ids instead of guessing:
-
-- **Usage truth** comes from the client's own local session files: imported tokens are labeled `client_reported`, and costs are pricing-table estimates — never provider invoices.
-- **Work meaning** comes from the sections and events the agent records over MCP while it works (`agentacct_record_section`, `agentacct_record_machine_check`), plus machine checks like test runs. Each check keeps its independence grade — agent-reported, hook-observed, or CI — and the receipt's evidence tiers are computed from that grade, never from the agent's own wording.
-- **The join** links the two through session/transcript ids and labels every attribution `exact`, `high`, `medium`, or `low`. Claude Code binds real session/transcript ids through an installed hook bridge at session start and on every tool call; Codex, OpenCode, and Hermes are evidenced from each client's own session store at import time. Where a client's hook does not fire for its built-in tools, agentacct derives the same Actions — commands, edited files, tool categories and names — from that store directly, so the Receipt is populated with or without a live hook, and always says which.
-
-The per-client join mechanics, confidence-label glossary, daily workflow, and MCP tool list are in [docs/reference.md](docs/reference.md).
-
-## Documentation
-
-- Worked examples — [Claude Code vs Codex on one task](docs/examples/compare-claude-code-and-codex.md) · [when an agent says *done*](docs/examples/when-an-agent-says-done.md)
-- [Coverage matrix](docs/coverage-matrix.md) — every agent's lanes and how strongly each is proven, generated from the capability manifest
-- [Reference](docs/reference.md) — daily workflow, confidence labels, MCP tools, per-client capability matrix, verification evidence, migration notes
-- [Install runbook](INSTALL.md) — per-client setup, global install, capability matrix
-- [Usage and cost truth table](docs/usage-truth-table.md)
-- [Coding agent integrations](docs/coding-agent-integrations.md)
-- [Adapter capability evidence](docs/adapter-capability-evidence.md) — the dated evidence behind each `verified` rating
-- [Architecture](docs/architecture.md)
-- [Task Intelligence and the local control plane](docs/task-control-plane.md)
-- [Multi-source Evidence v2 architecture](docs/multi-source-evidence-architecture.md)
-- [Multi-source privacy threat model](docs/multi-source-privacy-threat-model.md)
-- [Safety boundaries](docs/safety-boundaries.md)
-- [Full flow demo](docs/full-demo.md)
-
-## Development
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution scope, safety principles, and PR expectations.
-
-Run tests from a clone (the pipx install above ships no test tooling):
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -e .
-.venv/bin/python -m pip install pytest
-.venv/bin/python -m pytest tests/ -q --tb=short
-```
-
-## Feedback
-
-agentacct is early alpha. Useful feedback:
-
-- Which agent or tool do you use?
-- What runaway, cost, or observability issue did you hit?
-- Which join/attribution result looked wrong or missing?
-- What report would help you trust a run?
-- Which integration should be supported next?
-
-Open an issue with a bug report, feature request, or integration request. Please scrub any provider API keys or private paths from logs before sharing them.
+- Worked examples: [when an agent says *done*](docs/examples/when-an-agent-says-done.md) · [Claude Code vs Codex on one task](docs/examples/compare-claude-code-and-codex.md)
+- [Reference](docs/reference.md) · [Coverage matrix](docs/coverage-matrix.md) · [Architecture](docs/architecture.md) · [Safety boundaries](docs/safety-boundaries.md) · [Full flow demo](docs/full-demo.md)
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md) covers running the tests and regenerating the screenshots above from the synthetic demo store.
+- Feedback: open an issue naming the agent you use and the join, attribution, or receipt that looked wrong, or what a receipt would need to show before you trusted a run. Scrub API keys and private paths from logs first.

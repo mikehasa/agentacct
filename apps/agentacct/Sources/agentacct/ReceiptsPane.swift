@@ -108,7 +108,7 @@ func receiptOutcomeSummary(_ dim: ReceiptOutcomeDim) -> String {
 /// total is named explicitly so an older or partial payload never reads as a
 /// measured zero.
 func receiptCheckSummary(total: Int?, passed: Int?, failed: Int?) -> String {
-    var parts = [total.map { "\($0) checks" } ?? "check total not reported"]
+    var parts = [total.map { Fmt.count($0, "check") } ?? "check total not reported"]
     if let passed { parts.append("\(passed) passed") }
     if let failed { parts.append("\(failed) failed") }
     return parts.joined(separator: " · ")
@@ -484,78 +484,6 @@ func receiptActionSourceText(_ sources: [String]?) -> String {
         if seen.insert(label).inserted { labels.append(label) }
     }
     return labels.joined(separator: ", ")
-}
-
-// MARK: - Record summary strip
-
-/// The record page's context strip: Tool calls · Est. cost · Elapsed · Sessions,
-/// each a caps caption over an 18/700 mono value with 1px verticals
-/// between the cells. Absent facts are named ("not recorded"), never zeroed.
-/// Check runs live in the decision summary above this strip, beside the distinct
-/// claim-coverage measure; duplicating the fraction here made those concepts
-/// look interchangeable.
-struct RecordSummaryStrip: View {
-    let receipt: Receipt
-    let summary: ReceiptSummary?
-
-    private var presentation: RecordSummaryPresentation {
-        RecordSummaryPresentation(receipt: receipt, summary: summary)
-    }
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 0) { row }
-            VStack(alignment: .leading, spacing: Space.m) { column }
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Receipt summary")
-        .accessibilityIdentifier("receipt.summary")
-    }
-
-    private var row: some View {
-        ForEach(Array(presentation.items.enumerated()), id: \.element.id) { index, item in
-            if index > 0 {
-                // Fixed-height vertical: an unbounded Rectangle would stretch
-                // the strip to the page height.
-                Rectangle().fill(Theme.hairline).frame(width: 1, height: 46)
-            }
-            cell(item)
-                .padding(.leading, index > 0 ? Space.l : 0)
-        }
-    }
-
-    private var column: some View {
-        ForEach(presentation.items) { item in
-            cell(item)
-        }
-    }
-
-    private func cell(_ item: ReceiptSummaryItem) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            CapsLabel(text: item.label)
-            if let value = item.value {
-                // Qualifier under the value: cells are narrow and a basis word
-                // must never wrap the number itself.
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(value).workFont(.kpi)
-                        .foregroundStyle(item.isWarning ? Theme.amber : Theme.ink)
-                    if let qualifier = item.qualifier {
-                        // The qualifier may wrap; only the value itself stays
-                        // on one line so a basis word never breaks the number.
-                        Text(qualifier).workFont(.dataSmall).foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            } else {
-                // Absence is a named state at value position — never "0".
-                Text(item.absent ?? "not recorded")
-                    .workFont(.body).foregroundStyle(Theme.muted)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("receipt.summary.\(item.id)")
-    }
 }
 
 // MARK: - Receipt dimensions

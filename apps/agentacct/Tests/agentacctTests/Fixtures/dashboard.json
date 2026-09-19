@@ -271,6 +271,141 @@
       "issues": []
     }
   },
+  "ingestion_healthy_sources": {
+    "schema": "agentacct.v1-ingestion.v1",
+    "ingestion": {
+      "state": "healthy",
+      "last_success_at": 1787618766,
+      "sources": [
+        {
+          "source": "claude-code",
+          "state": "healthy",
+          "scope": "watched",
+          "discovered": 1240,
+          "parsed": 1200,
+          "skipped": 40,
+          "last_success_at": 1787618766
+        },
+        {
+          "source": "codex",
+          "state": "healthy",
+          "scope": "watched",
+          "discovered": 980,
+          "parsed": 980,
+          "last_success_at": 1787618766
+        },
+        {
+          "source": "hermes",
+          "state": "healthy",
+          "scope": "watched",
+          "discovered": 0,
+          "parsed": 0,
+          "last_success_at": 1787618766
+        }
+      ],
+      "watcher": {
+        "state": "running",
+        "interval_seconds": 60,
+        "heartbeat_at": 1787618770
+      },
+      "issues": []
+    }
+  },
+  "ingestion_degraded": {
+    "schema": "agentacct.v1-ingestion.v1",
+    "ingestion": {
+      "state": "degraded",
+      "last_success_at": 1787617240,
+      "sources": [
+        {
+          "source": "claude-code",
+          "state": "degraded",
+          "scope": "watched",
+          "discovered": 6595,
+          "parsed": 2119,
+          "last_failure_at": 1787617300,
+          "error_count": 17
+        },
+        {
+          "source": "codex",
+          "state": "degraded",
+          "scope": "watched",
+          "discovered": 134,
+          "parsed": 64,
+          "last_success_at": 1787617240,
+          "last_failure_at": 1787617300,
+          "error_count": 1
+        },
+        {
+          "source": "cursor",
+          "state": "degraded",
+          "scope": "watched",
+          "discovered": 0,
+          "parsed": 0,
+          "last_success_at": 1787617240,
+          "last_failure_at": 1787617300,
+          "error_count": 1
+        },
+        {
+          "source": "hermes",
+          "state": "degraded",
+          "scope": "watched",
+          "discovered": 0,
+          "parsed": 0,
+          "last_success_at": 1787617240,
+          "last_failure_at": 1787617300,
+          "error_count": 1
+        },
+        {
+          "source": "openclaw",
+          "state": "degraded",
+          "scope": "watched",
+          "discovered": 4,
+          "parsed": 4,
+          "last_success_at": 1787617240,
+          "last_failure_at": 1787617300,
+          "error_count": 1
+        },
+        {
+          "source": "opencode",
+          "state": "degraded",
+          "scope": "watched",
+          "discovered": 19,
+          "parsed": 19,
+          "last_success_at": 1787617240,
+          "last_failure_at": 1787617300,
+          "error_count": 1
+        }
+      ],
+      "watcher": {
+        "state": "running",
+        "interval_seconds": 60,
+        "heartbeat_at": 1787618770
+      },
+      "issues": [
+        {
+          "code": "source_identity_unresolved",
+          "source": "claude-code",
+          "severity": "error",
+          "action": "Claude Code transcript identity is outside this adapter's safe scan budget. Refresh alone cannot repair it. Update or repair the Claude source, restart agentacct, then retry Claude only from Advanced."
+        },
+        {
+          "code": "evidence_refreshable_usage_failed",
+          "source": null,
+          "affected_sources": [
+            "claude-code",
+            "codex",
+            "cursor",
+            "hermes",
+            "openclaw",
+            "opencode"
+          ],
+          "severity": "error",
+          "action": "Recorded usage for claude-code, codex, cursor, hermes, openclaw, opencode did not reconcile cleanly, so usage totals may be incomplete or conflicting. Refresh usage; if it persists, run `agentacct doctor` before rebuilding or cleaning any store."
+        }
+      ]
+    }
+  },
   "attention": {
     "schema": "agentacct.v1-attention.v1",
     "total": 2,

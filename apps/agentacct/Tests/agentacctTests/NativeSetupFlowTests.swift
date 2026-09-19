@@ -139,4 +139,26 @@ final class NativeSetupFlowTests: XCTestCase {
 
         XCTAssertEqual(plan.changes.first?.path, "/test-home/.config/opencode/opencode.jsonc")
     }
+
+    func testDeepSeekHarnessReviewTargetsHomePatchAndAgentsUnderDSHHome() {
+        let defaultPlan = SetupConfigurationPlan(
+            client: .deepseekHarness,
+            homeDirectory: URL(fileURLWithPath: "/test-home"),
+            environment: [:]
+        )
+        XCTAssertEqual(defaultPlan.changes.map(\.path), [
+            "/test-home/.dsh/cordis.patch.yml",
+            "/test-home/.dsh/AGENTS.md"
+        ])
+
+        let overriddenPlan = SetupConfigurationPlan(
+            client: .deepseekHarness,
+            homeDirectory: URL(fileURLWithPath: "/test-home"),
+            environment: ["DSH_HOME": "/custom-dsh"]
+        )
+        XCTAssertEqual(overriddenPlan.changes.map(\.path), [
+            "/custom-dsh/cordis.patch.yml",
+            "/custom-dsh/AGENTS.md"
+        ])
+    }
 }

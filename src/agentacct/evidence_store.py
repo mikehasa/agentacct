@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -45,6 +46,47 @@ REFRESHABLE_USAGE_SPOOL_FILENAME = "refreshable-usage.jsonl"
 
 _DISPOSITIONS = frozenset({"inserted", "duplicate", "conflict"})
 _ORDER_COLUMNS = {"event_time": "e.event_timestamp", "arrival": "e.first_receipt_sequence"}
+
+# Prune (reclaim / bound the projection). The default target is the ~99% bloat:
+# the shadow copies of every recorded tool_activity — never read by any
+# correctness-critical lane (independently_checked reads only source_type
+# client_hook; refreshable-usage rows are local_client_log and FK-referenced).
+_PRUNE_DENYLISTED_SOURCE_TYPES = frozenset({"client_hook", "local_client_log"})
+_PRUNE_DEFAULT_SOURCE_TYPES = ("mcp_agent_reported",)
+_PRUNE_DEFAULT_EVENT_TYPES = ("tool_activity_observed",)
+_AUTO_PRUNE_METADATA_KEY = "last_auto_prune_at"
+
+
+@dataclass(frozen=True)
+class EvidencePruneResult:
+    dry_run: bool
+    matched_versions: int
+    deleted_versions: int
+    deleted_receipts: int
+    deleted_dimensions: int
+    deleted_acknowledgements: int
+    batches: int
+    bytes_before: int
+    bytes_after: int
+    vacuumed: bool
+
+    def bytes_reclaimed(self) -> int:
+        return max(0, self.bytes_before - self.bytes_after)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "dry_run": self.dry_run,
+            "matched_versions": self.matched_versions,
+            "deleted_versions": self.deleted_versions,
+            "deleted_receipts": self.deleted_receipts,
+            "deleted_dimensions": self.deleted_dimensions,
+            "deleted_acknowledgements": self.deleted_acknowledgements,
+            "batches": self.batches,
+            "bytes_before": self.bytes_before,
+            "bytes_after": self.bytes_after,
+            "bytes_reclaimed": self.bytes_reclaimed(),
+            "vacuumed": self.vacuumed,
+        }
 
 
 def _owner_only(path: Path, mode: int) -> None:
@@ -2244,6 +2286,204 @@ class EvidenceStore:
 
     replay_spool = recover
 
+    def prune_versions(
+        self,
+        *,
+        source_types: Sequence[str] | None = None,
+        event_types: Sequence[str] | None = None,
+        older_than: str | None = None,
+        batch_size: int = 5000,
+        max_rows: int | None = None,
+        dry_run: bool = True,
+        vacuum: bool = False,
+    ) -> EvidencePruneResult:
+        """Delete non-consumed shadow evidence versions (default: the
+        mcp_agent_reported/tool_activity_observed bloat) plus their receipts,
+        acknowledgements and dimensions transactionally, and optionally VACUUM
+        to return the freed pages to the OS.
+
+        The append-only ``spool.jsonl`` is NEVER touched. Durability holds
+        because ``recover()`` only replays FORWARD from a cursor that sits at
+        spool EOF, so pruned projection rows are not resurrected on reopen. Three
+        guards keep the honesty-critical lanes intact: a hard denylist on
+        client_hook / local_client_log, exclusion subqueries that skip any
+        evidence_id referenced by the refreshable-usage or claimed-link tables,
+        and PRAGMA foreign_keys=ON as a final net.
+        """
+
+        if not (100 <= batch_size <= 100_000):
+            raise ValueError("batch_size must be between 100 and 100000")
+        stypes = tuple(source_types) if source_types else _PRUNE_DEFAULT_SOURCE_TYPES
+        etypes = tuple(event_types) if event_types else _PRUNE_DEFAULT_EVENT_TYPES
+        if not stypes or not etypes:
+            raise ValueError("refusing to prune: an empty type selection would match everything")
+        denied = _PRUNE_DENYLISTED_SOURCE_TYPES.intersection(stypes)
+        if denied:
+            raise ValueError(f"refusing to prune honesty-critical source types: {sorted(denied)}")
+
+        def _empty(dry: bool, matched: int, before: int) -> EvidencePruneResult:
+            return EvidencePruneResult(
+                dry_run=dry,
+                matched_versions=matched,
+                deleted_versions=0,
+                deleted_receipts=0,
+                deleted_dimensions=0,
+                deleted_acknowledgements=0,
+                batches=0,
+                bytes_before=before,
+                bytes_after=before,
+                vacuumed=False,
+            )
+
+        with self._locked():
+            bytes_before = self.projection_path.stat().st_size if self.projection_path.is_file() else 0
+            if not self.projection_path.is_file():
+                return _empty(dry_run, 0, bytes_before)
+
+            source_ph = ",".join("?" for _ in stypes)
+            event_ph = ",".join("?" for _ in etypes)
+            where = f"source_type IN ({source_ph}) AND event_type IN ({event_ph})"
+            params: list[Any] = [*stypes, *etypes]
+            if older_than:
+                where += " AND event_timestamp < ?"
+                params.append(older_than)
+
+            # Referenced ids belong to the refreshable-usage / claimed-link lanes;
+            # they are never the tool_activity default target but the subqueries
+            # make a broadened --source-type/--event-type run safe too.
+            select_sql = (
+                "CREATE TEMP TABLE _prune_targets AS\n"
+                "SELECT evidence_id FROM evidence_versions\n"
+                f"WHERE {where}\n"
+                "  AND evidence_id NOT IN (SELECT evidence_id FROM refreshable_usage_revisions)\n"
+                "  AND evidence_id NOT IN (SELECT evidence_id FROM refreshable_usage_heads)\n"
+                "  AND evidence_id NOT IN (SELECT evidence_id FROM refreshable_usage_transitions WHERE evidence_id IS NOT NULL)\n"
+                "  AND evidence_id NOT IN (SELECT candidate_evidence_id FROM refreshable_usage_conflicts)\n"
+                "  AND evidence_id NOT IN (SELECT claimed_evidence_id FROM claimed_link_versions)\n"
+                "  AND evidence_id NOT IN (SELECT observed_evidence_id FROM claimed_link_versions)"
+            )
+
+            deleted_versions = deleted_receipts = deleted_dims = deleted_acks = batches = 0
+            # Keep the IN (...) placeholder count well under SQLite's bound-variable
+            # limit (32766 since 3.32) even if a caller passes a huge batch_size.
+            chunk = min(batch_size, 20_000)
+            with self._connection() as connection:
+                # Tune this connection for a bulk delete over a projection far
+                # larger than the default 2MB cache. foreign_keys=OFF is SAFE
+                # here: we delete each target's receipts/acks/dimensions BEFORE
+                # its version, and _prune_targets already excludes every id
+                # referenced by the refreshable-usage / claimed-link lanes, so no
+                # orphan can be created — while ON forces ~one index probe per
+                # referencing table per deleted row, all cache-missing to disk on
+                # a multi-GB store (the dominant cost). NORMAL sync + a large
+                # cache/mmap turn scattered random I/O into far fewer disk seeks.
+                # All safe for a re-runnable, per-batch-committed operation whose
+                # source of truth is the untouched append-only spool.
+                connection.execute("PRAGMA foreign_keys = OFF")
+                connection.execute("PRAGMA synchronous = NORMAL")
+                connection.execute("PRAGMA cache_size = -1048576")  # ~1 GiB page cache
+                connection.execute("PRAGMA mmap_size = 1073741824")  # 1 GiB mmap
+                connection.execute("PRAGMA temp_store = MEMORY")
+                connection.execute("DROP TABLE IF EXISTS _prune_targets")
+                connection.execute(select_sql, params)
+                matched = int(connection.execute("SELECT COUNT(*) FROM _prune_targets").fetchone()[0])
+                if dry_run or matched == 0:
+                    connection.execute("DROP TABLE IF EXISTS _prune_targets")
+                    return _empty(dry_run, matched, bytes_before)
+
+                # Walk the target set FORWARD by rowid (the temp table's implicit
+                # integer key) instead of deleting from it each batch. A
+                # `DELETE FROM _prune_targets WHERE evidence_id IN (...)` would
+                # full-scan the unindexed temp table every iteration — O(N^2)
+                # over millions of rows. The forward walk is one O(N) pass; the
+                # per-batch main-table deletes use the evidence_id indexes.
+                last_rowid = 0
+                while True:
+                    if max_rows is not None and deleted_versions >= max_rows:
+                        break
+                    rows = connection.execute(
+                        "SELECT rowid, evidence_id FROM _prune_targets WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                        (last_rowid, chunk),
+                    ).fetchall()
+                    if not rows:
+                        break
+                    last_rowid = rows[-1][0]
+                    ids = [row[1] for row in rows]
+                    placeholders = ",".join("?" for _ in ids)
+                    connection.execute("BEGIN IMMEDIATE")
+                    try:
+                        deleted_receipts += connection.execute(
+                            f"DELETE FROM evidence_receipts WHERE evidence_id IN ({placeholders})", ids
+                        ).rowcount
+                        deleted_acks += connection.execute(
+                            f"DELETE FROM evidence_acknowledgements WHERE evidence_id IN ({placeholders})", ids
+                        ).rowcount
+                        deleted_dims += connection.execute(
+                            f"DELETE FROM evidence_dimensions WHERE evidence_id IN ({placeholders})", ids
+                        ).rowcount
+                        deleted_versions += connection.execute(
+                            f"DELETE FROM evidence_versions WHERE evidence_id IN ({placeholders})", ids
+                        ).rowcount
+                        connection.execute("COMMIT")
+                    except Exception:
+                        connection.execute("ROLLBACK")
+                        raise
+                    batches += 1
+                connection.execute("DROP TABLE IF EXISTS _prune_targets")
+
+            vacuumed = False
+            if vacuum:
+                with self._connection() as connection:
+                    connection.execute("VACUUM")
+                _owner_only(self.projection_path, 0o600)
+                vacuumed = True
+
+            bytes_after = self.projection_path.stat().st_size if self.projection_path.is_file() else bytes_before
+            return EvidencePruneResult(
+                dry_run=False,
+                matched_versions=matched,
+                deleted_versions=deleted_versions,
+                deleted_receipts=deleted_receipts,
+                deleted_dimensions=deleted_dims,
+                deleted_acknowledgements=deleted_acks,
+                batches=batches,
+                bytes_before=bytes_before,
+                bytes_after=bytes_after,
+                vacuumed=vacuumed,
+            )
+
+    def auto_prune_if_due(
+        self,
+        *,
+        min_interval_seconds: float,
+        older_than_seconds: float,
+        max_rows: int | None,
+        now: float | None = None,
+    ) -> EvidencePruneResult | None:
+        """Throttled, non-VACUUM prune for the managed watcher loop.
+
+        Freed pages are reused (no VACUUM), so the projection stops growing
+        unboundedly without the expensive whole-file rewrite. Returns None when
+        the last run was within ``min_interval_seconds``.
+        """
+
+        now = time.time() if now is None else float(now)
+        last = self._stored_replay_offset(_AUTO_PRUNE_METADATA_KEY)
+        if last and (now - last) < min_interval_seconds:
+            return None
+        cutoff = None
+        if older_than_seconds and older_than_seconds > 0:
+            cutoff = normalize_timestamp(now - older_than_seconds)
+        result = self.prune_versions(
+            older_than=cutoff,
+            batch_size=5000,
+            max_rows=max_rows,
+            dry_run=False,
+            vacuum=False,
+        )
+        self._set_stored_replay_offset(_AUTO_PRUNE_METADATA_KEY, int(now))
+        return result
+
     def get(self, evidence_id: str) -> EvidenceEnvelope | None:
         with self._connection() as connection:
             row = connection.execute("SELECT envelope_json FROM evidence_versions WHERE evidence_id = ?", (evidence_id,)).fetchone()
@@ -2756,6 +2996,7 @@ __all__ = [
     "AppendResult",
     "ClaimedLinkRecord",
     "EvidenceAppendResult",
+    "EvidencePruneResult",
     "EvidenceRecord",
     "EvidenceStore",
     "EvidenceStoreStats",

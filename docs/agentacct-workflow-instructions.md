@@ -60,6 +60,19 @@ Call agentacct_record_section with:
   summary: what changed, with tests/builds/diffs/tool calls actually observed
 ```
 
+When the user signals the whole job is done — "ship it" or a merge — record this
+`completed` as a session-level summary of the whole deliverable, so the session's
+outcome is stated and not left inferable from the sub-task sections.
+
+Whether the finish reads **verified** or **reported** is graded from evidence, not
+from the word "completed": the work views show **verified** only when the work's
+machine-checks are all passing and current (none older than the last section
+update), and **reported** otherwise — they never echo a bare "completed". A
+session-level summary recorded after the checks reads **reported** unless the
+checks are re-run after it; that is honest (the agent stated done; no check
+post-dates the summary), not something to work around by logging a check for the
+badge.
+
 If blocked:
 
 ```text

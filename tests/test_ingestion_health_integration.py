@@ -375,6 +375,7 @@ def test_hermes_multiple_home_failure_requires_selection_not_refresh(tmp_path: P
                 "them. Set HERMES_HOME to one absolute Hermes home in the dashboard process and restart "
                 "agentacct. Refreshing the unchanged configuration cannot repair this."
             ),
+            "severity": "error",
         }
     ]
 
@@ -403,6 +404,8 @@ def test_all_clients_import_persists_receipts_exposed_by_health_api(tmp_path: Pa
             str(home / ".hermes"),
             "--openclaw-home",
             str(home / ".openclaw"),
+            "--dsh-home",
+            str(home / ".dsh"),
             "--cursor-home",
             str(home / "Library" / "Application Support" / "Cursor"),
             "--json",
@@ -422,6 +425,7 @@ def test_all_clients_import_persists_receipts_exposed_by_health_api(tmp_path: Pa
         "cursor",
         "hermes",
         "openclaw",
+        "dsh",
         "opencode",
     }
     codex = _source(health, "codex")
