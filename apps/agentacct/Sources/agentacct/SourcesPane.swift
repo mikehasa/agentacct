@@ -314,6 +314,41 @@ struct SourcesPane: View {
         .accessibilityIdentifier("sources-retained-health")
     }
 
+    /// When every row wears the same state the rows already say it; a
+    /// seventh copy in the header adds nothing.
+    static func rowsShareState(_ sources: [V1IngestionSource], overall: String?, watcherRunning: Bool) -> Bool {
+        guard sources.count > 1, let overall else { return false }
+        // Compare what the reader sees, not the raw state: three "healthy"
+        // rows can display Reporting, Reporting and Watching, and then the
+        // header's Reporting is not a repeat.
+        let header = overallStatusLabel(overall, watcherRunning: watcherRunning)
+        return sources.allSatisfy { sourceStatusLabel($0, watcherRunning: watcherRunning) == header }
+    }
+
+    /// The live per-source status word, shared by the row lozenge and the
+    /// header-repeat rule so the two can never disagree.
+    static func sourceStatusLabel(_ source: V1IngestionSource, watcherRunning: Bool) -> String {
+        switch source.state ?? "unknown" {
+        case "healthy" where watcherRunning && (source.parsed ?? 0) > 0: return "Reporting"
+        case "healthy" where watcherRunning: return "Watching · no data yet"
+        case "healthy": return "Idle"
+        case "degraded": return "Degraded"
+        case "pending": return "Pending"
+        case let state: return state.capitalized
+        }
+    }
+
+    /// The live card-level status word, shared with the header lozenge.
+    static func overallStatusLabel(_ state: String, watcherRunning: Bool) -> String {
+        switch state {
+        case "healthy" where watcherRunning: return "Reporting"
+        case "healthy": return "Idle"
+        case "attention": return "Attention"
+        case "degraded": return "Needs a fix"
+        case let state: return state.capitalized
+        }
+    }
+
     private func connectedCard(_ snapshot: V1IngestionSnapshot) -> some View {
         let sources = (snapshot.sources ?? []).sorted { $0.source < $1.source }
         let watcherRunning = presentation.watcherIsCurrentlyRunning(snapshot.watcher)
@@ -325,7 +360,8 @@ struct SourcesPane: View {
                         Text("\(sources.count)").workFont(.dataSmall).foregroundStyle(Theme.muted)
                     }
                     if !stacksRows { Spacer() }
-                    if let overall = snapshot.state {
+                    if let overall = snapshot.state,
+                       presentation.isRetained || !Self.rowsShareState(sources, overall: overall, watcherRunning: watcherRunning) {
                         overallLozenge(overall, watcherRunning: watcherRunning)
                     }
                 }
@@ -845,9 +881,11 @@ struct SourcesPane: View {
 
     private func originalDiagnostic(_ issue: V1IngestionIssue) -> some View {
         VStack(alignment: .leading, spacing: Space.s) {
+            // The raw code is for diagnostics, so it lives on hover; the
+            // title already says the same thing in words.
             Text(issueTitle(issue))
                 .workFont(.rowLabel).foregroundStyle(presentation.isRetained ? Theme.muted : issue.tint)
-            Text(issue.code ?? "code not supplied").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                .help("Diagnostic code: \(issue.code ?? "not supplied")")
             Text(issue.action ?? "See agentacct doctor for source diagnostics.")
                 .workFont(.caption).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)

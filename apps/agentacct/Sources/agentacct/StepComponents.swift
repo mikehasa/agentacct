@@ -436,6 +436,15 @@ struct StepCard: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
+                    // The one line a human wrote leads the body; the tier
+                    // sentence explains the evidence after it.
+                    if let summary = step.summary, !summary.isEmpty {
+                        Text(summary)
+                            .workFont(.body)
+                            .foregroundStyle(Theme.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
                     if let why = step.evidenceGradeReason {
                         Text(why)
                             .workFont(.caption)
@@ -447,17 +456,10 @@ struct StepCard: View {
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    if let summary = step.summary, !summary.isEmpty {
-                        Text(summary)
-                            .workFont(.caption)
-                            .foregroundStyle(Theme.muted)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                    }
                     checksSection
                     if let files = step.files, !files.isEmpty {
                         VStack(alignment: .leading, spacing: Space.xs) {
-                            Text("Files · \(files.count)")
+                            Text(Fmt.count(files.count, "file"))
                                 .workFont(.captionSemibold)
                                 .foregroundStyle(Theme.ink)
                                 .accessibilityHeading(.h3)
@@ -583,19 +585,35 @@ struct StepCard: View {
         return parts
     }
 
+    /// Every current check carries the same redaction, so it is said once
+    /// on the summary line instead of on every row.
+    private var allCommandsRedacted: Bool {
+        !checkDigest.all.isEmpty && checkDigest.all.allSatisfy { $0.check.commandRedacted == true }
+    }
+
+    private var checksSummaryText: String {
+        allCommandsRedacted ? "\(checkDigest.summary) · command details redacted" : checkDigest.summary
+    }
+
+    /// The step header already counts its checks; a single ordinary group
+    /// under it needs no third heading saying the same number again.
+    private var showsOrdinaryGroupHeading: Bool {
+        !checkDigest.attention.isEmpty || !checkDigest.history.isEmpty
+    }
+
     private var checksSection: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                     checksHeading
-                    Text(checkDigest.summary)
+                    Text(checksSummaryText)
                         .workFont(.dataSmall)
                         .foregroundStyle(Theme.muted)
                     Spacer(minLength: 0)
                 }
                 VStack(alignment: .leading, spacing: Space.xs) {
                     checksHeading
-                    Text(checkDigest.summary)
+                    Text(checksSummaryText)
                         .workFont(.dataSmall)
                         .foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
@@ -612,7 +630,8 @@ struct StepCard: View {
                     CheckRows(
                         items: showAllAttention
                             ? checkDigest.attention
-                            : checkDigest.attentionPreview
+                            : checkDigest.attentionPreview,
+                        showsRedaction: !allCommandsRedacted
                     )
                     if checkDigest.hiddenAttentionCount > 0 {
                         Button { showAllAttention.toggle() } label: {
@@ -630,16 +649,18 @@ struct StepCard: View {
                 }
 
                 if !checkDigest.ordinaryCurrent.isEmpty {
-                    checkGroupHeading(
-                        checkDigest.attention.isEmpty ? "Current checks" : "Other current checks",
-                        count: checkDigest.ordinaryCurrent.count,
-                        tint: Theme.muted
-                    )
+                    if showsOrdinaryGroupHeading {
+                        checkGroupHeading(
+                            checkDigest.attention.isEmpty ? "Current checks" : "Other current checks",
+                            count: checkDigest.ordinaryCurrent.count,
+                            tint: Theme.muted
+                        )
+                    }
                     let visibleOrdinary = showAllCurrentChecks
                         ? checkDigest.ordinaryCurrent
                         : checkDigest.ordinaryPreview
                     if !visibleOrdinary.isEmpty {
-                        CheckRows(items: visibleOrdinary)
+                        CheckRows(items: visibleOrdinary, showsRedaction: !allCommandsRedacted)
                     }
                     if checkDigest.hiddenOrdinaryCount > 0 {
                         Button {
@@ -673,7 +694,7 @@ struct StepCard: View {
                     .accessibilityValue(showHistory ? "Expanded" : "Collapsed")
 
                     if showHistory {
-                        CheckRows(items: checkDigest.history)
+                        CheckRows(items: checkDigest.history, showsRedaction: !allCommandsRedacted)
                             .transition(.opacity)
                     }
                 }
@@ -712,6 +733,8 @@ struct StepCard: View {
 /// provenance and machine metadata on a wrapping second line.
 struct CheckRow: View {
     let check: V1Check
+    /// False when the enclosing list already states the redaction once.
+    var showsRedaction = true
 
     private var presentation: CheckPresentation { CheckPresentation(check: check) }
 
@@ -725,7 +748,7 @@ struct CheckRow: View {
         } else if presentation.supersessionLabel == "Supersession state unknown" {
             parts.append("supersession state unknown")
         }
-        if check.commandRedacted == true { parts.append("command details redacted") }
+        if showsRedaction, check.commandRedacted == true { parts.append("command details redacted") }
         return parts
     }
 
@@ -825,11 +848,12 @@ struct CheckRow: View {
 
 private struct CheckRows: View {
     let items: [StepCheckItem]
+    var showsRedaction = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(items) { item in
-                CheckRow(check: item.check)
+                CheckRow(check: item.check, showsRedaction: showsRedaction)
                 if item.id != items.last?.id {
                     Divider()
                         .overlay(Theme.hairline)

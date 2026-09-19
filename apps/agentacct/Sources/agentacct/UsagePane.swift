@@ -41,6 +41,21 @@ struct UsagePane: View {
         }
     }
 
+    /// The capacity help carries the two finer freshness stamps the title
+    /// row used to print beside the toolbar's page-level stamp.
+    private var capacityHelpMessage: String {
+        var parts = ["Provider-reported usage allowance. agentacct does not enforce a spending budget or stop work."]
+        if let updated = glance.lastUpdated {
+            parts.append("Capacity refreshed \(dashboardFreshnessText(updated)).")
+        }
+        if dashboard.usage != nil {
+            parts.append(dashboard.usageLastUpdated.map {
+                "Recorded use refreshed \(dashboardFreshnessText($0))."
+            } ?? "Recorded use update time unavailable.")
+        }
+        return parts.joined(separator: " ")
+    }
+
     @ViewBuilder
     private var capacitySection: some View {
         switch glance.phase {
@@ -56,17 +71,10 @@ struct UsagePane: View {
                     Text("Current capacity")
                         .workFont(.titleSection).tracking(Type.titleSectionTracking)
                         .foregroundStyle(Theme.ink)
-                    ContextHelp(title: "About current capacity", message: "Provider-reported usage allowance. agentacct does not enforce a spending budget or stop work.", identifier: "usage.capacity-help")
-                    if let updated = glance.lastUpdated {
-                        Text("capacity refreshed \(dashboardFreshnessText(updated))")
-                            .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    }
-                    if dashboard.usage != nil {
-                        Text(dashboard.usageLastUpdated.map {
-                            "recorded use refreshed \(dashboardFreshnessText($0))"
-                        } ?? "recorded use update time unavailable")
-                            .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    }
+                    // The toolbar already stamps the page's freshness; the two
+                    // finer stamps (capacity vs recorded use) live in the help
+                    // where a reader who needs them looks, not beside the title.
+                    ContextHelp(title: "About current capacity", message: capacityHelpMessage, identifier: "usage.capacity-help")
                     Spacer()
                     staleControl(count: snapshot.glance.limits.filter { $0.stale == true }.count)
                 }
@@ -138,11 +146,14 @@ struct UsagePane: View {
 
     private func scopedCapacityState(title: String, detail: String) -> some View {
         VStack(alignment: .leading, spacing: Space.m) {
-            Text("Current capacity")
-                .workFont(.titleSection).tracking(Type.titleSectionTracking)
-                .foregroundStyle(Theme.ink)
-            Text("Provider-reported usage allowance. agentacct does not enforce a spending budget or stop work.")
-                .workFont(.caption).foregroundStyle(Theme.muted)
+            HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                Text("Current capacity")
+                    .workFont(.titleSection).tracking(Type.titleSectionTracking)
+                    .foregroundStyle(Theme.ink)
+                // The definition lives in help here too, matching the loaded
+                // state, instead of a caption under the title.
+                ContextHelp(title: "About current capacity", message: capacityHelpMessage, identifier: "usage.capacity-help")
+            }
             Card {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).workFont(.rowLabel).foregroundStyle(Theme.ink)
@@ -184,10 +195,6 @@ struct UsagePane: View {
                         .foregroundStyle(Theme.ink)
                     ContextHelp(title: "About recorded cost", message: "Cost is usage reporting, not a provider invoice or balance due. Verify charges with your provider. Cost basis and completeness are shown beside each total.", identifier: "usage.cost-help")
                 }
-                if let updated = dashboard.usageLastUpdated {
-                    Text("Usage refreshed \(dashboardFreshnessText(updated))")
-                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                }
             }
 
             if let error = dashboard.errorText {
@@ -217,7 +224,6 @@ struct UsagePane: View {
                     days: dashboard.usageDays,
                     rows: usage.byModel.map { ($0.model ?? "Unattributed model", $0) }
                 )
-                basisFooter(usage)
             } else {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Recorded usage not loaded").workFont(.rowLabel).foregroundStyle(Theme.ink)
@@ -293,7 +299,10 @@ struct UsagePane: View {
     }
 
     @ViewBuilder
-    private func basisFooter(_ usage: UsageSummary) -> some View {
+    /// The basis facts for the loaded range. They used to trail the page as
+    /// a fourth disclaimer line; they now open the About disclosure, where
+    /// the rest of the numbers' definitions already live.
+    private func basisText(_ usage: UsageSummary) -> String {
         let parts: [String] = [
             Fmt.costConfidenceLabel(usage.totals?.costConfidence).map { "cost: \($0)" },
             "token counts come from client usage records",
@@ -301,21 +310,25 @@ struct UsagePane: View {
                 "fresh tokens exclude \(UsageTotals.compact($0)) cache-read tokens"
             },
         ].compactMap { $0 }
-        Text(parts.joined(separator: " · "))
-            .workFont(.dataSmall).foregroundStyle(Theme.muted)
-            .fixedSize(horizontal: false, vertical: true)
+        return parts.joined(separator: " · ")
     }
 
     @ViewBuilder
     private var aboutSection: some View {
         if SnapshotMode.enabled {
             Card {
-                HStack {
-                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
-                    Text("About these numbers").workFont(.rowLabel).foregroundStyle(Theme.ink)
-                    Spacer()
-                    Text("cost, windows, and plan calibration")
-                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Image(systemName: SnapshotMode.expandsUsageAbout ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text("About these numbers").workFont(.rowLabel).foregroundStyle(Theme.ink)
+                        Spacer()
+                        Text("cost, windows, and plan calibration")
+                            .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    }
+                    if SnapshotMode.expandsUsageAbout {
+                        aboutDetails.padding(.top, Space.l)
+                    }
                 }
             }
         } else {
@@ -337,6 +350,15 @@ struct UsagePane: View {
 
     private var aboutDetails: some View {
         VStack(alignment: .leading, spacing: Space.l) {
+            if let usage = dashboard.usage {
+                VStack(alignment: .leading, spacing: 6) {
+                    CapsLabel(text: "This range")
+                    Text(basisText(usage))
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Rectangle().fill(Theme.hairline).frame(height: 1)
+            }
             VStack(alignment: .leading, spacing: 6) {
                 CapsLabel(text: "Cost grammar")
                 Text("$ complete reported or billed · ≈$ estimate · ~$ known partial subtotal · unpriced when no amount is available")
@@ -515,6 +537,16 @@ struct StripRow: View {
 /// an optional single-client group filter. Always ONE series — a stack never
 /// appears (v7 chart discipline). Periods without a priced value render as flat
 /// neutral stubs and their tooltip says so; heights are strictly proportional.
+/// When the chart prints its peak label. The tooltip already names the bar
+/// it is on, so the label yields whenever that bar is the peak; one value is
+/// never printed twice.
+enum UsageChartPeakLabel {
+    static func isShown(peakIndex: Int?, activeIndex: Int?, peakValue: Double?) -> Bool {
+        guard let peakIndex, let peakValue, peakValue > 0 else { return false }
+        return activeIndex != peakIndex
+    }
+}
+
 struct UsagePeriodChart: View {
     let periods: [PeriodBucket]
     let presentation: UsagePeriodPresentation
@@ -538,7 +570,10 @@ struct UsagePeriodChart: View {
         self.presentation = presentation
         let initialSeries: Series = periods.contains { $0.estimatedCostUsd != nil } ? .cost : .tokens
         _series = State(initialValue: initialSeries)
-        _selectedIndex = State(initialValue: periods.indices.last)
+        // Deterministic renders may pin the selection to show the tooltip on
+        // a chosen bar; the live app starts on the newest period.
+        let pinned = SnapshotMode.enabled ? SnapshotMode.usageChartSelectedIndex : nil
+        _selectedIndex = State(initialValue: pinned.flatMap { periods.indices.contains($0) ? $0 : nil } ?? periods.indices.last)
     }
 
     private var clients: [String] {
@@ -600,13 +635,20 @@ struct UsagePeriodChart: View {
     /// Plot height: the top gridline is exactly the max value's line.
     private static let plotHeight: CGFloat = 128
 
-    /// The peak annotation, centered over the peak bar in its own band.
+    /// The bar whose tooltip is showing (hover wins, then keyboard focus,
+    /// then the click selection).
+    private var activeIndex: Int? { hoveredIndex ?? focusedIndex ?? selectedIndex }
+
+    /// The peak annotation, centered over the peak bar in its own band. It
+    /// yields to the tooltip when that tooltip is already showing the peak
+    /// bar, so one value is never printed twice.
     @ViewBuilder
     private var peakBand: some View {
         HStack(alignment: .bottom, spacing: 3) {
             ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
                 Group {
-                    if index == peakIndex, let peak = value(period), peak > 0 {
+                    if index == peakIndex,
+                       UsageChartPeakLabel.isShown(peakIndex: peakIndex, activeIndex: activeIndex, peakValue: value(period)) {
                         Text("peak \(valueText(period))")
                             .workFont(.dataSmall)
                             .foregroundStyle(Theme.muted)

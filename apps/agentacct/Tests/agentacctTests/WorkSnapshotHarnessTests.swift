@@ -54,14 +54,16 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-session-steps-load-failure-dark.png", pixelsWide: 1520, pixelsHigh: 480),
         ExpectedArtifact(filename: "work-session-steps-retrying-light.png", pixelsWide: 1520, pixelsHigh: 480),
         ExpectedArtifact(filename: "work-session-steps-retrying-dark.png", pixelsWide: 1520, pixelsHigh: 480),
-        ExpectedArtifact(filename: "work-session-steps-compact-checks-light.png", pixelsWide: 720, pixelsHigh: 3200),
-        ExpectedArtifact(filename: "work-session-steps-compact-checks-dark.png", pixelsWide: 720, pixelsHigh: 3200),
+        ExpectedArtifact(filename: "work-session-steps-compact-checks-light.png", pixelsWide: 720, pixelsHigh: 3360),
+        ExpectedArtifact(filename: "work-session-steps-compact-checks-dark.png", pixelsWide: 720, pixelsHigh: 3360),
         ExpectedArtifact(filename: "work-session-steps-rtl-stress-light.png", pixelsWide: 1520, pixelsHigh: 2500),
         ExpectedArtifact(filename: "work-session-steps-rtl-stress-dark.png", pixelsWide: 1520, pixelsHigh: 2500),
         ExpectedArtifact(filename: "work-session-steps-compact-accessibility-light.png", pixelsWide: 720, pixelsHigh: 10800),
         ExpectedArtifact(filename: "work-session-steps-compact-accessibility-dark.png", pixelsWide: 720, pixelsHigh: 10800),
         ExpectedArtifact(filename: "work-session-steps-rtl-accessibility-light.png", pixelsWide: 720, pixelsHigh: 10800),
         ExpectedArtifact(filename: "work-session-steps-rtl-accessibility-dark.png", pixelsWide: 720, pixelsHigh: 10800),
+        ExpectedArtifact(filename: "work-session-steps-redacted-checks-light.png", pixelsWide: 1520, pixelsHigh: 1400),
+        ExpectedArtifact(filename: "work-session-steps-redacted-checks-dark.png", pixelsWide: 1520, pixelsHigh: 1400),
         ExpectedArtifact(filename: "work-actions-exact-regular-light.png", pixelsWide: 1520, pixelsHigh: 1080),
         ExpectedArtifact(filename: "work-actions-exact-regular-dark.png", pixelsWide: 1520, pixelsHigh: 1080),
         ExpectedArtifact(filename: "work-actions-exact-compact-light.png", pixelsWide: 720, pixelsHigh: 1280),
@@ -86,6 +88,10 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "work-checks-compact-accessibility-dark.png", pixelsWide: 720, pixelsHigh: 1200),
         ExpectedArtifact(filename: "work-checks-accessibility-rtl-light.png", pixelsWide: 1520, pixelsHigh: 2800),
         ExpectedArtifact(filename: "work-checks-accessibility-rtl-dark.png", pixelsWide: 1520, pixelsHigh: 2800),
+        ExpectedArtifact(filename: "work-components-decision-badges-light.png", pixelsWide: 1520, pixelsHigh: 1520),
+        ExpectedArtifact(filename: "work-components-decision-badges-dark.png", pixelsWide: 1520, pixelsHigh: 1520),
+        ExpectedArtifact(filename: "work-components-provenance-chips-light.png", pixelsWide: 1520, pixelsHigh: 840),
+        ExpectedArtifact(filename: "work-components-provenance-chips-dark.png", pixelsWide: 1520, pixelsHigh: 840),
     ]
 
     @MainActor
@@ -222,6 +228,7 @@ final class WorkSnapshotHarnessTests: XCTestCase {
         let sessionStepsRendered: [URL]
         let actionRendered: [URL]
         let checkRendered: [URL]
+        let componentRendered: [URL]
         do {
             workRendered = try WorkSnapshotRenderer.render(
                 fixture: fixture,
@@ -254,6 +261,14 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             )
         } catch {
             XCTFail("First focused Checks render failed: \(error)")
+            throw error
+        }
+        do {
+            componentRendered = try WorkComponentSnapshotRenderer.render(
+                outputDirectory: firstDirectory
+            )
+        } catch {
+            XCTFail("First component gallery render failed: \(error)")
             throw error
         }
         do {
@@ -290,7 +305,15 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             XCTFail("Second focused Checks render failed: \(error)")
             throw error
         }
-        let rendered = workRendered + sessionStepsRendered + actionRendered + checkRendered
+        do {
+            _ = try WorkComponentSnapshotRenderer.render(
+                outputDirectory: secondDirectory
+            )
+        } catch {
+            XCTFail("Second component gallery render failed: \(error)")
+            throw error
+        }
+        let rendered = workRendered + sessionStepsRendered + actionRendered + checkRendered + componentRendered
 
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedArtifacts.map(\.filename))
         for artifact in expectedArtifacts {

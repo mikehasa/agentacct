@@ -12,6 +12,9 @@ struct DashboardSnapshotFixture: Decodable {
     let daemonVersion: String
     let glance: Glance
     let menuSparseGlance: Glance?
+    /// The sparse menu with one session reported twice: the popover must show
+    /// it once.
+    let menuDuplicateGlance: Glance?
     let plan: V1PlanPayload
     let attention: V1AttentionPayload
     let ingestion: V1IngestionPayload?
@@ -28,6 +31,7 @@ struct DashboardSnapshotFixture: Decodable {
         case glance, plan, attention, ingestion, tasks, usage, work
         case usage90Days = "usage_90_days"
         case menuSparseGlance = "menu_sparse_glance"
+        case menuDuplicateGlance = "menu_duplicate_glance"
         case ingestionHealthySources = "ingestion_healthy_sources"
         case ingestionDegraded = "ingestion_degraded"
         case daemonVersion = "daemon_version"
@@ -52,6 +56,15 @@ struct DashboardSnapshotFixture: Decodable {
             throw SnapshotError.unsupportedSchema(
                 payload: "sparse menu glance",
                 actual: menuSparseGlance.schema,
+                expected: GlanceClient.supportedGlanceSchema
+            )
+        }
+        if let menuDuplicateGlance = fixture.menuDuplicateGlance,
+           menuDuplicateGlance.schema != GlanceClient.supportedGlanceSchema
+        {
+            throw SnapshotError.unsupportedSchema(
+                payload: "duplicate-session menu glance",
+                actual: menuDuplicateGlance.schema,
                 expected: GlanceClient.supportedGlanceSchema
             )
         }
@@ -193,6 +206,12 @@ struct DashboardSnapshotConfiguration {
         Self(viewport: "weekly-reference", width: 1120, height: 900, colorScheme: .dark, workState: .populated, recordedUsageState: .ninetyDays),
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .light, workState: .shiftBriefUnavailable, recordedUsageState: .sevenDays),
         Self(viewport: "trust-unavailable", width: 1120, height: 800, colorScheme: .dark, workState: .shiftBriefUnavailable, recordedUsageState: .sevenDays),
+        // Nothing needs review: the headline eyebrow and the card must say so once each.
+        Self(viewport: "all-clear", width: 1120, height: 800, colorScheme: .light, workState: .attentionClear, recordedUsageState: .sevenDays),
+        Self(viewport: "all-clear", width: 1120, height: 800, colorScheme: .dark, workState: .attentionClear, recordedUsageState: .sevenDays),
+        // The blocker item leads: its recorded next step earns the box, and the proof line reads as one sentence.
+        Self(viewport: "next-step", width: 1120, height: 800, colorScheme: .light, workState: .attentionNextStepFirst, recordedUsageState: .sevenDays),
+        Self(viewport: "next-step", width: 1120, height: 800, colorScheme: .dark, workState: .attentionNextStepFirst, recordedUsageState: .sevenDays),
     ]
 }
 

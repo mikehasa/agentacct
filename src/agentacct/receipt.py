@@ -601,7 +601,7 @@ def plan_share_headline(plan_share: Mapping[str, Any] | None) -> str:
             shown = "≈0%"
         return f"{shown} of weekly plan"
     if state == "calibrating":
-        return "calibrating — not enough 7-day history yet"
+        return "still learning — not enough 7-day history yet"
     if state == "never":
         return "not applicable for this client"
     return "—"

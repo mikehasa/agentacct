@@ -235,6 +235,99 @@
       }
     ]
   },
+  "menu_duplicate_glance": {
+    "schema": "agentacct.glance.v1",
+    "generated_at": 1787618800,
+    "usage": {
+      "windows": [
+        {
+          "label": "today",
+          "days": 1,
+          "totals": {
+            "fresh_tokens": 8000000,
+            "estimated_cost_usd": 200.67,
+            "cost_complete": true,
+            "known_additive_cost_usd": 200.67
+          }
+        },
+        {
+          "label": "last 7 days",
+          "days": 7,
+          "totals": {
+            "fresh_tokens": 39300000,
+            "estimated_cost_usd": 949.36,
+            "cost_complete": true,
+            "known_additive_cost_usd": 949.36
+          }
+        },
+        {
+          "label": "last 30 days",
+          "days": 30,
+          "totals": {
+            "fresh_tokens": 41900000,
+            "estimated_cost_usd": 990.99,
+            "cost_complete": false,
+            "known_additive_cost_usd": 990.99
+          }
+        }
+      ],
+      "usage_record_count": 18,
+      "by_client": []
+    },
+    "limits": [
+      {
+        "client": "codex",
+        "stream_id": "codex_rate_limit",
+        "org": "personal",
+        "plan_type": "pro",
+        "stale": false,
+        "windows": [
+          {
+            "kind": "7d",
+            "used_percent": 4,
+            "window_minutes": 10080,
+            "resets_at": 1788144400
+          }
+        ]
+      }
+    ],
+    "plan": [
+      {
+        "client": "codex",
+        "confidence": "provider_reported",
+        "calibration_state": "never"
+      },
+      {
+        "client": "claude-code",
+        "confidence": "baseline",
+        "calibration_state": "calibrating",
+        "intervals_used": 9,
+        "intervals_needed": 24,
+        "state_detail": "9 intervals recorded; calibration needs 24 or more stable intervals spanning at least one week"
+      }
+    ],
+    "recent_sessions": [
+      {
+        "client": "codex",
+        "session_id": "01a041c8-fixture",
+        "status": "in_progress",
+        "last_activity_at": 1787618788,
+        "plan_pct": 1.2
+      },
+      {
+        "client": "codex",
+        "session_id": "01a041c8-fixture",
+        "status": "checkpoint",
+        "last_activity_at": 1787618728
+      },
+      {
+        "client": "codex",
+        "session_id": "01a04201-fixture",
+        "status": "checkpoint",
+        "last_activity_at": 1787618752
+      }
+    ]
+  },
   "plan": {
     "schema": "agentacct.plan.v1",
     "generated_at": 1787618800,

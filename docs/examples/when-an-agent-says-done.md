@@ -26,7 +26,7 @@ An agent worked on **"Fix the flaky checkout-total test"** and reported it done.
 | Actors | claude-code · claude-opus-4-8 | client_log |
 | Actions | edit×6 execute×4 read×10 search×2 · touched 3 files · ran 1 command | hook, mcp |
 | Cost | $18.60 · pricing_table | client_log |
-| Weekly plan | calibrating — not enough 7-day history yet |  |
+| Weekly plan | still learning — not enough 7-day history yet |  |
 | Evidence | 1 checks · 1 passed · 0 failed | mcp |
 | Outcome | reported · asserted by agent_report | mcp |
 

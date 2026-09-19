@@ -303,9 +303,19 @@ enum DashboardAttentionPresentation: Equatable {
         }
     }
 
+    /// The eyebrow over the dashboard headline: what the block is, in the
+    /// reader's words.
+    var dashboardEyebrow: String {
+        switch self {
+        case .clear: return "ALL CLEAR"
+        case .focus, .inconsistent: return "NEEDS REVIEW"
+        case .loading, .unavailable: return "REVIEW"
+        }
+    }
+
     var dashboardStatus: String {
         switch self {
-        case .loading: return "Loading review projection"
+        case .loading: return "Checking recorded work"
         case .unavailable: return "Refresh to retry"
         case .clear: return "0 review items"
         case .focus(_, let total), .inconsistent(let total):
@@ -925,7 +935,7 @@ private struct DashboardShiftBriefHeader: View {
     var body: some View {
         HStack(alignment: .lastTextBaseline, spacing: Space.xl) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("SHIFT BRIEF")
+                Text(presentation.dashboardEyebrow)
                     .workFont(.labelCaps)
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(Theme.accent)
@@ -1005,7 +1015,7 @@ private struct DashboardAttentionBriefCard: View {
                     Text("Checking recorded work…")
                         .workFont(.titleSection)
                         .foregroundStyle(Theme.ink)
-                    Text("Loading the complete review projection; no clear-state claim is shown yet.")
+                    Text("Checking every recorded task before reporting all clear.")
                         .workFont(.body)
                         .foregroundStyle(Theme.muted)
                 }
@@ -1020,7 +1030,7 @@ private struct DashboardAttentionBriefCard: View {
         let copyFailed = copyFeedback == .failed(brief.text)
         return VStack(alignment: .leading, spacing: Space.l) {
             HStack(spacing: Space.s) {
-                Text("PRIMARY ATTENTION")
+                Text("TO REVIEW")
                     .workFont(.labelCaps)
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(tint)
@@ -1055,19 +1065,27 @@ private struct DashboardAttentionBriefCard: View {
 
             DashboardProofline(focus: focus)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text("RECORDED NEXT STEP")
-                    .workFont(.labelCaps)
-                    .tracking(Type.labelCapsTracking)
+            // A recorded next step earns its own box. Its absence is one
+            // muted line, not a labelled box holding a negative.
+            if let nextStep = focus.nextStep {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("RECORDED NEXT STEP")
+                        .workFont(.labelCaps)
+                        .tracking(Type.labelCapsTracking)
+                        .foregroundStyle(Theme.muted)
+                    Text(nextStep)
+                        .workFont(.body)
+                        .foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(Space.m)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
+            } else {
+                Text("No next step recorded.")
+                    .workFont(.caption)
                     .foregroundStyle(Theme.muted)
-                Text(focus.nextStep ?? "No next step recorded.")
-                    .workFont(.body)
-                    .foregroundStyle(focus.nextStep == nil ? Theme.muted : Theme.ink)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(Space.m)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.tintNeutral, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
 
             if SnapshotMode.rendersStaticControls {
                 DashboardStaticBriefActions(copyTitle: brief.buttonTitle)
@@ -1159,49 +1177,39 @@ private struct DashboardStaticBriefActions: View {
     }
 }
 
+/// The three recorded facts behind the item, as one line: the reason, when
+/// it was observed, and where the record came from. Three short values do not
+/// need three caps eyebrows; the labels stay available on hover and to
+/// assistive tech.
 private struct DashboardProofline: View {
     let focus: DashboardAttentionItem
 
+    private var observed: String { focus.recency.map { "seen \($0)" } ?? "time unavailable" }
+    private var provenance: String { focus.sourceLabel.map { "recorded via \($0)" } ?? "source unavailable" }
+
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 0) {
-                fact(label: "RECORDED REASON", value: focus.reasonLabel)
-                proofRule
-                fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
-                proofRule
-                fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
-            }
-            VStack(alignment: .leading, spacing: Space.s) {
-                fact(label: "RECORDED REASON", value: focus.reasonLabel)
-                fact(label: "OBSERVED", value: focus.recency ?? "Time unavailable")
-                fact(label: "PROVENANCE", value: focus.sourceLabel ?? "Source unavailable")
-            }
+        HStack(spacing: Space.s) {
+            Text(focus.reasonLabel)
+                .workFont(.captionSemibold)
+                .foregroundStyle(Theme.ink)
+            Text("·").foregroundStyle(Theme.rule)
+            Text(observed)
+                .workFont(.caption)
+                .foregroundStyle(Theme.muted)
+            Text("·").foregroundStyle(Theme.rule)
+            Text(provenance)
+                .workFont(.caption)
+                .foregroundStyle(Theme.muted)
         }
+        .lineLimit(1)
         .padding(.vertical, Space.s)
         .overlay(alignment: .top) { Divider().overlay(Theme.hairline) }
         .overlay(alignment: .bottom) { Divider().overlay(Theme.hairline) }
+        .help("Recorded reason · when it was observed · where the record came from")
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
             "Recorded reason: \(focus.reasonLabel). Observed: \(focus.recency ?? "time unavailable"). Provenance: \(focus.sourceLabel ?? "unavailable")."
         )
-    }
-
-    private func fact(label: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(label)
-                .workFont(.labelCaps)
-                .tracking(Type.labelCapsTracking)
-                .foregroundStyle(Theme.muted)
-            Text(value)
-                .workFont(.dataSmallSemibold)
-                .foregroundStyle(Theme.ink)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var proofRule: some View {
-        Rectangle().fill(Theme.hairline).frame(width: 1, height: 35).padding(.horizontal, Space.m)
     }
 }
 
@@ -1212,16 +1220,14 @@ private struct DashboardBriefEmptyState: View {
                 Image(systemName: "checkmark.seal.fill")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(Theme.green)
-                Text("COMPLETE REVIEW PROJECTION")
+                Text("ALL CLEAR")
                     .workFont(.labelCaps)
                     .tracking(Type.labelCapsTracking)
                     .foregroundStyle(Theme.green)
             }
-            Text("No recorded work needs review.")
-                .workFont(.titleSection)
-                .tracking(Type.titleSectionTracking)
-                .foregroundStyle(Theme.ink)
-            Text("No current failed check, failed step, or unresolved blocker was found across the complete attention projection.")
+            // The page headline above already reads "No recorded work needs
+            // review"; the card states the fact once, not the headline twice.
+            Text("No failed check, failed step, or unresolved blocker is recorded across all tracked work.")
                 .workFont(.body)
                 .foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1340,10 +1346,10 @@ private struct DashboardSignalRail: View {
     var body: some View {
         Card(padding: 0, fillsHeight: true) {
             VStack(spacing: 0) {
-                DashboardCardHeader("Signal rail")
+                DashboardCardHeader("Right now")
                 Divider().overlay(Theme.hairline)
                 DashboardSignalRow(
-                    eyebrow: "WORKING NOW",
+                    eyebrow: "Working now",
                     title: active.title,
                     detail: active.detail,
                     tint: active.promotesInactivity
@@ -1353,7 +1359,7 @@ private struct DashboardSignalRail: View {
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
                 DashboardSignalRow(
-                    eyebrow: "CAPACITY",
+                    eyebrow: "Capacity",
                     title: capacityTitle,
                     detail: capacityDetail,
                     tint: capacityTint,
@@ -1361,7 +1367,7 @@ private struct DashboardSignalRail: View {
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
                 DashboardSignalRow(
-                    eyebrow: "USAGE CHANGE",
+                    eyebrow: "Usage change",
                     title: usagePulse.title,
                     detail: usagePulse.detail,
                     tint: usagePulse.state == .ready ? Theme.accent : Theme.muted,
@@ -1369,7 +1375,7 @@ private struct DashboardSignalRail: View {
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
                 DashboardSignalRow(
-                    eyebrow: "EVIDENCE TRUST",
+                    eyebrow: "Evidence trust",
                     title: ingestionTitle,
                     detail: ingestionDetail,
                     tint: ingestionTint,
@@ -1450,9 +1456,10 @@ private struct DashboardSignalRow: View {
                     .frame(width: 3, height: 30)
                     .padding(.top, 2)
                 VStack(alignment: .leading, spacing: 4) {
+                    // Four rows, four labels: sentence case reads as a label
+                    // without competing with the page's one caps eyebrow.
                     Text(eyebrow)
-                        .workFont(.labelCaps)
-                        .tracking(Type.labelCapsTracking)
+                        .workFont(.captionSemibold)
                         .foregroundStyle(Theme.muted)
                     Text(title)
                         .workFont(.rowLabel)

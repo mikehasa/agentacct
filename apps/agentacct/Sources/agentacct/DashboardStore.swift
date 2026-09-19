@@ -59,6 +59,8 @@ enum SnapshotWorkStoreState {
     case receiptError
     case receiptStale
     case attentionReceipt
+    case attentionNextStepFirst
+    case attentionClear
 }
 
 struct SnapshotUsageStoreState {
@@ -265,6 +267,36 @@ final class DashboardStore {
             receipt = fixture.work?.receipt
             receiptError = "receipt refresh failed: synthetic review error"
             receiptErrorTaskId = fixture.work?.receipt.taskId
+        case .attentionClear:
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
+            attention = V1AttentionPayload(
+                schema: fixture.attention.schema,
+                items: [],
+                total: 0,
+                counts: V1AttentionCounts(failedCheck: 0, failedStep: 0, blocker: 0),
+                snapshot: nil,
+                offset: 0,
+                limit: fixture.attention.limit,
+                truncated: false
+            )
+        case .attentionNextStepFirst:
+            receiptTasks = fixture.tasks.tasks
+            totalReceiptTasks = fixture.tasks.total
+            receiptTasksTruncated = fixture.tasks.truncated
+            receiptAttention = fixture.tasks.attention
+            attention = V1AttentionPayload(
+                schema: fixture.attention.schema,
+                items: Array(fixture.attention.items.reversed()),
+                total: fixture.attention.total,
+                counts: fixture.attention.counts,
+                snapshot: fixture.attention.snapshot,
+                offset: fixture.attention.offset,
+                limit: fixture.attention.limit,
+                truncated: fixture.attention.truncated
+            )
         case .attentionReceipt:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total

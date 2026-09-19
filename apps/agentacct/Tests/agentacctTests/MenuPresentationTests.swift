@@ -2,6 +2,21 @@ import XCTest
 @testable import agentacct
 
 final class MenuPresentationTests: XCTestCase {
+    func testSessionRowsAreDistinctPerClientAndSession() throws {
+        let sessions = try JSONDecoder().decode([RecentSession].self, from: Data("""
+        [
+          {"client": "codex", "session_id": "01a091c5-aaaa", "title": null, "status": null, "last_activity_at": 990},
+          {"client": "codex", "session_id": "01a091c5-aaaa", "title": null, "status": "in_progress", "last_activity_at": 980},
+          {"client": "claude-code", "session_id": "01a091c5-aaaa", "title": null, "status": null, "last_activity_at": 970}
+        ]
+        """.utf8))
+        let distinct = MenuSessionPresentation.distinct(sessions)
+        XCTAssertEqual(distinct.count, 2)
+        XCTAssertEqual(distinct.map(\.client), ["codex", "claude-code"])
+        // The newest row for a repeated identity is the one kept.
+        XCTAssertEqual(distinct.first?.lastActivityAt, 990)
+    }
+
     func testWeeklyHeroNamesPreferredSourceAndRemovesItsDuplicate() throws {
         let fixture = try DashboardSnapshotFixture.load(from: fixtureURL())
         let presentation = MenuLimitPresentation(glance: fixture.glance)
@@ -78,7 +93,7 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(populated.rows[0].costText, "≈$200.67")
         XCTAssertEqual(populated.rows[2].costText, "~$990.99")
         XCTAssertEqual(populated.rows[2].tokenText, "41.9M")
-        XCTAssertEqual(populated.legendText, "≈ estimate · ~ priced subtotal")
+        XCTAssertEqual(populated.legendText, "≈ estimate · ~ partial subtotal")
 
         let missing = try decodeGlance("""
         {
@@ -103,7 +118,7 @@ final class MenuPresentationTests: XCTestCase {
 
         XCTAssertEqual(
             presentation.summary,
-            "Claude Code session share calibrating · 9/24 intervals"
+            "Learning Claude Code weekly share · 9/24 intervals"
         )
         XCTAssertTrue(presentation.detail?.contains("stable intervals") == true)
     }

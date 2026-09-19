@@ -276,7 +276,7 @@ struct UsagePlanPresentation {
         var parts: [String] = []
         switch client.calibrationState {
         case "calibrated": parts.append("calibrated weekly plan-share estimate")
-        case "calibrating": parts.append("calibrating from provider limit history")
+        case "calibrating": parts.append("learning the weekly share from provider limit history")
         case "never": parts.append("weekly plan share unavailable for this meter")
         case .some(let state): parts.append("calibration status: \(state)")
         case nil: parts.append("calibration status not reported by this daemon")
@@ -517,10 +517,13 @@ private struct UsageCapacityLedgerRow: View {
 
     private func calibrationLabel(_ state: String) -> String {
         switch state {
-        case "calibrated": return "plan share ready"
-        case "calibrating": return "calibrating"
+        // Plain words for the reader: whether agentacct knows this client's
+        // share of the weekly plan yet.
+        // Short enough for the client lane's one-line chip.
+        case "calibrated": return "share known"
+        case "calibrating": return "learning share"
         case "never": return "no weekly share"
-        default: return "calibration \(state)"
+        default: return "share \(state)"
         }
     }
 
@@ -565,9 +568,19 @@ private struct UsageCapacityWindowRow: View {
 }
 
 /// Provider percentage meter. The fill caps visually at 100%, while the text
-/// beside it preserves an over-limit value exactly.
+/// beside it preserves an over-limit value exactly. The two marks are
+/// reference points at 75% and 90% of the window; hovering the meter says so,
+/// since an unlabeled mark on a bar reads as a threshold nobody named.
 struct LimitMeter: View {
     let usedPercent: Double
+
+    /// Where the reference marks sit, as fractions of the window.
+    static let referenceMarks: [Double] = [0.75, 0.9]
+
+    /// The hover definition for the marks, shared with any surface that
+    /// draws the same meter.
+    static let referenceMarksHelp =
+        "Marks at 75% and 90% of the window. The reading turns amber from 75% used and coral at the limit."
 
     var body: some View {
         GeometryReader { proxy in
@@ -581,7 +594,7 @@ struct LimitMeter: View {
             }
             .overlay {
                 ZStack {
-                    ForEach([0.75, 0.9], id: \.self) { notch in
+                    ForEach(Self.referenceMarks, id: \.self) { notch in
                         Rectangle()
                             .fill(Theme.rule)
                             .frame(width: 1.5, height: Metrics.meterH + 4)
@@ -594,6 +607,7 @@ struct LimitMeter: View {
             }
         }
         .frame(height: Metrics.meterH)
+        .help(Self.referenceMarksHelp)
     }
 }
 

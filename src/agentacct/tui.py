@@ -244,14 +244,16 @@ def _decision_colors(key: str, pal: dict[str, str]) -> tuple[str, str | None]:
     if key in _LIVE:
         return pal["accent"], pal["ta"]  # live: accent text on accent wash (a filled chip)
     if key in _CLAIMED:
-        return pal["accent"], pal["ta"]
+        # A claim is settled, not live: ink on the neutral wash (Swift
+        # DecisionTintClass.claimed), never the live accent.
+        return pal["ink"], pal["tn"]
     if key in _INFERRED:
         return pal["amber"], pal["tm"]
     if key in _VERIFIED:
         return pal["green"], pal["tg"]
-    # inactive + unknown → a quiet neutral badge: ink text on the neutral wash
-    # (Swift DecisionTintClass.neutral) — never green, never alarming.
-    return pal["ink"], pal["tn"]
+    # inactive + unknown → the quieter neutral badge: muted text on the chip
+    # wash (Swift DecisionTintClass.neutral) — never green, never alarming.
+    return pal["muted"], pal["chip"]
 
 
 def decision_badge(key: str | None, pal: dict[str, str], label: str | None = None) -> str:
@@ -2807,11 +2809,11 @@ def _build_dashboard_parts(
     if attention:
         headline = str(attention[0].get("title") or attention[0].get("task_id") or "—")
         n_rev = len(attention)
-        head = f"{caps('Shift brief', pal)}\n" + _two_edge(
+        head = f"{caps('Needs review', pal)}\n" + _two_edge(
             f"[b {pal['ink']}]{_escape(headline)}[/]",
             f"[{pal['dim']}]{n_rev} review item{'s' if n_rev != 1 else ''}[/]", full_w)
     else:
-        head = f"{caps('Shift brief', pal)}\n" + _two_edge(
+        head = f"{caps('All clear', pal)}\n" + _two_edge(
             f"[b {pal['ink']}]All clear[/]",
             f"[{pal['dim']}]nothing needs attention[/]", full_w)
 
@@ -2820,7 +2822,7 @@ def _build_dashboard_parts(
     if attention:
         top = attention[0]
         detail = attention_details.get(str(top.get("task_id"))) or {}
-        attn_title = f"PRIMARY ATTENTION · 1 OF {len(attention)}"
+        attn_title = f"TO REVIEW · 1 OF {len(attention)}"
         dkey = str((top.get("decision_status") or {}).get("key"))
         client = str((top.get("primary_root") or {}).get("client") or top.get("project") or "")
         rows = []
@@ -2852,7 +2854,7 @@ def _build_dashboard_parts(
                     f"[{pal['accent']}]View queue →[/]")
         attn = "\n".join(rows)
     else:
-        attn_title = "PRIMARY ATTENTION"
+        attn_title = "TO REVIEW"
         attn = f"[{pal['green']}]Nothing needs your review right now.[/]"
 
     # signal rail — four stacked metric blocks.
@@ -2925,7 +2927,7 @@ def _build_dashboard_parts(
     return {
         "head": head,
         "attn_title": attn_title, "attn": attn,
-        "rail_title": "SIGNAL RAIL", "rail": rail,
+        "rail_title": "RIGHT NOW", "rail": rail,
         "recent_title": recent_title, "recent": recent,
         "spark_title": "USAGE HISTORY · FRESH TOKENS · 90D · CLIENT REPORTED", "spark": spark,
     }
@@ -3731,7 +3733,7 @@ def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], wi
             "connected_title": "CONNECTED SOURCES",
             "connected": f"[{pal['muted']}]Source health unavailable — {_escape(str(snapshot['_error']))}[/]",
             "watcher_title": "CONTINUOUS SYNC", "watcher": f"[{pal['dim']}]—[/]",
-            "verifiers_title": "VERIFIERS · NOT CONNECTED · UPGRADE SELF-CHECKED → VERIFIED", "verifiers": _verifiers_markup(pal),
+            "verifiers_title": "VERIFIERS · NOT CONNECTED", "verifiers": _verifiers_markup(pal),
             "issues_title": "", "issues": "",
             "local": _sources_local_markup(store_dir, pal, card_w),
         }
@@ -3784,7 +3786,7 @@ def _build_sources_parts(snapshot: dict, store_dir: Any, pal: dict[str, str], wi
         "head": head,
         "connected_title": f"CONNECTED SOURCES · {len(sources)}", "connected": "\n".join(conn),
         "watcher_title": "CONTINUOUS SYNC", "watcher": watcher_body,
-        "verifiers_title": "VERIFIERS · NOT CONNECTED · UPGRADE SELF-CHECKED → VERIFIED", "verifiers": _verifiers_markup(pal, card_w),
+        "verifiers_title": "VERIFIERS · NOT CONNECTED", "verifiers": _verifiers_markup(pal, card_w),
         "issues_title": f"NEEDS ATTENTION · {len(issues)}", "issues": "\n".join(issue_lines),
         "issues_color": issues_color,
         "local": _sources_local_markup(store_dir, pal, card_w),

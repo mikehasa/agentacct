@@ -11,6 +11,10 @@ final class UsageSnapshotHarnessTests: XCTestCase {
     }
 
     private let expectedArtifacts = [
+        ExpectedArtifact(filename: "usage-chart-peak-selected-light.png", pixelsWide: 2240, pixelsHigh: 2240),
+        ExpectedArtifact(filename: "usage-chart-peak-selected-dark.png", pixelsWide: 2240, pixelsHigh: 2240),
+        ExpectedArtifact(filename: "usage-chart-peak-elsewhere-light.png", pixelsWide: 2240, pixelsHigh: 2240),
+        ExpectedArtifact(filename: "usage-chart-peak-elsewhere-dark.png", pixelsWide: 2240, pixelsHigh: 2240),
         ExpectedArtifact(filename: "usage-minimum-light.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "usage-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "usage-reference-light.png", pixelsWide: 2240, pixelsHigh: 1800),
@@ -19,6 +23,8 @@ final class UsageSnapshotHarnessTests: XCTestCase {
         ExpectedArtifact(filename: "usage-weekly-reference-dark.png", pixelsWide: 2240, pixelsHigh: 2240),
         ExpectedArtifact(filename: "usage-disconnected-reference-light.png", pixelsWide: 2240, pixelsHigh: 1800),
         ExpectedArtifact(filename: "usage-disconnected-reference-dark.png", pixelsWide: 2240, pixelsHigh: 1800),
+        ExpectedArtifact(filename: "usage-about-expanded-light.png", pixelsWide: 2240, pixelsHigh: 4800),
+        ExpectedArtifact(filename: "usage-about-expanded-dark.png", pixelsWide: 2240, pixelsHigh: 4800),
     ]
 
     @MainActor

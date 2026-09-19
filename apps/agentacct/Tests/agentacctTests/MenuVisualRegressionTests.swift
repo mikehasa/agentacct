@@ -8,6 +8,8 @@ final class MenuVisualRegressionTests: XCTestCase {
         "menu-connected-sparse-dark.png",
         "menu-connected-dense-light.png",
         "menu-connected-dense-dark.png",
+        "menu-connected-duplicate-sessions-light.png",
+        "menu-connected-duplicate-sessions-dark.png",
     ]
 
     @MainActor
