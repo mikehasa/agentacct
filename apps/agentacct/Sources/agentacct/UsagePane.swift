@@ -34,8 +34,11 @@ struct UsagePane: View {
                     .foregroundStyle(Theme.ink)
                 ContextHelp(title: "About usage and limits", message: "Provider-reported capacity and locally recorded usage have separate time windows. Changing the recorded usage range updates client totals, history and attribution; it does not change provider quota windows or today's summary.", identifier: "usage.range-help")
             }
-            HStack(spacing: Space.m) {
-                Text("Recorded usage range").workFont(.caption).foregroundStyle(Theme.muted)
+            HStack(alignment: .center, spacing: Space.m) {
+                // The one visible label for the range control. The picker's own
+                // label is hidden (it used to print "Usage range" beside this
+                // caption, wrapped onto two lines) and carried for VoiceOver.
+                Text(UsageRangePresentation.caption).workFont(.caption).foregroundStyle(Theme.muted)
                 usageRangeControl
             }
         }
@@ -243,20 +246,25 @@ struct UsagePane: View {
     @ViewBuilder
     private var usageRangeControl: some View {
         if SnapshotMode.enabled {
-            HStack(spacing: Space.s) {
-                Chip(text: "\(dashboard.usageDays)d", tint: Theme.accent)
-            }
+            // ImageRenderer draws a segmented Picker as a placeholder, so the
+            // snapshot shows the same three segments as a static stand-in.
+            SegmentedStandIn(
+                options: UsageRangePresentation.options.map(\.label),
+                selected: UsageRangePresentation.label(forDays: dashboard.usageDays)
+            )
         } else {
-            Picker("Usage range", selection: Binding(
+            Picker(UsageRangePresentation.caption, selection: Binding(
                 get: { dashboard.usageDays },
                 set: { days in Task { await dashboard.setUsageDays(days) } }
             )) {
-                Text("7d").tag(7)
-                Text("30d").tag(30)
-                Text("90d").tag(90)
+                ForEach(UsageRangePresentation.options, id: \.days) { option in
+                    Text(option.label).tag(option.days)
+                }
             }
             .pickerStyle(.segmented)
-            .frame(width: 190)
+            .fixedSize()
+            .labelsHidden()
+            .accessibilityLabel(UsageRangePresentation.caption)
             .accessibilityIdentifier("usage.history.range")
         }
     }
@@ -989,3 +997,30 @@ struct UsageBreakdownTable: View {
         )
     }
 }
+
+// MARK: - Recorded usage range
+
+/// The recorded-usage range control: one caption ("Recorded usage range") and
+/// the three window lengths. The segmented picker hides its own label so the
+/// caption is printed once; the same words name the control for VoiceOver.
+enum UsageRangePresentation {
+    struct Option: Equatable {
+        let days: Int
+        let label: String
+    }
+
+    static let caption = "Recorded usage range"
+
+    static let options: [Option] = [
+        Option(days: 7, label: "7d"),
+        Option(days: 30, label: "30d"),
+        Option(days: 90, label: "90d"),
+    ]
+
+    /// The segment label for a window length; a length outside the three
+    /// offered still reads as its own day count rather than a blank segment.
+    static func label(forDays days: Int) -> String {
+        options.first { $0.days == days }?.label ?? "\(days)d"
+    }
+}
+

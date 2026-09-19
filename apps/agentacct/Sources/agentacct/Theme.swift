@@ -846,6 +846,39 @@ struct Chip: View {
     }
 }
 
+/// A static stand-in for a segmented control in snapshot renders, where
+/// ImageRenderer would draw the real Picker as a placeholder: the offered
+/// segments side by side, the selected one filled with the accent.
+struct SegmentedStandIn: View {
+    let options: [String]
+    let selected: String
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(options, id: \.self) { option in
+                let active = option == selected
+                Text(option)
+                    .workFont(.dataSmall)
+                    .foregroundStyle(active ? Color.white : Theme.ink)
+                    .padding(.horizontal, 10)
+                    .frame(minHeight: Metrics.chipH)
+                    .background(
+                        active ? Theme.accent : Color.clear,
+                        in: RoundedRectangle(cornerRadius: Metrics.radius)
+                    )
+            }
+        }
+        .padding(2)
+        .background(Theme.chipBg, in: RoundedRectangle(cornerRadius: Metrics.radius + 2))
+        .overlay(
+            RoundedRectangle(cornerRadius: Metrics.radius + 2)
+                .strokeBorder(Theme.chipLine, lineWidth: Metrics.borderW)
+        )
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(selected)
+    }
+}
+
 /// The caps-mono label species: eyebrows, column headers, strip captions.
 /// 12/700 mono, +0.9 tracking, uppercased. Content never shouts — only labels.
 struct CapsLabel: View {
