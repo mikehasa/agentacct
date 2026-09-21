@@ -106,6 +106,7 @@ def _record_section(store_root: Path, *, section_id: str, session: str, client: 
                 "section_title": f"Section {section_id}",
                 "client": client,
                 "client_session_id": session,
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )

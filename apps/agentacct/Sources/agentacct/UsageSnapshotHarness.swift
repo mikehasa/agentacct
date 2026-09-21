@@ -7,12 +7,17 @@ struct UsageSnapshotConfiguration {
         case disconnected
     }
 
+    /// Pins the chart's selected bar (tooltip) for the chart-peak renders.
+    var chartSelection: Int? = nil
     let viewport: String
     let width: CGFloat
     let height: CGFloat
     let colorScheme: ColorScheme
     let capacityState: CapacityState
     let recordedUsageState: SnapshotRecordedUsageState
+    /// Render the About disclosure open (its "This range" basis block and
+    /// definitions are otherwise folded away).
+    var aboutExpanded = false
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
@@ -20,6 +25,13 @@ struct UsageSnapshotConfiguration {
     }
 
     static let reviewConfigurations: [Self] = [
+        // The chart prints its peak once: with the peak bar selected the
+        // tooltip carries the value and the peak label yields; with another
+        // bar selected both show. The 7-day fixture's peak is its last bar.
+        Self(chartSelection: 6, viewport: "chart-peak-selected", width: 1120, height: 1120, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays),
+        Self(chartSelection: 6, viewport: "chart-peak-selected", width: 1120, height: 1120, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays),
+        Self(chartSelection: 3, viewport: "chart-peak-elsewhere", width: 1120, height: 1120, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays),
+        Self(chartSelection: 3, viewport: "chart-peak-elsewhere", width: 1120, height: 1120, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays),
         Self(viewport: "minimum", width: 960, height: 560, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays),
         Self(viewport: "minimum", width: 960, height: 560, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays),
         Self(viewport: "reference", width: 1120, height: 900, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays),
@@ -28,6 +40,9 @@ struct UsageSnapshotConfiguration {
         Self(viewport: "weekly-reference", width: 1120, height: 1120, colorScheme: .dark, capacityState: .connected, recordedUsageState: .ninetyDays),
         Self(viewport: "disconnected-reference", width: 1120, height: 900, colorScheme: .light, capacityState: .disconnected, recordedUsageState: .sevenDays),
         Self(viewport: "disconnected-reference", width: 1120, height: 900, colorScheme: .dark, capacityState: .disconnected, recordedUsageState: .sevenDays),
+        // Tall enough to reach the page's About disclosure, rendered open.
+        Self(viewport: "about-expanded", width: 1120, height: 2400, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays, aboutExpanded: true),
+        Self(viewport: "about-expanded", width: 1120, height: 2400, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays, aboutExpanded: true),
     ]
 }
 
@@ -59,12 +74,14 @@ enum UsageSnapshotRenderer {
         defer {
             SnapshotMode.enabled = false
             SnapshotMode.boundsScrollContentToViewport = false
+            SnapshotMode.expandsUsageAbout = false
             SnapshotMode.setFixtureDate(nil)
             SnapshotScheme.override = nil
         }
 
         return try configurations.map { configuration in
             SnapshotScheme.override = configuration.colorScheme
+            SnapshotMode.expandsUsageAbout = configuration.aboutExpanded
             let glance: GlanceState
             switch configuration.capacityState {
             case .connected:
@@ -99,6 +116,8 @@ enum UsageSnapshotRenderer {
                 .environment(\.appearsActive, true)
                 .transaction { $0.disablesAnimations = true }
             let outputURL = outputDirectory.appendingPathComponent(configuration.filename)
+            SnapshotMode.usageChartSelectedIndex = configuration.chartSelection
+            defer { SnapshotMode.usageChartSelectedIndex = nil }
             try SnapshotImageWriter.render(
                 view,
                 to: outputURL,

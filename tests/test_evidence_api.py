@@ -18,9 +18,10 @@ def test_work_event_http_transport_writes_v1_and_v2(tmp_path) -> None:
         "source_event_id": "codex-section-implementation-1",
         "run_id": "run-1",
         "section_id": "implementation",
+        "title": "Fixture section title",
         "client": "codex",
         "client_session_id": "session-1",
-        "summary": "Implemented Evidence v2.",
+        "summary": "Implemented Evidence v2 and verified the v1 plus v2 write path.",
         "files": ["src/agentacct/evidence.py", "../private.txt"],
     }
     response = client.post("/work-events", json=request)
@@ -58,8 +59,10 @@ def test_work_event_http_accepts_handed_off_as_a_clean_terminal_status(tmp_path)
             "source": "codex",
             "event_kind": "section",
             "status": "handed_off",
+            "summary": "Recorded outcome for this HTTP work-event fixture.",
             "source_event_id": "handoff-1",
             "section_id": "handoff",
+            "title": "Fixture section title",
             "client_session_id": "session-1",
         },
     )
@@ -80,6 +83,7 @@ def test_work_event_http_preserves_handed_off_task_kind(tmp_path) -> None:
             "source": "codex",
             "event_kind": "task",
             "status": "handed_off",
+            "summary": "Recorded outcome for this HTTP work-event fixture.",
             "source_event_id": "task-handoff-1",
             "work_id": "task-handoff",
         },
@@ -130,7 +134,9 @@ def test_evidence_claimed_links_route_contract(tmp_path) -> None:
             "source": "codex",
             "event_kind": "section",
             "status": "completed",
+            "summary": "Recorded outcome for this HTTP work-event fixture.",
             "section_id": "phase-5",
+            "title": "Fixture section title",
             "client_session_id": "session-1",
         },
     )
@@ -159,6 +165,7 @@ def test_work_event_validation_cannot_mint_unknown_transport_or_kind(tmp_path) -
             "source": "custom",
             "event_kind": "provider_invoice",
             "status": "completed",
+            "summary": "Recorded outcome for this HTTP work-event fixture.",
             "transport": "provider_billed",
         },
     )
@@ -192,8 +199,10 @@ def test_evidence_events_uses_stable_arrival_cursor_pagination(tmp_path) -> None
                 "source": "codex",
                 "event_kind": "section",
                 "status": "completed",
+                "summary": "Recorded outcome for this HTTP work-event fixture.",
                 "source_event_id": f"phase-7-section-{index}",
                 "section_id": f"section-{index}",
+                "title": "Fixture section title",
                 "client_session_id": "session-pagination",
             },
         )
@@ -251,8 +260,10 @@ def test_evidence_events_cursor_keeps_filters_and_supports_source_system(tmp_pat
                 "source": source,
                 "event_kind": "section",
                 "status": "completed",
+                "summary": "Recorded outcome for this HTTP work-event fixture.",
                 "source_event_id": f"filter-section-{index}",
                 "section_id": f"filter-{index}",
+                "title": "Fixture section title",
             },
         )
         assert response.status_code == 200, response.text

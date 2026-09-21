@@ -229,8 +229,9 @@ def test_blocker_disposition_refuses_cleared_and_superseded_targets(tmp_path: Pa
                 "identity_scope_state": "explicit",
                 "section_id": "sec-b",
                 "section_status": "blocked",
-                "blocker": "newer blocker",
+                "blocker": "A newer blocker replaced the earlier one for this target.",
                 "kind": "implementation",
+                "section_title": "Fixture section title",
             },
         }
     )

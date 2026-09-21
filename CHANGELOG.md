@@ -28,6 +28,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   rows. Session titles move to hover and the Sessions list above; the canvas
   keeps its scroll/pinch zoom, drag scrubber, and click-to-open, and its height
   is fixed by the full-range packing so zooming never shrinks the surface.
+- The recorder now rebuilds its work projections in the background when the store changes, instead of leaving the rebuild to the next request. Any write used to make the next reader — expanding a session, opening a Task — wait for a full rebuild of the work ledger (about a second on a 12,000-event store, growing with the store), so clicks were slow whenever agents were recording. Measured on a copy of such a store, a session opened three seconds after a write went from about 1,050 ms to about 15 ms. It runs only while something has read work data in the last three minutes, waits for a burst of writes to settle, and rests after each rebuild so it never takes more than a third of one core. Freshness is unchanged: every request still keys on the store as it is at that moment, so a background build is reused only when it matches the store exactly.
+
+### Fixed
+
+- Opening a record's "N more sessions" fold no longer freezes the window on a Task with hundreds of sessions. The fold built every session row at once — about 1 ms of main-thread work per row, so roughly a third of a second for 300 sessions; it now builds only the rows scrolled into view (10–20 ms at any count). What each row shows and loads is unchanged, and review renders still draw every row.
 
 ## [0.11.1] — 2026-09-17
 

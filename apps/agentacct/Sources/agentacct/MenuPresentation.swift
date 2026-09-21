@@ -113,7 +113,7 @@ struct MenuUsagePresentation {
             legend.append("≈ estimate")
         }
         if costTexts.contains(where: { $0.hasPrefix("~$") }) {
-            legend.append("~ priced subtotal")
+            legend.append("~ partial subtotal")
         }
         legendText = legend.isEmpty ? nil : legend.joined(separator: " · ")
     }
@@ -128,6 +128,17 @@ struct MenuUsagePresentation {
     }
 }
 
+/// The popover's session list: one row per (client, session), newest first.
+/// The glance feed is already ordered by recency, so the first row for a
+/// session is the one to keep; a repeated identity would otherwise render two
+/// rows the reader cannot tell apart.
+enum MenuSessionPresentation {
+    static func distinct(_ sessions: [RecentSession]) -> [RecentSession] {
+        var seen: Set<String> = []
+        return sessions.filter { seen.insert("\($0.client)::\($0.sessionId)").inserted }
+    }
+}
+
 struct MenuCalibrationPresentation: Equatable {
     let summary: String
     let detail: String?
@@ -138,9 +149,10 @@ struct MenuCalibrationPresentation: Equatable {
         }
         let client = MenuLimitPresentation.clientLabel(entry.client)
         if let used = entry.intervalsUsed, let needed = entry.intervalsNeeded {
-            summary = "\(client) session share calibrating · \(used)/\(needed) intervals"
+            // Kept to one popover line: the old wording's length was the limit.
+            summary = "Learning \(client) weekly share · \(used)/\(needed) intervals"
         } else {
-            summary = "\(client) session share calibrating"
+            summary = "Learning \(client) weekly share"
         }
         detail = entry.stateDetail
     }

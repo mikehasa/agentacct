@@ -58,6 +58,7 @@ def test_agent_check_failure_is_an_open_finding_not_a_chronicle_failure(
                 "section_title": "Review prediction engine",
                 "client": "codex",
                 "client_session_id": session_id,
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )
@@ -120,6 +121,7 @@ def test_unassigned_failure_stays_visible_without_becoming_needs_input(
                 "name": "Share math boundary probe",
                 "result": "failed",
                 "summary": "A negative buy produces an impossible share balance.",
+                "exit_code": 0,
             },
         }
     )
@@ -163,6 +165,7 @@ def test_unassigned_same_check_pass_closes_failure_but_unrelated_pass_does_not(
                     "name": name,
                     "result": result,
                     "summary": f"{name}: {result}",
+                    "exit_code": 0,
                 },
             }
         )
@@ -200,6 +203,7 @@ def test_open_finding_metric_counts_episodes_across_task_and_unassigned_buckets(
                     "name": name,
                     "result": "failed",
                     "summary": f"{name} failed.",
+                    "exit_code": 0,
                 },
             }
         )
@@ -213,6 +217,7 @@ def test_open_finding_metric_counts_episodes_across_task_and_unassigned_buckets(
                 "name": "Unassigned controller probe",
                 "result": "failed",
                 "summary": "The controller probe failed without deterministic Task context.",
+                "exit_code": 0,
             },
         }
     )
@@ -243,6 +248,7 @@ def test_project_store_filters_same_basename_foreign_findings_by_full_identity(
                 "name": "Foreign same-basename finding",
                 "result": "failed",
                 "summary": "This belongs to the other repo directory.",
+                "exit_code": 0,
             },
         }
     )
@@ -258,6 +264,7 @@ def test_project_store_filters_same_basename_foreign_findings_by_full_identity(
                 "name": "Legacy local finding",
                 "result": "failed",
                 "summary": "A legacy project-store row has no project path.",
+                "exit_code": 0,
             },
         }
     )
@@ -316,6 +323,7 @@ def test_project_store_quarantines_pathless_check_from_filtered_foreign_session(
                 "client": "codex",
                 "client_session_id": session_id,
                 "project_dir": str(foreign_project),
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )
@@ -332,6 +340,7 @@ def test_project_store_quarantines_pathless_check_from_filtered_foreign_session(
                 "name": "Foreign assigned boundary probe",
                 "result": "failed",
                 "summary": "FOREIGN ASSIGNED FINDING",
+                "exit_code": 0,
             },
         }
     )
@@ -389,6 +398,7 @@ def test_project_store_quarantines_session_with_conflicting_full_project_identit
                 "name": "Conflicting session pathless probe",
                 "result": "failed",
                 "summary": "CONFLICTING SESSION PATHLESS FINDING",
+                "exit_code": 0,
             },
         }
     )
@@ -470,6 +480,7 @@ def test_project_store_quarantines_pathless_check_matching_filtered_foreign_fact
                 "client": "codex",
                 "project_dir": str(foreign_project),
                 identity_key: identity_value,
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )
@@ -485,6 +496,7 @@ def test_project_store_quarantines_pathless_check_matching_filtered_foreign_fact
                 "name": f"Pathless {identity_key} probe",
                 "result": "failed",
                 "summary": "FOREIGN PATHLESS IDENTITY FINDING",
+                "exit_code": 0,
             },
         }
     )
@@ -539,6 +551,7 @@ def test_project_store_quarantines_pathless_check_with_only_foreign_candidate_se
                 "name": "Candidate-only foreign probe",
                 "result": "failed",
                 "summary": "FOREIGN CANDIDATE ONLY",
+                "exit_code": 0,
             },
         }
     )

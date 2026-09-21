@@ -936,7 +936,7 @@ struct ReceiptPlanShare: Decodable {
             return (Fmt.planPct(pct) ?? "≈0%") + " of weekly plan"
         }
         switch calibrationState {
-        case "calibrating": return "calibrating — not enough 7-day history yet"
+        case "calibrating": return "still learning — not enough 7-day history yet"
         case "never": return "not applicable for this client"
         default: return "—"
         }

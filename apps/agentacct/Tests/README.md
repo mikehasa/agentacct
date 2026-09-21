@@ -268,6 +268,10 @@ The dashboard renderer owns this complete fixed matrix at 2x scale:
 | `dashboard-weekly-reference-dark.png` | 1120 × 900 pt 90-day weekly usage state, dark | 2240 × 1800 px |
 | `dashboard-trust-unavailable-light.png` | 1120 × 800 pt failed attention and source refresh with retained success data, light | 2240 × 1600 px |
 | `dashboard-trust-unavailable-dark.png` | 1120 × 800 pt failed attention and source refresh with retained success data, dark | 2240 × 1600 px |
+| `dashboard-next-step-light.png` | 1120 × 800 pt, light; a blocked item with a recorded next step leads the review card | 2240 × 1600 px |
+| `dashboard-next-step-dark.png` | 1120 × 800 pt, dark; same state | 2240 × 1600 px |
+| `dashboard-all-clear-light.png` | 1120 × 800 pt, light; recorded work but nothing needing review (ALL CLEAR eyebrow, one-sentence card) | 2240 × 1600 px |
+| `dashboard-all-clear-dark.png` | 1120 × 800 pt, dark; same state | 2240 × 1600 px |
 
 References live under `Tests/agentacctTests/ReferenceImages/<platform-id>`.
 They are read directly from the source checkout and excluded from SwiftPM's
@@ -292,12 +296,18 @@ from the same versioned fixture as Dashboard.
 
 | Artifact | Viewport | Pixel size |
 | --- | --- | --- |
+| `usage-chart-peak-selected-light.png` | 1120 × 1120 pt, light; the peak bar selected, so the tooltip carries the value and no peak label prints | 2240 × 2240 px |
+| `usage-chart-peak-selected-dark.png` | same state, dark | 2240 × 2240 px |
+| `usage-chart-peak-elsewhere-light.png` | 1120 × 1120 pt, light; another bar selected, so the tooltip and the peak label both show | 2240 × 2240 px |
+| `usage-chart-peak-elsewhere-dark.png` | same state, dark | 2240 × 2240 px |
 | `usage-minimum-light.png` | 960 × 560 pt minimum window, light; full navigation and first complete capacity row | 1920 × 1120 px |
 | `usage-minimum-dark.png` | 960 × 560 pt minimum window, dark; same hierarchy | 1920 × 1120 px |
 | `usage-reference-light.png` | 1120 × 900 pt standard window, light; complete capacity ledger plus history entry | 2240 × 1800 px |
 | `usage-reference-dark.png` | 1120 × 900 pt standard window, dark; same hierarchy | 2240 × 1800 px |
 | `usage-disconnected-reference-light.png` | 1120 × 900 pt, light; capacity unavailable while retained usage includes By client | 2240 × 1800 px |
 | `usage-disconnected-reference-dark.png` | 1120 × 900 pt, dark; same independent-lane fallback | 2240 × 1800 px |
+| `usage-about-expanded-light.png` | 1120 × 2400 pt, light; the whole page with "About these numbers" open (This range basis, cost grammar, windows, plan share) | 2240 × 4800 px |
+| `usage-about-expanded-dark.png` | 1120 × 2400 pt, dark; same state | 2240 × 4800 px |
 
 `UsageCapacityTests` separately covers row union/order, duplicate windows,
 stale visibility, unnamed identity isolation, threshold copy, elapsed reset
@@ -344,6 +354,11 @@ text sizes, and both appearances; transient states render at the standard viewpo
 | compact check preview | 360 × 1600 pt, light/dark | `work-session-steps-compact-checks-*.png` |
 | Arabic RTL/mixed-text stress | 760 × 1250 pt, light/dark | `work-session-steps-rtl-stress-*.png` |
 | accessibility5 compact and Arabic RTL stress | 360 × 4000 pt, light/dark | `work-session-steps-{compact,rtl}-accessibility-*.png` |
+| all-redacted passing checks | 760 × 700 pt, light/dark; summary first, redaction stated once, lone passed group without a heading | `work-session-steps-redacted-checks-*.png` |
+| decision badge gallery | 760 × 760 pt, light/dark; every legend key as page and row badge | `work-components-decision-badges-*.png` |
+| provenance chip gallery | 760 × 420 pt, light/dark; every provenance token as its chip beside the raw token | `work-components-provenance-chips-*.png` |
+| outcome card gallery | 960 × 480 pt, light/dark; side by side the cards share one height when only Checks carries the attention note, plus the narrow stacked fallback | `work-components-outcome-cards-*.png` |
+| filter menu gallery | 760 × 210 pt, light/dark; the Status and Sort menu faces: neutral, active for every status, each sort order, the narrow glyph-only sort and the 32pt height beside a search field | `work-components-filter-menus-*.png` |
 
 For an ad-hoc render that does not compare or update references:
 
@@ -355,7 +370,7 @@ open /tmp/agentacct-work-review
 ```
 
 Ad-hoc and CI artifact images are review aids only. Including the focused
-Checks, Session/steps, and action matrices, the visual test reads 74 canonical PNGs from
+Checks, Session/steps, action, and component-gallery matrices, the visual test reads 84 canonical PNGs from
 `Tests/agentacctTests/ReferenceImages/<platform-id>`, so
 a Work UI change is not visually verified until those source-tree files are
 reviewed and committed.
@@ -375,6 +390,8 @@ harness never depends on the current checkout, machine settings, or wall clock.
 | `menu-connected-sparse-dark.png` | sparse, dark | 720 × 880 px |
 | `menu-connected-dense-light.png` | dense, light | 720 × 928 px |
 | `menu-connected-dense-dark.png` | dense, dark | 720 × 928 px |
+| `menu-connected-duplicate-sessions-light.png` | sparse lane with one session reported twice, light; rendered once | 720 × 854 px |
+| `menu-connected-duplicate-sessions-dark.png` | same state, dark | 720 × 854 px |
 
 For an ad-hoc menu render that does not compare or update references:
 
@@ -387,6 +404,32 @@ open /tmp/agentacct-menu-review
 
 The canonical CLI owns these images too. A menu UI change is not visually
 verified until the matching source-tree references are reviewed and committed.
+
+## Diagnostics review matrix
+
+The Diagnostics (sources) renderer drives the real `MainWindow` Diagnostics
+pane from two ingestion lanes in the shared fixture: `ingestion_healthy_sources`
+(three reporting sources, a running watcher, no issues) and
+`ingestion_degraded` (six degraded sources that share ONE store-wide
+reconciliation fault, plus one source-scoped identity fault). The degraded lane
+pins that a shared fault renders once, naming its sources, and that the header
+chip yields when every row already wears the same state.
+
+| Artifact | Viewport | Pixel size |
+| --- | --- | --- |
+| `sources-healthy-reference-light.png` | 1120 × 900 pt, light; reporting ledger | 2240 × 1800 px |
+| `sources-healthy-reference-dark.png` | 1120 × 900 pt, dark; same hierarchy | 2240 × 1800 px |
+| `sources-degraded-reference-light.png` | 1120 × 1300 pt, light; shared fault once, six degraded rows | 2240 × 2600 px |
+| `sources-degraded-reference-dark.png` | 1120 × 1300 pt, dark; same hierarchy | 2240 × 2600 px |
+
+For an ad-hoc Diagnostics render that does not compare or update references:
+
+```bash
+swift run agentacct --snapshot-sources-fixture \
+  Tests/agentacctTests/Fixtures/dashboard.json \
+  /tmp/agentacct-sources-review
+open /tmp/agentacct-sources-review
+```
 
 ## About review matrix
 

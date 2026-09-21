@@ -84,6 +84,7 @@ def _section(event_id: str, *, session: str | None = None) -> dict:
             "section_title": "Observed work",
             "client": "codex",
             "client_session_id": session,
+            "summary": "Recorded outcome for this fixture section.",
         },
     }
 

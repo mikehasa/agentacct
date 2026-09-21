@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import json
+import re
 
 from typer.testing import CliRunner
 
@@ -67,6 +68,7 @@ def _seed(store: Path, *, title: str = "Add a token-bucket rate limiter") -> Non
                 "objective": title,
                 "kind": "implementation",
                 "files": ["src/login.py"],
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )
@@ -121,6 +123,20 @@ def test_markdown_render_includes_the_timeline(tmp_path: Path) -> None:
     assert "| When | Lane | Event | Status | Source |" in result.output
     # Relative-time offsets, never wall-clock, so the render is reproducible.
     assert "+0s" in result.output
+
+
+def test_a_rendered_receipt_carries_no_unfilled_placeholder(tmp_path: Path) -> None:
+    """A receipt is pasted into PRs and read as evidence, so a template variable
+    that never got filled reads as a broken receipt. The coverage definition used
+    to print a literal "X of Y checkable steps"; it states the rule in words now,
+    and nothing else may reintroduce that shape."""
+    _seed(tmp_path)
+    result = runner.invoke(app, ["receipt", _task_id(tmp_path), "--markdown", "--store-dir", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    # The definition must still render, or this guard would pass vacuously.
+    assert "checkable steps" in result.output
+    placeholders = re.findall(r"\b[a-zA-Z] of [a-zA-Z]\b|\bTODO\b|\bFIXME\b", result.output)
+    assert placeholders == [], f"unfilled placeholder(s) in a rendered receipt: {placeholders}"
 
 
 def test_markdown_and_json_are_mutually_exclusive(tmp_path: Path) -> None:

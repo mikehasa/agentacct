@@ -109,6 +109,16 @@ enum WorkSort: String, CaseIterable, Identifiable {
     case attention, latest, cost
     var id: String { rawValue }
 
+    /// The order's name in the sort menu and on its trigger. Raw values stay
+    /// stable identifiers; these are the words people read.
+    var label: String {
+        switch self {
+        case .attention: return "Attention first"
+        case .latest: return "Latest"
+        case .cost: return "Highest cost"
+        }
+    }
+
     var footerText: String {
         switch self {
         case .attention: return "attention first, then recency"
@@ -397,13 +407,13 @@ struct WorkAttentionEmptyCopy: Equatable {
     init(payload: V1AttentionPayload, query: String) {
         if payload.total == 0 {
             title = "No current review items"
-            detail = "The complete attention projection reports no failed checks, failed steps, or unresolved blockers."
+            detail = "No failed checks, failed steps, or unresolved blockers are recorded."
         } else if !query.isEmpty, !payload.items.isEmpty {
             title = "No review items match this filter"
             detail = "The bounded queue has \(payload.items.count) of \(payload.total) review items; adjust the filter to inspect them."
         } else {
             title = "Review queue details unavailable"
-            detail = "The complete projection reports \(payload.total) review items, but no bounded queue rows were returned. Refresh before acting."
+            detail = "\(Fmt.count(payload.total, "review item")) recorded, but none were returned. Refresh before acting."
         }
     }
 }
@@ -470,6 +480,56 @@ enum DecisionLegend {
         .init(key: "observed", label: "Observed",
               definition: "Activity was recorded; no outcome was ever stated."),
     ]
+}
+
+/// The Work collection's status filter. One name ("Status") everywhere it
+/// appears; a chosen status takes the active wash because it narrows the list.
+struct WorkStatusMenu: View {
+    @Binding var group: WorkGroup?
+    let identifier: String
+
+    var body: some View {
+        FilterMenu(
+            title: "Status",
+            systemImage: "line.3.horizontal.decrease",
+            value: group?.rawValue ?? "All statuses",
+            isActive: group != nil,
+            help: group.map { "Showing \($0.rawValue.lowercased()) tasks" } ?? "Filter tasks by status",
+            identifier: identifier,
+            selection: $group
+        ) {
+            Text("All statuses").tag(nil as WorkGroup?)
+            Divider()
+            ForEach(WorkGroup.allCases) { candidate in
+                Text(candidate.rawValue).tag(Optional(candidate))
+            }
+        }
+    }
+}
+
+/// The Work collection's order. Sorting never hides a task, so it stays
+/// neutral whatever the choice.
+struct WorkSortMenu: View {
+    @Binding var sort: WorkSort
+    let identifier: String
+    var showsValue = true
+    var minHeight: CGFloat = ButtonFeedback.minimumHitDimension
+
+    var body: some View {
+        FilterMenu(
+            title: "Sort",
+            heading: "Sort by",
+            systemImage: "arrow.up.arrow.down",
+            value: sort.label,
+            showsValue: showsValue,
+            minHeight: minHeight,
+            help: "Sorted \(sort.footerText)",
+            identifier: identifier,
+            selection: $sort
+        ) {
+            ForEach(WorkSort.allCases) { Text($0.label).tag($0) }
+        }
+    }
 }
 
 /// A small info affordance that opens the decision-word legend. Lives beside
@@ -996,18 +1056,7 @@ private struct WorkTablePage: View {
         VStack(alignment: .leading, spacing: 0) {
             if dynamicTypeSize.isAccessibilitySize {
                 HStack(spacing: Space.m) {
-                    if SnapshotMode.enabled {
-                        Chip(text: browse.group?.rawValue ?? "All statuses", tint: Theme.accent)
-                    } else {
-                        Picker("Lifecycle", selection: $browse.group) {
-                            Text("All statuses").tag(nil as WorkGroup?)
-                            ForEach(WorkGroup.allCases) { group in
-                                Text(group.rawValue).tag(Optional(group))
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .accessibilityIdentifier("work.table.status")
-                    }
+                    WorkStatusMenu(group: $browse.group, identifier: "work.table.status")
                     Text("\(visibleCount) shown")
                         .workFont(.dataSmall).foregroundStyle(Theme.muted)
                     Spacer(minLength: 0)
@@ -1070,8 +1119,8 @@ private struct WorkTablePage: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11)).foregroundStyle(Theme.muted)
                 if SnapshotMode.enabled {
-                    // ImageRenderer draws a TextField / .menu Picker as a yellow
-                    // placeholder; a snapshot shows plain stand-ins instead.
+                    // ImageRenderer draws a TextField as a yellow placeholder;
+                    // a snapshot shows the prompt as plain text instead.
                     Text("Search tasks").workFont(.caption).foregroundStyle(Theme.muted)
                 } else {
                     TextField("Search tasks", text: $browse.query)
@@ -1088,15 +1137,8 @@ private struct WorkTablePage: View {
                 RoundedRectangle(cornerRadius: Metrics.radius)
                     .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
             )
-            if SnapshotMode.enabled {
-                Chip(text: "sort: \(browse.sort.rawValue)", tint: Theme.accent)
-            } else {
-                Picker("Sort", selection: $browse.sort) {
-                    ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.menu)
+            WorkSortMenu(sort: $browse.sort, identifier: "work.table.sort", minHeight: 32)
                 .fixedSize()
-            }
             DecisionLegendButton()
             Spacer()
         }
@@ -1155,7 +1197,7 @@ private struct WorkTablePage: View {
                         } else {
                             ProgressView().controlSize(.small).tint(Theme.muted)
                         }
-                        Text("Checking the complete review projection…")
+                        Text("Checking recorded work…")
                             .workFont(.body).foregroundStyle(Theme.muted)
                     }
                     .padding(Space.xl)
@@ -1758,28 +1800,22 @@ private struct WorkMasterList: View {
                     .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
             )
 
-            HStack(spacing: Space.s) {
-                if SnapshotMode.enabled {
-                    Chip(text: browse.group?.rawValue ?? "All statuses", tint: Theme.accent)
-                    Chip(text: browse.sort.rawValue, tint: Theme.muted)
-                } else {
-                    Picker("Status", selection: $browse.group) {
-                        Text("All statuses").tag(nil as WorkGroup?)
-                        ForEach(WorkGroup.allCases) { group in
-                            Text(group.rawValue).tag(Optional(group))
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .accessibilityIdentifier("work.master.status")
-                    Picker("Sort", selection: $browse.sort) {
-                        ForEach(WorkSort.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.menu)
-                    .accessibilityIdentifier("work.master.sort")
-                }
-                DecisionLegendButton()
-                Spacer(minLength: 0)
+            // A narrowed column or a larger Reading size keeps the status
+            // words and folds the sort to its glyph (its order stays in the
+            // tooltip and accessibility value) instead of eliding both.
+            ViewThatFits(in: .horizontal) {
+                masterFilterRow(showsSortValue: true)
+                masterFilterRow(showsSortValue: false)
             }
+        }
+    }
+
+    private func masterFilterRow(showsSortValue: Bool) -> some View {
+        HStack(spacing: Space.s) {
+            WorkStatusMenu(group: $browse.group, identifier: "work.master.status")
+            WorkSortMenu(sort: $browse.sort, identifier: "work.master.sort", showsValue: showsSortValue)
+            Spacer(minLength: 0)
+            DecisionLegendButton()
         }
     }
 
@@ -2427,9 +2463,15 @@ struct WorkRecordPage: View {
 /// demand. Kept out of the Steps spine and below the timeline so a task with
 /// many subagents never buries the record; a short preview shows first, the
 /// rest fold under one counted trigger.
-private struct RecordSubagentsSection: View {
+struct RecordSubagentsSection<Row: View>: View {
     let members: [ReceiptSessionMember]
-    private static let previewLimit = 6
+    /// Opens the overflow fold on first render, for deterministic renders and
+    /// tests; the live record always starts with it closed.
+    var overflowInitiallyExpanded = false
+    /// Builds one session's row. The record uses `SessionDrillRow`; a test
+    /// substitutes a row that reports when it is built.
+    let row: (ReceiptSessionMember) -> Row
+    static var previewLimit: Int { 6 }
 
     private var preview: [ReceiptSessionMember] { Array(members.prefix(Self.previewLimit)) }
     private var overflow: [ReceiptSessionMember] { Array(members.dropFirst(Self.previewLimit)) }
@@ -2437,18 +2479,22 @@ private struct RecordSubagentsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(preview.enumerated()), id: \.element.id) { index, member in
-                SessionDrillRow(member: member)
+                row(member)
                 if index < preview.count - 1 { hairline }
             }
             if !overflow.isEmpty {
                 hairline
                 OverflowDisclosure(
                     label: "\(overflow.count) more session\(overflow.count == 1 ? "" : "s")",
-                    identifier: "work.overflow.subagents"
+                    identifier: "work.overflow.subagents",
+                    initiallyExpanded: overflowInitiallyExpanded
                 ) {
-                    VStack(alignment: .leading, spacing: 0) {
+                    // A task can carry hundreds of sessions; building every row
+                    // when the fold opens stalls the window, so only the rows
+                    // scrolled into view are built.
+                    ScrollContentStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(overflow.enumerated()), id: \.element.id) { index, member in
-                            SessionDrillRow(member: member)
+                            row(member)
                             if index < overflow.count - 1 { hairline }
                         }
                     }
@@ -2460,6 +2506,14 @@ private struct RecordSubagentsSection: View {
 
     private var hairline: some View {
         Rectangle().fill(Theme.hairline).frame(height: 1).padding(.vertical, 2)
+    }
+}
+
+extension RecordSubagentsSection where Row == SessionDrillRow {
+    init(members: [ReceiptSessionMember], overflowInitiallyExpanded: Bool = false) {
+        self.init(members: members, overflowInitiallyExpanded: overflowInitiallyExpanded) {
+            SessionDrillRow(member: $0)
+        }
     }
 }
 
@@ -2513,11 +2567,23 @@ private struct ReceiptSection<Content: View>: View {
 /// and nudges on hover. Internal so the Usage digest can reuse it.
 struct OverflowDisclosure<Content: View>: View {
     let label: String
-    var identifier: String? = nil
-    @ViewBuilder let content: () -> Content
+    let identifier: String?
+    let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var expanded = false
+    @State private var expanded: Bool
     @State private var hovering = false
+
+    init(
+        label: String,
+        identifier: String? = nil,
+        initiallyExpanded: Bool = false,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.label = label
+        self.identifier = identifier
+        self.content = content
+        _expanded = State(initialValue: initiallyExpanded)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {

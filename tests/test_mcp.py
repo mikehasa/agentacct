@@ -487,6 +487,7 @@ def test_mcp_record_section_accepts_handed_off_and_reduces_to_clean_terminal(tmp
                     "section_title": "Continue in a new session",
                     "client": "codex",
                     "client_session_id": "codex-session",
+                    "summary": "Recorded outcome for this fixture section.",
                 },
             },
         }
@@ -522,6 +523,7 @@ def test_mcp_record_machine_check_creates_evidence_event_linked_to_section(tmp_p
                     "section_title": "MCP v1 convergence",
                     "client": "codex",
                     "client_session_id": "codex-session",
+                    "summary": "Recorded outcome for this fixture section.",
                 },
             },
         }
@@ -570,6 +572,8 @@ def test_mcp_machine_check_server_stamps_only_complete_blocker_resolutions(tmp_p
         "evidence_type": "artifact",
         "result": "passed",
         "exit_code": 0,
+        "name": "pytest tests/test_publish.py",
+        "command": "pytest tests/test_publish.py",
         "summary": "Publication works now.",
         "resolves_blocked_event_id": "evt_blocked_exact",
         "resolution_scope": "full",
@@ -848,7 +852,7 @@ def test_mcp_semantic_tools_validate_arguments(tmp_path):
             "jsonrpc": "2.0",
             "id": 4,
             "method": "tools/call",
-            "params": {"name": "agentacct_record_section", "arguments": {"source": "codex", "section_id": "s1", "section_status": "done"}},
+            "params": {"name": "agentacct_record_section", "arguments": {"source": "codex", "section_id": "s1", "section_status": "done", "section_title": "Fixture section title"}},
         }
     )
     too_many_files = server.handle_message(
@@ -858,7 +862,7 @@ def test_mcp_semantic_tools_validate_arguments(tmp_path):
             "method": "tools/call",
             "params": {
                 "name": "agentacct_record_section",
-                "arguments": {"source": "codex", "section_id": "s1", "section_status": "started", "files": [f"file-{index}" for index in range(51)]},
+                "arguments": {"source": "codex", "section_id": "s1", "section_status": "started", "files": [f"file-{index}" for index in range(51)], "section_title": "Fixture section title"},
             },
         }
     )
@@ -1184,6 +1188,7 @@ def test_mcp_record_section_explicit_ids_override_inherited_context(tmp_path):
             "section_status": "checkpoint",
             "client_session_id": "explicit-session",
             "client_transcript_id": "explicit-transcript",
+            "section_title": "Fixture section title",
         },
     )
     metadata = _tool_payload(section_response)["event"]["metadata"]
@@ -1213,7 +1218,7 @@ def test_mcp_attach_client_context_without_join_keys_warns(tmp_path):
         server,
         2,
         "agentacct_record_section",
-        {"source": "codex", "section_id": "weak-context", "section_status": "started"},
+        {"source": "codex", "section_id": "weak-context", "section_status": "started", "section_title": "Fixture section title"},
     )
     section_payload = _tool_payload(section_response)
     assert section_payload["join_hint_quality"] == "weak"
@@ -1246,6 +1251,7 @@ def test_usage_import_row_joins_section_with_inherited_context(tmp_path):
             "section_status": "completed",
             "section_title": "Inherited join",
             "kind": "implementation",
+            "summary": "Recorded outcome for this fixture section.",
         },
     )
     server.service.record_event(
@@ -1297,7 +1303,7 @@ def test_mcp_failed_attach_clears_inherited_context(tmp_path):
         server,
         3,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "after-failed-attach", "section_status": "started"},
+        {"source": "claude-code", "section_id": "after-failed-attach", "section_status": "started", "section_title": "Fixture section title"},
     )
     section_payload = _tool_payload(section_response)
     metadata = section_payload["event"]["metadata"]
@@ -1334,7 +1340,7 @@ def test_mcp_idempotent_attach_reports_persisted_join_quality(tmp_path):
     assert replay["warnings"]
 
     section_metadata = _tool_payload(
-        _call_tool(server, 3, "agentacct_record_section", {"source": "codex", "section_id": "s1", "section_status": "started"})
+        _call_tool(server, 3, "agentacct_record_section", {"source": "codex", "section_id": "s1", "section_status": "started", "section_title": "Fixture section title"})
     )["event"]["metadata"]
     assert "client_session_id" not in section_metadata
     assert section_metadata["project_dir"] == "/tmp/project"
@@ -1364,6 +1370,7 @@ def test_mcp_section_drops_inherited_context_instead_of_breaking_metadata_limit(
             "section_id": "size-test",
             "section_status": "started",
             "metadata": {"notes": "x" * 7900},
+            "section_title": "Fixture section title",
         },
     )
     section_payload = _tool_payload(section_response)
@@ -1392,6 +1399,7 @@ def test_mcp_section_provenance_keys_cannot_be_forged(tmp_path):
                 "client_context_inherited_keys": ["client_session_id"],
                 "client_context_inherited_from_event_id": "evt_forged000000",
             },
+            "section_title": "Fixture section title",
         },
     )
     metadata = _tool_payload(section_response)["event"]["metadata"]
@@ -1441,7 +1449,7 @@ def test_stale_inherited_context_never_produces_exact_attribution(tmp_path):
         server,
         2,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "conversation-b-work", "section_status": "completed"},
+        {"source": "claude-code", "section_id": "conversation-b-work", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
     )
     _record_trusted_usage(server, session_id="conversation-a-session")
 
@@ -1469,9 +1477,12 @@ def test_explicit_section_ids_still_produce_exact_attribution(tmp_path):
             "source": "claude-code",
             "section_id": "explicit-work",
             "section_status": "completed",
+            "summary": "Recorded outcome for this fixture section.",
             "client": "claude-code",
             "client_session_id": "explicit-session",
             "client_transcript_id": "explicit-session",
+            "section_title": "Fixture section title",
+            "summary": "Recorded outcome for this fixture section.",
         },
     )
     _record_trusted_usage(server, session_id="explicit-session")
@@ -1495,6 +1506,7 @@ def test_generic_record_event_cannot_forge_client_context_provenance(tmp_path):
             "event_type": "section_started",
             "metadata": {
                 "sentinel_semantic_kind": "section",
+                "section_title": "Forged section fixture",
                 "section_id": "forged-section",
                 "client": "codex",
                 "client_session_id": "victim-session",
@@ -1552,7 +1564,7 @@ def test_context_bridge_does_not_upgrade_stale_inherited_section_to_exact(tmp_pa
         server,
         2,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "conversation-b-work", "section_status": "completed"},
+        {"source": "claude-code", "section_id": "conversation-b-work", "section_status": "completed", "summary": "Recorded outcome for this fixture section.", "section_title": "Fixture section title"},
     )
     _record_trusted_usage(server, session_id="conversation-a-session")
 
@@ -1600,9 +1612,11 @@ def test_context_bridge_explicit_section_ids_still_exact(tmp_path):
             "source": "claude-code",
             "section_id": "explicit-work",
             "section_status": "completed",
+            "summary": "Recorded outcome for this fixture section.",
             "client": "claude-code",
             "client_session_id": "explicit-session",
             "client_transcript_id": "explicit-session",
+            "section_title": "Fixture section title",
         },
     )
     _record_trusted_usage(server, session_id="explicit-session")
@@ -1618,7 +1632,7 @@ def test_context_bridge_explicit_section_ids_still_exact(tmp_path):
     assert link["attribution_status"] == "attributed"
 
 
-def _write_hook_context(store_root, *, session_id="hooked-session", transcript_id=None, now=None):
+def _write_hook_context(store_root, *, session_id="hooked-session", transcript_id=None, now=None, client="claude-code"):
     import time as _time
 
     from agentacct.hooks import write_claude_code_hook_context
@@ -1627,7 +1641,7 @@ def _write_hook_context(store_root, *, session_id="hooked-session", transcript_i
         store_root,
         {
             "schema_version": "agent-sentinel.client-context.v1",
-            "client": "claude-code",
+            "client": client,
             "client_session_id": session_id,
             "client_transcript_id": transcript_id or session_id,
             "project_label": "project",
@@ -1673,7 +1687,7 @@ def test_mcp_section_inherits_hook_client_context(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "hook-join", "section_status": "completed"},
+            {"source": "claude-code", "section_id": "hook-join", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
     metadata = section_payload["event"]["metadata"]
@@ -1700,7 +1714,7 @@ def test_usage_joins_hook_derived_section_at_high_confidence(tmp_path):
         server,
         1,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "hook-join", "section_status": "completed"},
+        {"source": "claude-code", "section_id": "hook-join", "section_status": "completed", "summary": "Recorded outcome for this fixture section.", "section_title": "Fixture section title"},
     )
     _record_trusted_usage(server, session_id="hooked-session")
 
@@ -1731,7 +1745,7 @@ def test_stale_hook_context_is_not_inherited(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "after-stale-hook", "section_status": "started"},
+            {"source": "claude-code", "section_id": "after-stale-hook", "section_status": "started", "section_title": "Fixture section title"},
         )
     )
     metadata = section_payload["event"]["metadata"]
@@ -1759,7 +1773,7 @@ def test_hook_context_outranks_attach_context_for_ids(tmp_path):
             server,
             2,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "priority", "section_status": "started"},
+            {"source": "claude-code", "section_id": "priority", "section_status": "started", "section_title": "Fixture section title"},
         )
     )["event"]["metadata"]
     # Hook ids are client-derived and outrank agent-reported attach ids; the
@@ -1769,20 +1783,26 @@ def test_hook_context_outranks_attach_context_for_ids(tmp_path):
     assert metadata["client_context_source"] == "claude_code_hook"
 
 
-def test_hook_context_not_applied_to_other_clients(tmp_path):
+def test_hook_context_is_applied_to_every_bridged_client(tmp_path):
+    """Codex sections inherit their own session id.
+
+    Replaces the pre-fix contract where only claude-code could inherit. Measured
+    consequence: 1,161 Codex sections with ZERO carrying a client_session_id, and
+    61% of work items never joining to imported usage.
+    """
     server = SentinelMCPServer(store_dir=tmp_path / "state")
-    _write_hook_context(server.service.store.root, session_id="hooked-session")
+    _write_hook_context(server.service.store.root, session_id="hooked-session", client="codex")
 
     metadata = _tool_payload(
         _call_tool(
             server,
             1,
             "agentacct_record_section",
-            {"source": "codex", "section_id": "codex-work", "section_status": "started", "client": "codex"},
+            {"source": "codex", "section_id": "codex-work", "section_status": "started", "client": "codex", "section_title": "Fixture section title"},
         )
     )["event"]["metadata"]
-    assert "client_session_id" not in metadata
-    assert "client_context_source" not in metadata
+    assert metadata.get("client_session_id") == "hooked-session"
+    assert metadata.get("client_context_source") == "claude_code_hook"
 
 
 def test_explicit_section_ids_override_hook_context(tmp_path):
@@ -1800,6 +1820,7 @@ def test_explicit_section_ids_override_hook_context(tmp_path):
                 "section_status": "started",
                 "client_session_id": "explicit-session",
                 "client_transcript_id": "explicit-session",
+                "section_title": "Fixture section title",
             },
         )
     )["event"]["metadata"]
@@ -1820,6 +1841,7 @@ def test_generic_record_event_cannot_forge_hook_provenance(tmp_path):
             "event_type": "section_started",
             "metadata": {
                 "sentinel_semantic_kind": "section",
+                "section_title": "Forged section fixture",
                 "section_id": "forged-hook",
                 "client": "claude-code",
                 "client_session_id": "victim-session",
@@ -1828,7 +1850,7 @@ def test_generic_record_event_cannot_forge_hook_provenance(tmp_path):
                 "client_context_inherited_from": "client-context/claude-code.json",
                 "client_context_inherited_keys": ["client_session_id"],
                 "client_context_selection": "env_session_match",
-                "client_context_inheritance_refused": "concurrent_claude_code_hook_contexts",
+                "client_context_inheritance_refused": "concurrent_hook_contexts",
                 "hook_context_fresh_count": 2,
             },
         },
@@ -1864,9 +1886,10 @@ def test_section_cannot_forge_hook_provenance_without_inheritance(tmp_path):
                     "client_context_source": "claude_code_hook",
                     "context_freshness": "client_derived",
                     "client_context_selection": "single_fresh",
-                    "client_context_inheritance_refused": "concurrent_claude_code_hook_contexts",
+                    "client_context_inheritance_refused": "concurrent_hook_contexts",
                     "hook_context_fresh_count": 3,
                 },
+                "section_title": "Fixture section title",
             },
         )
     )["event"]["metadata"]
@@ -1891,6 +1914,7 @@ def test_hook_context_not_mixed_with_conflicting_explicit_id(tmp_path):
                 "section_id": "conflicting-session",
                 "section_status": "started",
                 "client_session_id": "different-session",
+                "section_title": "Fixture section title",
             },
         )
     )["event"]["metadata"]
@@ -1918,6 +1942,8 @@ def test_explicit_session_id_with_hook_context_yields_exact(tmp_path):
                 "section_id": "explicit-upgrade",
                 "section_status": "completed",
                 "client_session_id": "hooked-session",
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         )
     )
@@ -1960,6 +1986,7 @@ def test_attach_ids_not_mixed_with_explicit_id(tmp_path):
                 "section_id": "new-conversation",
                 "section_status": "started",
                 "client_session_id": "new-session",
+                "section_title": "Fixture section title",
             },
         )
     )["event"]["metadata"]
@@ -1967,19 +1994,23 @@ def test_attach_ids_not_mixed_with_explicit_id(tmp_path):
     assert "client_transcript_id" not in metadata
 
 
-def test_hook_context_requires_claude_source_when_client_unset(tmp_path):
+def test_hook_context_requires_a_bridged_source_when_client_unset(tmp_path):
+    """A source naming no bridged client inherits nothing.
+
+    The gate is "does this source belong to a client whose hook bridge captures
+    context", not "is it claude-code".
+    """
     server = SentinelMCPServer(store_dir=tmp_path / "state")
-    _write_hook_context(server.service.store.root, session_id="hooked-session")
+    _write_hook_context(server.service.store.root, session_id="hooked-session", client="codex")
 
     metadata = _tool_payload(
         _call_tool(
             server,
             1,
             "agentacct_record_section",
-            {"source": "codex", "section_id": "codex-no-client", "section_status": "started"},
+            {"source": "some-other-agent", "section_id": "other-work", "section_status": "started", "section_title": "Fixture section title"},
         )
     )["event"]["metadata"]
-    # A non-claude source with no client must not absorb claude-code hook ids.
     assert "client_session_id" not in metadata
     assert "client_context_source" not in metadata
     assert "client" not in metadata
@@ -2000,7 +2031,7 @@ def test_concurrent_hook_contexts_refuse_inheritance_end_to_end(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "ambiguous-work", "section_status": "completed"},
+            {"source": "claude-code", "section_id": "ambiguous-work", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
     metadata = payload["event"]["metadata"]
@@ -2009,9 +2040,9 @@ def test_concurrent_hook_contexts_refuse_inheritance_end_to_end(tmp_path):
     assert "client_context_source" not in metadata
     # Absolute refusal: not even the non-id client key is inherited.
     assert "client" not in metadata
-    assert metadata["client_context_inheritance_refused"] == "concurrent_claude_code_hook_contexts"
+    assert metadata["client_context_inheritance_refused"] == "concurrent_hook_contexts"
     assert metadata["hook_context_fresh_count"] == 2
-    assert payload["refused_client_context"]["reason"] == "concurrent_claude_code_hook_contexts"
+    assert payload["refused_client_context"]["reason"] == "concurrent_hook_contexts"
     assert payload["refused_client_context"]["fresh_context_count"] == 2
     assert any("concurrent" in warning.lower() for warning in payload["warnings"])
 
@@ -2038,7 +2069,7 @@ def test_concurrent_contexts_env_binding_selects_own_session(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "env-bound", "section_status": "completed"},
+            {"source": "claude-code", "section_id": "env-bound", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
     metadata = payload["event"]["metadata"]
@@ -2078,11 +2109,11 @@ def test_concurrent_contexts_env_binding_requires_strict_recency_end_to_end(tmp_
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "stale-env", "section_status": "completed"},
+            {"source": "claude-code", "section_id": "stale-env", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )["event"]["metadata"]
     assert "client_session_id" not in metadata
-    assert metadata["client_context_inheritance_refused"] == "concurrent_claude_code_hook_contexts"
+    assert metadata["client_context_inheritance_refused"] == "concurrent_hook_contexts"
 
 
 def test_concurrent_contexts_pid_lineage_selects_own_session(tmp_path):
@@ -2104,7 +2135,7 @@ def test_concurrent_contexts_pid_lineage_selects_own_session(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "lineage-bound", "section_status": "completed"},
+            {"source": "claude-code", "section_id": "lineage-bound", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
     metadata = payload["event"]["metadata"]
@@ -2128,11 +2159,11 @@ def test_concurrent_contexts_pid_lineage_selects_own_session(tmp_path):
             sibling_server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "sibling-work", "section_status": "completed"},
+            {"source": "claude-code", "section_id": "sibling-work", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )["event"]["metadata"]
     assert "client_session_id" not in sibling_metadata
-    assert sibling_metadata["client_context_inheritance_refused"] == "concurrent_claude_code_hook_contexts"
+    assert sibling_metadata["client_context_inheritance_refused"] == "concurrent_hook_contexts"
     assert sibling_metadata["hook_context_fresh_count"] == 2
 
 
@@ -2155,6 +2186,8 @@ def test_explicit_ids_suppress_refusal_stamp(tmp_path):
                 "section_id": "explicit-own-id",
                 "section_status": "completed",
                 "client_session_id": "my-own-session",
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         )
     )
@@ -2178,6 +2211,7 @@ def test_refused_section_replay_payload_matches_persisted_event(tmp_path):
         "section_id": "replay-vs-refusal",
         "section_status": "started",
         "idempotency_key": "replay-vs-refusal-1",
+        "section_title": "Fixture section title",
     }
     first = _tool_payload(_call_tool(server, 1, "agentacct_record_section", args))
     assert first["event"]["metadata"]["client_session_id"] == "session-a"
@@ -2222,6 +2256,8 @@ def test_metadata_overflow_keeps_refusal_marker(tmp_path):
                 "section_id": "overflow-refusal",
                 "section_status": "completed",
                 "metadata": {"filler": "x" * 7000},
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         )
     )
@@ -2231,9 +2267,9 @@ def test_metadata_overflow_keeps_refusal_marker(tmp_path):
     assert "client_context_inherited_keys" not in metadata
     assert any("dropped" in warning for warning in payload["warnings"])
     # ...but the refusal marker survives the reserved-key cleanup.
-    assert metadata["client_context_inheritance_refused"] == "concurrent_claude_code_hook_contexts"
+    assert metadata["client_context_inheritance_refused"] == "concurrent_hook_contexts"
     assert metadata["hook_context_fresh_count"] == 2
-    assert payload["refused_client_context"]["reason"] == "concurrent_claude_code_hook_contexts"
+    assert payload["refused_client_context"]["reason"] == "concurrent_hook_contexts"
 
 
 def test_section_spanning_sessions_keeps_per_session_snapshots(tmp_path):
@@ -2255,7 +2291,7 @@ def test_section_spanning_sessions_keeps_per_session_snapshots(tmp_path):
         server,
         1,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "spanning-work", "section_status": "started"},
+        {"source": "claude-code", "section_id": "spanning-work", "section_status": "started", "section_title": "Fixture section title"},
     )
     # Conversation A's context expires (idle gap), then a new conversation
     # takes over: the hook publishes B as the only fresh context.
@@ -2265,7 +2301,7 @@ def test_section_spanning_sessions_keeps_per_session_snapshots(tmp_path):
         server,
         2,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "spanning-work", "section_status": "completed"},
+        {"source": "claude-code", "section_id": "spanning-work", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
     )
     _record_trusted_usage(server, session_id="conversation-a")
 
@@ -2306,7 +2342,7 @@ def test_item_mixed_inheritance_sources_stay_per_key(tmp_path):
         server,
         2,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "mixed-sources", "section_status": "started"},
+        {"source": "claude-code", "section_id": "mixed-sources", "section_status": "started", "section_title": "Fixture section title"},
     )
     # Hook context appears with a session id but no usable transcript.
     _write_hook_context(server.service.store.root, session_id="hook-session", transcript_id=None)
@@ -2318,7 +2354,7 @@ def test_item_mixed_inheritance_sources_stay_per_key(tmp_path):
         server,
         3,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "mixed-sources", "section_status": "checkpoint"},
+        {"source": "claude-code", "section_id": "mixed-sources", "section_status": "checkpoint", "section_title": "Fixture section title"},
     )
     _record_trusted_usage(server, session_id="unrelated-session", transcript_id="attach-transcript")
 
@@ -2342,6 +2378,7 @@ def test_idempotent_section_replay_payload_matches_persisted_event(tmp_path):
         "section_id": "replayed",
         "section_status": "started",
         "idempotency_key": "section-replay",
+        "section_title": "Fixture section title",
     }
     first = _tool_payload(_call_tool(server, 1, "agentacct_record_section", args))
     assert "inherited_client_context" not in first
@@ -2374,7 +2411,7 @@ def test_mcp_section_inherits_windows_hook_context_without_raw_paths(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "windows-host", "section_status": "started"},
+            {"source": "claude-code", "section_id": "windows-host", "section_status": "started", "section_title": "Fixture section title"},
         )
     )["event"]["metadata"]
     assert metadata["client_session_id"] == "3778e5d9-aaaa-bbbb-cccc-1234567890ab"
@@ -2397,6 +2434,8 @@ def test_section_free_form_metadata_cannot_smuggle_join_keys(tmp_path):
             "section_id": "smuggle",
             "section_status": "completed",
             "metadata": {"client_session_id": "victim-session", "client_transcript_id": "victim-session"},
+            "section_title": "Fixture section title",
+            "summary": "Recorded outcome for this fixture section.",
         },
     )
     metadata = _tool_payload(response)["event"]["metadata"]
@@ -2479,6 +2518,7 @@ def test_generic_record_event_section_ids_never_earn_exact(tmp_path):
             "event_type": "section_started",
             "metadata": {
                 "sentinel_semantic_kind": "section",
+                "section_title": "Forged section fixture",
                 "section_id": "generic-section",
                 "client": "claude-code",
                 "client_session_id": "generic-session",
@@ -2510,6 +2550,7 @@ def test_authored_marker_cannot_be_forged(tmp_path):
                 "event_type": "section_started",
                 "metadata": {
                     "sentinel_semantic_kind": "section",
+                    "section_title": "Forged section fixture",
                     "section_id": "forged-authored",
                     "client_session_id": "victim-session",
                     "client_context_keys_authored": ["client_session_id"],
@@ -2530,6 +2571,7 @@ def test_authored_marker_cannot_be_forged(tmp_path):
                 "section_id": "no-ids",
                 "section_status": "started",
                 "metadata": {"client_context_keys_authored": ["client_session_id"]},
+                "section_title": "Fixture section title",
             },
         )
     )["event"]["metadata"]
@@ -2551,6 +2593,8 @@ def test_explicit_section_ids_persist_authored_marker_and_stay_exact(tmp_path):
                 "client": "claude-code",
                 "client_session_id": "explicit-session",
                 "client_transcript_id": "explicit-session",
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         )
     )["event"]["metadata"]
@@ -2579,11 +2623,13 @@ def test_benign_metadata_display_fields_survive_and_are_not_labelled_smuggled(tm
                 "section_id": "display-fields",
                 "section_status": "completed",
                 "metadata": {"summary": "important context", "files": ["a.py"], "custom": "kept"},
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         )
     )["event"]["metadata"]
 
-    assert metadata["summary"] == "important context"
+    assert metadata["summary"] == "Recorded outcome for this fixture section."
     assert metadata["files"] == ["a.py"]
     assert metadata["custom"] == "kept"
     assert "reserved_context_keys_stripped" not in metadata
@@ -2601,13 +2647,14 @@ def test_supplied_argument_overwrites_colliding_benign_metadata_without_label(tm
                 "source": "codex",
                 "section_id": "server-wins",
                 "section_status": "completed",
-                "summary": "validated summary",
+                "summary": "Validated that the supplied argument wins over metadata.",
                 "metadata": {"summary": "caller summary", "custom": "kept"},
+                "section_title": "Fixture section title",
             },
         )
     )["event"]["metadata"]
 
-    assert metadata["summary"] == "validated summary"
+    assert metadata["summary"] == "Validated that the supplied argument wins over metadata."
     assert metadata["custom"] == "kept"
     assert "reserved_context_keys_stripped" not in metadata
 
@@ -2625,6 +2672,8 @@ def test_forged_strip_label_in_metadata_is_discarded(tmp_path):
                 "section_id": "forged-label",
                 "section_status": "completed",
                 "metadata": {"reserved_context_keys_stripped": ["client_session_id"]},
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         )
     )["event"]["metadata"]
@@ -2658,12 +2707,12 @@ def test_refusal_note_with_attach_inherited_ids_does_not_claim_unattributed(tmp_
             server,
             2,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "attach-after-refusal", "section_status": "completed"},
+            {"source": "claude-code", "section_id": "attach-after-refusal", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
 
     metadata = payload["event"]["metadata"]
-    assert metadata["client_context_inheritance_refused"] == "concurrent_claude_code_hook_contexts"
+    assert metadata["client_context_inheritance_refused"] == "concurrent_hook_contexts"
     assert metadata["client_session_id"] == "attach-session"
     note = payload["refused_client_context"]["note"]
     assert "stays unattributed" not in note
@@ -2681,7 +2730,7 @@ def test_refusal_note_with_attach_inherited_ids_does_not_claim_unattributed(tmp_
             fresh,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "bare-refusal", "section_status": "completed"},
+            {"source": "claude-code", "section_id": "bare-refusal", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
     assert "stays unattributed" in bare["refused_client_context"]["note"]
@@ -2728,7 +2777,7 @@ def test_section_accepts_title_alias_and_prefers_section_title(tmp_path):
         server,
         3,
         "agentacct_record_section",
-        {"source": "codex", "section_id": "alias-bad", "section_status": "started", "titel": "typo"},
+        {"source": "codex", "section_id": "alias-bad", "section_status": "started", "titel": "typo", "section_title": "Fixture section title"},
     )
     assert still_unknown["error"]["code"] == -32602
     assert "titel" in still_unknown["error"]["message"]
@@ -2749,8 +2798,10 @@ def test_shipped_instructions_name_the_argument_the_schema_accepts(tmp_path):
     must accept whatever field name that constant tells agents to set."""
     from agentacct.install_guide import MCP_SERVER_INSTRUCTIONS
 
-    assert "set `section_title`" in MCP_SERVER_INSTRUCTIONS
-    assert "set `title`" not in MCP_SERVER_INSTRUCTIONS
+    # Only the argument name is pinned: the surrounding wording is free, but the
+    # name is what would ship a call the server rejects.
+    assert "`section_title`" in MCP_SERVER_INSTRUCTIONS
+    assert "`title`" not in MCP_SERVER_INSTRUCTIONS.replace("`section_title`", "")
 
     server = SentinelMCPServer(store_dir=tmp_path / "state")
     tools = server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}})
@@ -2769,7 +2820,7 @@ def test_limit_errors_state_the_limit_and_what_was_received(tmp_path):
         server,
         1,
         "agentacct_record_section",
-        {"source": "codex", "section_id": "limits", "section_status": "started", "summary": "x" * 2039},
+        {"source": "codex", "section_id": "limits", "section_status": "started", "summary": "x" * 2039, "section_title": "Fixture section title"},
     )
     message = long_summary["error"]["message"]
     assert "1200" in message and "2039" in message
@@ -2778,7 +2829,7 @@ def test_limit_errors_state_the_limit_and_what_was_received(tmp_path):
         server,
         2,
         "agentacct_record_section",
-        {"source": "codex", "section_id": "limits", "section_status": "started", "files": ["a" * 300]},
+        {"source": "codex", "section_id": "limits", "section_status": "started", "files": ["a" * 300], "section_title": "Fixture section title"},
     )
     file_message = long_file["error"]["message"]
     assert "files[0]" in file_message
@@ -2788,7 +2839,7 @@ def test_limit_errors_state_the_limit_and_what_was_received(tmp_path):
         server,
         3,
         "agentacct_record_section",
-        {"source": "codex", "section_id": "limits", "section_status": "started", "files": [f"f{index}.py" for index in range(51)]},
+        {"source": "codex", "section_id": "limits", "section_status": "started", "files": [f"f{index}.py" for index in range(51)], "section_title": "Fixture section title"},
     )
     count_message = too_many["error"]["message"]
     # Pinned exactly: "50" and "51" both appear in a message that says nothing
@@ -2813,6 +2864,7 @@ def test_metadata_budget_measures_real_utf8_bytes_for_cjk(tmp_path):
             "section_status": "checkpoint",
             "summary": "记" * 1200,
             "next_step": "步" * 200,
+            "section_title": "Fixture section title",
         },
     )
     assert "error" not in accepted
@@ -2829,6 +2881,7 @@ def test_metadata_budget_measures_real_utf8_bytes_for_cjk(tmp_path):
             "section_id": "cjk-big",
             "section_status": "checkpoint",
             "metadata": {"notes": "记" * 3000},
+            "section_title": "Fixture section title",
         },
     )
     message = oversized["error"]["message"]
@@ -2854,6 +2907,7 @@ def test_files_absolute_under_project_dir_is_normalized_not_rejected(tmp_path):
                 "section_status": "started",
                 "project_dir": "/repo/agentacct",
                 "files": ["/repo/agentacct/src/agentacct/mcp.py", "src/./a.py", "src//b.py"],
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -2869,6 +2923,7 @@ def test_files_absolute_under_project_dir_is_normalized_not_rejected(tmp_path):
             "section_status": "started",
             "project_dir": "/repo/agentacct",
             "files": ["/etc/passwd"],
+            "section_title": "Fixture section title",
         },
     )
     assert outside["error"]["code"] == -32602
@@ -2885,6 +2940,7 @@ def test_files_absolute_under_project_dir_is_normalized_not_rejected(tmp_path):
             "section_status": "started",
             "project_dir": "/repo/agentacct",
             "files": ["/repo/agentacct-secrets/key.pem"],
+            "section_title": "Fixture section title",
         },
     )
     assert sibling["error"]["code"] == -32602
@@ -2900,6 +2956,7 @@ def test_files_absolute_under_project_dir_is_normalized_not_rejected(tmp_path):
             "section_status": "started",
             "project_dir": "/repo/agentacct",
             "files": ["/repo/agentacct/../../etc/passwd"],
+            "section_title": "Fixture section title",
         },
     )
     assert escape_via_root["error"]["code"] == -32602
@@ -2918,6 +2975,7 @@ def test_files_absolute_under_project_dir_is_normalized_not_rejected(tmp_path):
                 "section_status": "started",
                 "project_dir": "/repo/agentacct",
                 "files": ["/repo/agentacct//etc/passwd"],
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -2938,7 +2996,7 @@ def test_files_absolute_under_project_dir_is_normalized_not_rejected(tmp_path):
             server,
             index,
             "agentacct_record_section",
-            {"source": "codex", "section_id": "paths", "section_status": "started", **bad},
+            {"source": "codex", "section_id": "paths", "section_status": "started", **bad, "section_title": "Fixture section title"},
         )
         assert response["error"]["code"] == -32602, bad
 
@@ -2996,6 +3054,7 @@ def test_mangled_tool_call_is_warned_about_never_repaired(tmp_path):
                 "section_id": "mangled",
                 "section_status": "completed",
                 "summary": "Fixed the validator.</summary>\n<files>src/agentacct/mcp.py</files>",
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -3015,7 +3074,11 @@ def test_mangled_tool_call_is_warned_about_never_repaired(tmp_path):
             {
                 "source": "codex",
                 "section_id": "mangled",
+                "name": "pytest -q",
                 "result": "passed",
+                # `command` is deliberately NOT supplied: that absence is what the
+                # mangled-call detector is being asked about.
+                "files": ["tests/test_mcp.py"],
                 "summary": "Suite green.</summary>\n<command>pytest -q</command>",
             },
         )
@@ -3041,7 +3104,9 @@ def test_mangle_detector_ignores_prose_that_merely_mentions_fields(tmp_path):
                 "section_id": "prose",
                 "section_status": "completed",
                 "summary": "Reviewed the files and the source list; <files> and <summary> tags are discussed in the MCP config docs.",
-                "blocker": "Waiting on the next_step from review.",
+                "blocker": "Waiting on the reviewer to confirm the config wording.",
+                "next_step": "Re-read the config docs once review returns.",
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -3059,8 +3124,9 @@ def test_mangle_detector_ignores_prose_that_merely_mentions_fields(tmp_path):
                 "source": "codex",
                 "section_id": "prose-2",
                 "section_status": "completed",
-                "summary": "Documented the </files> closing tag.",
+                "summary": "Documented the </files> closing tag in the config guide.",
                 "files": ["docs/mcp.md"],
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -3080,6 +3146,7 @@ def test_mangle_marker_is_server_authored_and_cannot_be_forged(tmp_path):
                 "section_id": "forge",
                 "section_status": "started",
                 "metadata": {"mangled_tool_call_suspected_fields": ["client_session_id"]},
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -3099,14 +3166,16 @@ def test_machine_check_name_has_no_private_length_cap(tmp_path):
     test_machine_check_name_band_is_the_measured_one for the boundary."""
     server = SentinelMCPServer(store_dir=tmp_path / "state")
 
-    long_name = ".venv/bin/pytest -q " + "tests/test_mcp.py::test_a " * 12
+    # Trailing whitespace is normalized by the display rules, so measure a name
+    # that is already normalized.
+    long_name = (".venv/bin/pytest -q " + "tests/test_mcp.py::test_a " * 12).strip()
     assert 240 < len(long_name) <= 4036
     accepted = _tool_payload(
         _call_tool(
             server,
             1,
             "agentacct_record_machine_check",
-            {"source": "codex", "name": long_name, "result": "passed"},
+            {"source": "codex", "name": long_name, "result": "passed", "exit_code": 0},
         )
     )
     # Never truncated: the name feeds the check-identity hash.
@@ -3119,7 +3188,7 @@ def test_machine_check_name_has_no_private_length_cap(tmp_path):
         server,
         2,
         "agentacct_record_machine_check",
-        {"source": "codex", "name": "n" * 9000, "result": "passed"},
+        {"source": "codex", "name": "n" * 9000, "result": "passed", "exit_code": 0},
     )
     message = oversized["error"]["message"]
     assert message.startswith("metadata must be <= 8192 bytes when JSON encoded (received ")
@@ -3144,19 +3213,38 @@ def test_machine_check_name_band_is_the_measured_one(tmp_path):
             server,
             msg_id,
             "agentacct_record_machine_check",
-            {"source": "codex", "name": "x" * length, "result": "passed"},
+            {"source": "codex", "name": "x" * length, "result": "passed", "exit_code": 0},
         )
         return "error" not in response, response
 
-    ok, response = accepted(1, 4036)
+    def boundary(low, high):
+        while low < high:
+            middle = (low + high + 1) // 2
+            if accepted(1, middle)[0]:
+                low = middle
+            else:
+                high = middle - 1
+        return low
+
+    # The edge is a property of the SHARED metadata budget, so it moves whenever
+    # the server adds context to a payload. Measure it rather than pinning a
+    # number the next field would invalidate; what must hold is that the ceiling
+    # is the budget, never a private name-length cap.
+    edge = boundary(200, 8000)
+    assert 3900 <= edge <= 4100, edge
+
+    ok, response = accepted(2, edge)
     assert ok
     assert response["result"]["content"][0]["text"]
 
-    ok, response = accepted(2, 4037)
+    ok, response = accepted(3, edge + 1)
     assert not ok
     # One character over the edge already blames the synthesized summary, so the
     # indirection the comment warns about is the normal case, not an extreme.
-    assert "largest field is summary at 4060 bytes" in response["error"]["message"]
+    # The largest-field indirection is the normal case, but the exact byte count
+    # moves when the server adds context to the metadata; assert the shape.
+    message = response["error"]["message"]
+    assert "8192 bytes" in message and "largest field is summary" in message
 
 
 def test_metadata_budget_decision_is_identical_on_all_three_write_surfaces(tmp_path):
@@ -3210,7 +3298,7 @@ def test_metadata_size_survives_a_lone_surrogate_on_every_surface(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "codex", "section_id": "surrogate", "section_status": "started", "summary": lone_surrogate},
+            {"source": "codex", "section_id": "surrogate", "section_status": "started", "summary": lone_surrogate, "section_title": "Fixture section title"},
         )
     )
     assert recorded["event"]["metadata"]["summary"] == lone_surrogate
@@ -3225,6 +3313,7 @@ def test_metadata_size_survives_a_lone_surrogate_on_every_surface(tmp_path):
             "section_id": "surrogate",
             "section_status": "started",
             "metadata": {"notes": lone_surrogate * 3000},
+            "section_title": "Fixture section title",
         },
     )
     assert "bytes" in oversized["error"]["message"]
@@ -3242,7 +3331,7 @@ def test_files_entry_naming_the_project_root_is_dropped_not_fatal(tmp_path):
                 server,
                 msg_id,
                 "agentacct_record_section",
-                {"source": "codex", "section_id": "whole-repo", "section_status": "started", "files": [entry]},
+                {"source": "codex", "section_id": "whole-repo", "section_status": "started", "files": [entry], "section_title": "Fixture section title"},
             )
         )
         # Accepted, and no row is stored for a value that names no file.
@@ -3254,7 +3343,7 @@ def test_files_entry_naming_the_project_root_is_dropped_not_fatal(tmp_path):
             server,
             3,
             "agentacct_record_section",
-            {"source": "codex", "section_id": "whole-repo", "section_status": "started", "files": [".", "src/a.py"]},
+            {"source": "codex", "section_id": "whole-repo", "section_status": "started", "files": [".", "src/a.py"], "section_title": "Fixture section title"},
         )
     )
     assert mixed["event"]["metadata"]["files"] == ["src/a.py"]
@@ -3272,6 +3361,7 @@ def test_files_entry_naming_the_project_root_is_dropped_not_fatal(tmp_path):
                     "source": "codex",
                     "result": "passed",
                     "project_dir": "/repo/agentacct",
+                    "command": "pytest tests/test_mcp.py",
                     "files": [entry],
                 },
             )
@@ -3296,6 +3386,7 @@ def test_files_backslash_is_folded_for_validation_but_never_for_storage(tmp_path
                 "section_id": "backslash",
                 "section_status": "started",
                 "files": ["weird\\name.py", "weird/name.py"],
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -3313,6 +3404,7 @@ def test_files_backslash_is_folded_for_validation_but_never_for_storage(tmp_path
             "section_id": "backslash",
             "section_status": "started",
             "files": ["src\\..\\..\\etc\\passwd"],
+            "section_title": "Fixture section title",
         },
     )
     assert escaped["error"]["code"] == -32602
@@ -3336,6 +3428,7 @@ def test_relativized_remainder_is_revalidated_against_the_published_rule(tmp_pat
                 "section_status": "started",
                 "project_dir": "/repo",
                 "files": [entry],
+                "section_title": "Fixture section title",
             },
         )
         assert response["error"]["code"] == -32602, entry
@@ -3357,7 +3450,7 @@ def test_windows_drive_letter_is_absolute_for_validation(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "codex", "section_id": "drive", "section_status": "started", "files": ["C:\\repo\\a.py"]},
+            {"source": "codex", "section_id": "drive", "section_status": "started", "files": ["C:\\repo\\a.py"], "section_title": "Fixture section title"},
         )
     )
     assert stored["event"]["metadata"]["files"] == ["C:/repo/a.py"]
@@ -3374,6 +3467,7 @@ def test_windows_drive_letter_is_absolute_for_validation(tmp_path):
                 "section_status": "started",
                 "project_dir": "C:\\repo",
                 "files": ["C:\\repo\\src\\a.py"],
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -3397,7 +3491,7 @@ def test_windows_absolute_path_is_never_fatal(tmp_path):
                 server,
                 files_for.msg_id,
                 "agentacct_record_section",
-                {"source": "codex", "section_id": "win", "section_status": "started", **args},
+                {"source": "codex", "section_id": "win", "section_status": "started", **args, "section_title": "Fixture section title"},
             )
         )
         files_for.msg_id += 1
@@ -3416,7 +3510,7 @@ def test_windows_absolute_path_is_never_fatal(tmp_path):
         server,
         90,
         "agentacct_record_section",
-        {"source": "codex", "section_id": "win", "section_status": "started", "files": ["/repo/src/a.py"]},
+        {"source": "codex", "section_id": "win", "section_status": "started", "files": ["/repo/src/a.py"], "section_title": "Fixture section title"},
     )
     assert posix["error"]["code"] == -32602
 
@@ -3425,7 +3519,7 @@ def test_windows_absolute_path_is_never_fatal(tmp_path):
         server,
         91,
         "agentacct_record_section",
-        {"source": "codex", "section_id": "win", "section_status": "started", "files": ["C:\\repo\\..\\..\\secrets"]},
+        {"source": "codex", "section_id": "win", "section_status": "started", "files": ["C:\\repo\\..\\..\\secrets"], "section_title": "Fixture section title"},
     )
     assert escaping["error"]["code"] == -32602
     assert "escape" in escaping["error"]["message"]
@@ -3442,7 +3536,7 @@ def test_backslash_is_preserved_on_the_relativized_branch_too(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "codex", "section_id": "bs", "section_status": "started", "files": ["weird\\name.py"]},
+            {"source": "codex", "section_id": "bs", "section_status": "started", "files": ["weird\\name.py"], "section_title": "Fixture section title"},
         )
     )
     assert relative["event"]["metadata"]["files"] == ["weird\\name.py"]
@@ -3458,6 +3552,7 @@ def test_backslash_is_preserved_on_the_relativized_branch_too(tmp_path):
                 "section_status": "started",
                 "project_dir": "/repo",
                 "files": ["/repo/weird\\name.py"],
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -3477,6 +3572,7 @@ def test_backslash_is_preserved_on_the_relativized_branch_too(tmp_path):
                 "section_status": "started",
                 "project_dir": "C:\\repo",
                 "files": ["C:\\repo\\src\\a.py"],
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -3499,6 +3595,7 @@ def test_tilde_project_dir_never_anchors_a_relativization(tmp_path):
             "section_status": "started",
             "project_dir": "~/repo",
             "files": ["~/repo/src/a.py"],
+            "section_title": "Fixture section title",
         },
     )
     assert response["error"]["code"] == -32602
@@ -3515,6 +3612,7 @@ def test_tilde_project_dir_never_anchors_a_relativization(tmp_path):
             "section_status": "started",
             "project_dir": "repo",
             "files": ["/repo/src/a.py"],
+            "section_title": "Fixture section title",
         },
     )
     assert relative_root["error"]["code"] == -32602
@@ -3537,6 +3635,7 @@ def test_mangle_detector_does_not_fire_on_a_closing_title_tag(tmp_path):
                 "section_id": "html",
                 "section_status": "completed",
                 "summary": "The page head has <title>Report</title> in it.",
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -3554,6 +3653,7 @@ def test_mangle_detector_does_not_fire_on_a_closing_title_tag(tmp_path):
                 "section_id": "html",
                 "section_status": "completed",
                 "summary": "The page head has <title>Report</title> in it.</next_step>",
+                "section_title": "Fixture section title",
             },
         )
     )
@@ -3581,7 +3681,7 @@ def test_mangle_detector_ineligible_set_is_calibrated_not_hand_picked(tmp_path):
                 server,
                 msg_id,
                 "agentacct_record_section",
-                {"source": "codex", "section_id": "svg", "section_status": "completed", "summary": summary},
+                {"source": "codex", "section_id": "svg", "section_status": "completed", "summary": f"Reviewed the markup docs and the export pipeline. {summary}", "section_title": "Review markup prose handling"},
             )
         )
         metadata = payload["event"]["metadata"]

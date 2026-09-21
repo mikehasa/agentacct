@@ -189,6 +189,10 @@ enum SessionStepsSnapshotKind: String {
     case rtlStress = "rtl-stress"
     case compactAccessibility = "compact-accessibility"
     case rtlAccessibility = "rtl-accessibility"
+    /// One completed step whose checks are all command-redacted: the
+    /// summary leads, the redaction is stated once, the lone passed group
+    /// needs no heading, and the files heading counts.
+    case redactedChecks = "redacted-checks"
 }
 
 struct SessionStepsSnapshotConfiguration {
@@ -217,17 +221,20 @@ struct SessionStepsSnapshotConfiguration {
     }
 
     static let reviewConfigurations: [Self] = [
-        (.hierarchy, 760, 1_050),
+        (SessionStepsSnapshotKind.hierarchy, CGFloat(760), CGFloat(1_050)),
         (.denseChecks, 760, 1_200),
         (.expandedCurrent, 760, 2_500),
         (.expandedHistory, 760, 1_450),
         (.loadFailure, 760, 240),
         (.retrying, 760, 240),
-        (.compactChecks, 360, 1_600),
+        // The step summary now sets in body type, so the compact checks
+        // render needs a taller canvas than the caption-sized body did.
+        (.compactChecks, 360, 1_680),
         (.rtlStress, 760, 1_250),
         // Full-content exports, not window viewports: allow the explicit large-text ramp.
         (.compactAccessibility, 360, 5_400),
         (.rtlAccessibility, 360, 5_400),
+        (.redactedChecks, 760, 700),
     ].flatMap { kind, width, height in
         [
             Self(kind: kind, width: width, height: height, colorScheme: .light),
@@ -351,6 +358,8 @@ struct SessionStepsSnapshotScene: View {
                     initiallyExpanded: true,
                     initiallyShowHistory: true
                 )
+            case .redactedChecks:
+                StepCard(step: redactedStep, initiallyExpanded: true)
             case .expandedCurrent:
                 StepCard(
                     step: denseStep,
@@ -418,6 +427,57 @@ struct SessionStepsSnapshotScene: View {
             evidenceGradeReason: kind == .rtlStress
                 ? "الحالة مكتملة، لكن فحصًا مسجلًا ما زال يفشل."
                 : "Marked done, but a recorded check is currently failing.",
+            models: nil,
+            checks: checks
+        )
+    }
+
+    /// A completed step with two agent-reported passing checks whose commands
+    /// were redacted, and one touched file.
+    private var redactedStep: V1Step {
+        let checks: [V1Check] = (0..<2).map { (index: Int) -> V1Check in
+            let createdAt: TimeInterval = referenceTimestamp - Double(600 + index * 120)
+            return V1Check(
+                eventId: "redacted-check-\(index)",
+                createdAt: createdAt,
+                evidenceType: "test",
+                result: "passed",
+                summary: index == 0 ? "ruff clean" : "12 passed",
+                exitCode: 0,
+                sourceType: "mcp_agent_reported",
+                checkIdentity: "redacted-check-\(index)",
+                supersessionState: nil,
+                supersededByEventId: nil,
+                resolutionScope: nil,
+                resolutionSummary: nil,
+                resolvesBlockedEventId: nil,
+                files: nil,
+                artifactRef: nil,
+                artifactPath: nil,
+                artifactUrl: nil,
+                commandRedacted: true,
+                artifactPathRedacted: false,
+                artifactUrlRedacted: false
+            )
+        }
+        return V1Step(
+            workId: "session-steps-redacted",
+            sectionId: "review-limits",
+            title: "Code review + document the limits",
+            latestStatus: "completed",
+            kind: "review",
+            phase: "verification",
+            startedAt: referenceTimestamp - 1_800,
+            updatedAt: referenceTimestamp - 720,
+            summary: "Addressed review comments; documented the limits in the API guide.",
+            files: ["src/api/middleware/ratelimit.py"],
+            blocker: nil,
+            nextStep: nil,
+            usage: nil,
+            joinConfidence: "exact",
+            evidenceStatus: "strong",
+            evidenceGrade: "self_checked",
+            evidenceGradeReason: "The agent reported a passing check (ruff clean); not independently verified.",
             models: nil,
             checks: checks
         )

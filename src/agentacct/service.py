@@ -994,6 +994,48 @@ def _finding_event_matches_task_scope(
     return bool(event.get("run_id") and str(event.get("run_id")) in run_ids)
 
 
+def _enforce_semantic_rules(event: dict[str, Any], *, transport: str | None) -> None:
+    """Refuse a semantic record the UI could not render.
+
+    Only agent-authored records are in scope. Imported usage, session
+    observations and finding dispositions are machine-recorded: no agent
+    authored them, a refusal would drop a fact instead of correcting a report,
+    and replaying historical imports through a stricter gate is exactly the
+    behaviour that would silently lose data.
+    """
+    from .semantic_rules import SemanticRecordError, validate_semantic_record
+
+    metadata = event.get("metadata")
+    if not isinstance(metadata, dict):
+        return
+    semantic_kind = metadata.get("sentinel_semantic_kind")
+    if semantic_kind not in {"section", "evidence"}:
+        return
+    if metadata.get("semantic_rules_validated"):
+        # The MCP handler already validated this record, and it did so with the
+        # full argument set -- which is strictly more information than the stored
+        # metadata carries (the before/after outcome lane, for instance, proves
+        # reproducibility with arguments that never enter metadata). Re-checking
+        # here would refuse records that already passed the stricter gate.
+        return
+    if transport is not None and transport not in {"mcp", "http", "cli"}:
+        return
+    event_type = str(event.get("event_type") or "")
+    status = str(metadata.get("section_status") or "").strip().lower()
+    if not status and event_type.startswith("section_"):
+        status = event_type.removeprefix("section_")
+    if not status:
+        status = "unknown"
+    try:
+        validate_semantic_record(
+            semantic_kind=semantic_kind,
+            status=status,
+            fields={**metadata, "source": event.get("source")},
+        )
+    except SemanticRecordError as exc:
+        raise ValueError(str(exc)) from exc
+
+
 class SentinelService:
     """Core local service shared by CLI, HTTP API, sidecar, and future MCP tools."""
 
@@ -1431,6 +1473,12 @@ class SentinelService:
         # Worksets share the same forgery surface: only record_workset_action
         # may stamp the reserved contract, so strip any generic caller's stamp.
         event = strip_workset_provenance(event)
+        # Quality gate for agent-authored semantic records, applied once for
+        # EVERY lane (MCP, HTTP, CLI) rather than in each surface. The MCP tool
+        # handlers call the same rules earlier so a refusal reaches the agent as
+        # a JSON-RPC error; this is what stops the HTTP and CLI lanes from
+        # storing what the MCP lane would refuse (see RULES.md R10).
+        _enforce_semantic_rules(event, transport=transport)
         metadata = event.get("metadata")
         idempotency_key = metadata.get("idempotency_key") if isinstance(metadata, dict) else None
         with self._events_write_lock():
@@ -2903,6 +2951,18 @@ class SentinelService:
             )
             self._event_snapshot = snapshot
             return snapshot
+
+    def events_change_token(self) -> tuple[str, object]:
+        """A cheap value that differs whenever the event ledger changed.
+
+        The same key ``all_events_snapshot`` reuses its parsed snapshot under,
+        without reading or parsing any event: one stat plus the SQLite revision
+        (or the flat file's signature). For callers that only need to notice a
+        change, such as the background projection warmer.
+        """
+
+        self._sync_event_log()
+        return self._event_snapshot_change_token()
 
     def _event_snapshot_change_token(self) -> tuple[str, object]:
         if self._authoritative():

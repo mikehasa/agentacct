@@ -87,6 +87,7 @@ from .ingestion_health import (
     importer_build_id,
 )
 from .join_rules import namespace_join_compatible
+from .ledger_warmer import LedgerWarmer
 from .mechanical_checks import build_mechanical_check_events
 from .service import SentinelService
 from .session_observations import (
@@ -1216,7 +1217,34 @@ def _task_title(task: Mapping[str, Any]) -> str:
     )
     project = str(primary_session.get("project") or "").strip() if isinstance(primary_session, Mapping) else ""
     client_label = _human_client(primary.get("client"))
-    return f"{client_label} in {project}" if project else f"Untitled {client_label} chat"
+    if project:
+        return f"{client_label} in {project}"
+    # Nothing names this Task: no client session title, no work title, no project.
+    # Four such rows used to read identically as "Untitled OpenClaw chat", which
+    # is a placeholder a reader cannot act on (measured: 4 of 55 Tasks in the
+    # installed store). Prefer something that distinguishes one row from the next
+    # -- the observation's own start time -- over a label that cannot.
+    started = primary_session.get("started_at") if isinstance(primary_session, Mapping) else None
+    if started is None:
+        started = task.get("last_activity_at")
+    try:
+        day = _short_date(float(started)) if started is not None else ""
+    except (TypeError, ValueError):
+        day = ""
+    return f"{client_label} session · {day}" if day else f"{client_label} session (unnamed)"
+
+
+def _short_date(timestamp: float) -> str:
+    """A local calendar day for a title, or "" when the stamp is unusable."""
+    import datetime as _datetime
+
+    if timestamp <= 0 or timestamp != timestamp:  # noqa: PLR0124 - NaN check
+        return ""
+    try:
+        moment = _datetime.datetime.fromtimestamp(timestamp)
+    except (OverflowError, OSError, ValueError):
+        return ""
+    return moment.strftime("%d %b")
 
 
 def _receipt_attention_priority(summary: Mapping[str, Any]) -> int | None:
@@ -2889,6 +2917,16 @@ def create_local_api_app(
         return _mechanical_projection_envelopes_for(service, store_dir)
 
     ledger_cache = WorkLedgerCache()
+    # Rebuilds the projections once at startup, then again after each store
+    # change while someone has been reading work data recently (see
+    # agentacct.ledger_warmer). Its callables are defined further down.
+    ledger_warmer = LedgerWarmer(
+        read_change_token=lambda: _ledger_change_token(),
+        rebuild=lambda: _warm_ledger_caches(),
+    )
+    app.state.ledger_warmer = ledger_warmer
+    app.router.add_event_handler("startup", ledger_warmer.start)
+    app.router.add_event_handler("shutdown", ledger_warmer.stop)
 
     def _ledger_secondary_signature() -> int:
         """Cheap append-only change key for the ledger inputs the events
@@ -2932,6 +2970,7 @@ def create_local_api_app(
         *,
         fingerprint: int | None = None,
         cache_key: int | None = None,
+        for_reader: bool = True,
     ) -> dict[str, Any]:
         """The derived ledger, change-keyed cached (see WorkLedgerCache).
 
@@ -2946,6 +2985,11 @@ def create_local_api_app(
         so both stay in lockstep within one request.
         """
 
+        if for_reader:
+            # Someone is looking at work data: keep it warm across store
+            # changes for a while (see LedgerWarmer). The warmer's own rebuild
+            # passes for_reader=False so it can never keep itself awake.
+            ledger_warmer.note_reader()
         if events is None:
             events = service.list_all_events()
         if fingerprint is None:
@@ -3145,23 +3189,28 @@ def create_local_api_app(
     v1_sessions_cache = V1SessionsCache()
 
     def _warm_ledger_caches() -> None:
-        # Best-effort: run the ~seconds-long reduce ONCE at startup so the first
-        # /v1/sessions poll is a cache hit instead of a cold rebuild. Fail-open —
-        # a cold first request self-heals, so a warm failure is never fatal.
+        # Best-effort: run the ~seconds-long reduce off the request path so a
+        # /v1/sessions poll or a session expansion is a cache hit instead of a
+        # cold rebuild. Fail-open — a cold request self-heals, so a warm
+        # failure is never fatal. Fills only the change-keyed caches a request
+        # would fill, under the key of the store as it is right now.
         try:
             events, fingerprint = _dashboard_events()
             ledger_key = _ledger_cache_key(fingerprint)
-            ledger = _derived_work_ledger(events, fingerprint=fingerprint, cache_key=ledger_key)
+            ledger = _derived_work_ledger(
+                events, fingerprint=fingerprint, cache_key=ledger_key, for_reader=False
+            )
             v1_sessions_cache.view(ledger_key, lambda: build_v1_sessions_view(ledger, events))
         except Exception:
             pass
 
-    app.router.add_event_handler(
-        "startup",
-        lambda: threading.Thread(
-            target=_warm_ledger_caches, name="agentacct-ledger-warm", daemon=True
-        ).start(),
-    )
+    def _ledger_change_token() -> tuple[Any, int]:
+        # What _ledger_cache_key depends on, without loading an event: the
+        # ledger's revision plus the secondary stores' stat signature. It only
+        # decides WHEN to warm. A change it somehow missed costs a reader one
+        # rebuild; it can never make a request reuse an out-of-date build,
+        # because requests key on the store's content, not on this token.
+        return (service.events_change_token(), _ledger_secondary_signature())
 
     @app.get("/v1/sessions")
     def v1_sessions(
@@ -3263,6 +3312,9 @@ def create_local_api_app(
         # so those fingerprint-invisible inputs (cost/run-report/mechanical-obs
         # imports) can lag up to ~60s here — the SAME staleness class and the
         # SAME reused-ledger profile the sessions lane already accepts.
+        # A reader even when this projection is served from its own cache and
+        # never reaches the shared ledger below.
+        ledger_warmer.note_reader()
         events, fingerprint = _dashboard_events()
         cached = v1_receipt_projection_cache.get("projection")
         if cached is not None and cached[0] == fingerprint and (time.time() - cached[1]) < 30.0:

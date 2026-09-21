@@ -57,6 +57,17 @@ final class RecordingHealthTests: XCTestCase {
         XCTAssertTrue(global?.detail.contains("One reconciliation fault") == true)
     }
 
+    func testSingleGlobalIssueWithAffectedSourcesGroupsTheSameWay() {
+        let causes = RecordingHealthSnapshot.groupedIssues([
+            .init(code: "evidence_refreshable_usage_failed", source: nil, action: "Refresh usage",
+                  affectedSources: ["codex", "claude-code", "hermes"])
+        ])
+        XCTAssertEqual(causes.count, 1)
+        XCTAssertEqual(causes.first?.affectedSources, ["claude-code", "codex", "hermes"])
+        XCTAssertEqual(causes.first?.title, "Usage totals may be incomplete")
+        XCTAssertTrue(causes.first?.detail.contains("3 sources") == true)
+    }
+
     func testDismissalAndRepeatedObservationPreserveOneActiveEpisode() throws {
         let coordinator = RecordingHealthCoordinator()
         let fault = try project(phase: .disconnected("offline"))

@@ -58,6 +58,14 @@ def _issues_by_source(issues: Iterable[Any]) -> dict[str, list[dict[str, Any]]]:
         source = issue.get("source")
         if isinstance(source, str) and source:
             grouped.setdefault(source, []).append(dict(issue))
+            continue
+        # A store-wide issue names the sources it touched instead of carrying
+        # one copy per source; each affected connection still sees it.
+        affected = issue.get("affected_sources")
+        if isinstance(affected, list):
+            for name in affected:
+                if isinstance(name, str) and name:
+                    grouped.setdefault(name, []).append({**dict(issue), "source": name})
     return grouped
 
 

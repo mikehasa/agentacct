@@ -56,6 +56,8 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-session-steps-compact-accessibility-dark.png",
         "work-session-steps-rtl-accessibility-light.png",
         "work-session-steps-rtl-accessibility-dark.png",
+        "work-session-steps-redacted-checks-light.png",
+        "work-session-steps-redacted-checks-dark.png",
         "work-actions-exact-regular-light.png",
         "work-actions-exact-regular-dark.png",
         "work-actions-exact-compact-light.png",
@@ -80,6 +82,14 @@ final class WorkVisualRegressionTests: XCTestCase {
         "work-checks-compact-accessibility-dark.png",
         "work-checks-accessibility-rtl-light.png",
         "work-checks-accessibility-rtl-dark.png",
+        "work-components-decision-badges-light.png",
+        "work-components-decision-badges-dark.png",
+        "work-components-provenance-chips-light.png",
+        "work-components-provenance-chips-dark.png",
+        "work-components-outcome-cards-light.png",
+        "work-components-outcome-cards-dark.png",
+        "work-components-filter-menus-light.png",
+        "work-components-filter-menus-dark.png",
     ]
 
     @MainActor
@@ -120,7 +130,10 @@ final class WorkVisualRegressionTests: XCTestCase {
         let checkRendered = try ReceiptCheckSnapshotRenderer.render(
             outputDirectory: outputDirectory
         )
-        let rendered = workRendered + sessionStepsRendered + actionRendered + checkRendered
+        let componentRendered = try WorkComponentSnapshotRenderer.render(
+            outputDirectory: outputDirectory
+        )
+        let rendered = workRendered + sessionStepsRendered + actionRendered + checkRendered + componentRendered
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedFilenames)
 
         let mode = try VisualSnapshotMode.resolve(environment: environment)

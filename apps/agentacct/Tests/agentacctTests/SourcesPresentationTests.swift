@@ -50,6 +50,48 @@ final class SourcesPresentationTests: XCTestCase {
         XCTAssertEqual(groups.flatMap(\.issues).count, 4)
     }
 
+    func testSingleGlobalIssueNamesItsAffectedSources() {
+        let groups = SourceIssueGroup.group([
+            .init(code: "evidence_refreshable_usage_failed", source: nil, action: "Refresh usage",
+                  affectedSources: ["codex", "claude-code"])
+        ])
+
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(groups.first?.isGlobalReconciliation, true)
+        XCTAssertEqual(groups.first?.affectedSources, ["claude-code", "codex"])
+        XCTAssertEqual(groups.first?.issues.count, 1)
+    }
+
+    func testAffectedSourcesDecodeFromSnakeCase() throws {
+        let json = #"{"code":"evidence_refreshable_usage_failed","source":null,"action":"Refresh usage","affected_sources":["codex","hermes"]}"#
+        let issue = try JSONDecoder().decode(V1IngestionIssue.self, from: Data(json.utf8))
+        XCTAssertEqual(issue.affectedSources, ["codex", "hermes"])
+        XCTAssertEqual(issue.namedSources, ["codex", "hermes"])
+    }
+
+    func testHeaderChipYieldsOnlyWhenEveryRowDisplaysTheHeaderWord() throws {
+        let reporting = try JSONDecoder().decode([V1IngestionSource].self, from: Data("""
+        [{"source": "codex", "state": "healthy", "parsed": 980}, {"source": "claude-code", "state": "healthy", "parsed": 1200}]
+        """.utf8))
+        // Every row says Reporting and so would the header: the header yields.
+        XCTAssertTrue(SourcesPane.rowsShareState(reporting, overall: "healthy", watcherRunning: true))
+        // A single row never hides the header.
+        XCTAssertFalse(SourcesPane.rowsShareState(Array(reporting.prefix(1)), overall: "healthy", watcherRunning: true))
+
+        let mixed = try JSONDecoder().decode([V1IngestionSource].self, from: Data("""
+        [{"source": "codex", "state": "healthy", "parsed": 980}, {"source": "hermes", "state": "healthy", "parsed": 0}]
+        """.utf8))
+        // Same raw state, different words (Reporting vs Watching): the header stays.
+        XCTAssertFalse(SourcesPane.rowsShareState(mixed, overall: "healthy", watcherRunning: true))
+
+        let degraded = try JSONDecoder().decode([V1IngestionSource].self, from: Data("""
+        [{"source": "codex", "state": "degraded"}, {"source": "hermes", "state": "degraded"}]
+        """.utf8))
+        // Rows say Degraded; the header's summary says "Needs a fix", which is
+        // not a repeat, so it stays.
+        XCTAssertFalse(SourcesPane.rowsShareState(degraded, overall: "degraded", watcherRunning: true))
+    }
+
     func testMissingGlobalSourceRemainsUnknown() {
         let groups = SourceIssueGroup.group([
             .init(code: "evidence_refreshable_usage_failed", source: nil, action: "Inspect evidence")

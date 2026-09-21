@@ -16,7 +16,7 @@ An agent worked on **"Fix the flaky checkout-total test"** and reported it done.
   The agent reported completing work; no check verifies the completion claim itself.
 - **Evidence coverage — 1/2 self-checked · 1 unchecked**
   1 non-verifiable (research/docs)
-  X of Y checkable steps carry a passing check; the tiers show how independent that check is. These are counts, not a probability of correctness.
+  Counts are passing checks over checkable steps, split by how independent each check is. These are counts, not a probability of correctness.
 
 > Evidence coverage and decision status are separate axes: an agent reporting 'done' never adds a passing check, and a human review or approval never counts as machine verification.
 
@@ -26,7 +26,7 @@ An agent worked on **"Fix the flaky checkout-total test"** and reported it done.
 | Actors | claude-code · claude-opus-4-8 | client_log |
 | Actions | edit×6 execute×4 read×10 search×2 · touched 3 files · ran 1 command | hook, mcp |
 | Cost | $18.60 · pricing_table | client_log |
-| Weekly plan | calibrating — not enough 7-day history yet |  |
+| Weekly plan | still learning — not enough 7-day history yet |  |
 | Evidence | 1 checks · 1 passed · 0 failed | mcp |
 | Outcome | reported · asserted by agent_report | mcp |
 

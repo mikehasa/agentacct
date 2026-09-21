@@ -74,7 +74,11 @@ def _record_section(service, *, session, section_id, title, status, at, client="
             "client_transcript_id": session,
             "client_context_keys_authored": ["client_session_id", "client_transcript_id"],
             "project_dir": f"/tmp/{project}", "section_id": section_id, "section_status": status,
-            "section_title": title, "summary": summary, "kind": kind,
+            "section_title": title,
+            # A terminal section must carry its outcome (RULES.md R4), so the
+            # builder supplies one when the caller leaves the default empty.
+            "summary": (summary or ("Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else summary)),
+            "kind": kind,
             "files": ["src/mod.py"], "blocker": blocker, "next_step": None,
         },
     })
@@ -557,11 +561,11 @@ def test_dashboard_shows_attention_and_recent_work(tmp_path):
             await app.workers.wait_for_complete()
             await pilot.pause()
             plain = Text.from_markup(app._dashboard_text).plain
-            assert "SHIFT BRIEF" in plain
-            assert "SIGNAL RAIL" in plain
+            assert "NEEDS REVIEW" in plain
+            assert "RIGHT NOW" in plain
             assert "RECENT WORK" in plain
             # the blocked task drives the attention hero
-            assert "PRIMARY ATTENTION" in plain
+            assert "TO REVIEW" in plain
             assert "Fix the flaky payment test" in plain
             # ↵ review deep-link is real; the old dead "Copy review brief" chip is gone
             assert "Review evidence" in plain
@@ -1425,3 +1429,13 @@ def test_tui_requires_interactive_terminal():
 def test_tui_rejects_bad_window():
     result = CliRunner().invoke(cli_app, ["tui", "--window", "5m"])
     assert result.exit_code != 0
+
+
+def test_reported_badge_is_neither_live_accent_nor_inferred_neutral() -> None:
+    reported = tui._decision_colors("reported", _DARK)
+    live = tui._decision_colors("in_progress", _DARK)
+    inactive = tui._decision_colors("inactive", _DARK)
+    assert reported != live
+    assert reported != inactive
+    assert reported[0] != _DARK["accent"]
+    assert reported[0] != _DARK["green"]

@@ -202,10 +202,13 @@ def step_evidence_grade(item: Mapping[str, Any]) -> dict[str, Any]:
             )
         ) or "a recorded check"
         snippet = _proof_snippet(proof)
+        # One sentence per tier, capitalized like the rest of the step body;
+        # the tier is still stated in words because the step row shows only a
+        # pip for it.
         reason = {
-            GRADE_EXTERNALLY_VERIFIED: f"CI/provider check passed ({snippet})",
-            GRADE_INDEPENDENTLY_CHECKED: f"the harness observed a check pass ({snippet}) — independent of the agent",
-            GRADE_SELF_CHECKED: f"the agent reported a check passed ({snippet}) — the agent's own, not independent",
+            GRADE_EXTERNALLY_VERIFIED: f"A CI or provider check passed ({snippet}).",
+            GRADE_INDEPENDENTLY_CHECKED: f"The harness observed a passing check ({snippet}), independent of the agent.",
+            GRADE_SELF_CHECKED: f"The agent reported a passing check ({snippet}); not independently verified.",
         }[grade]
         return {"grade": grade, "reason": reason, "checks": len(checks)}
     projected_checks = isinstance(item.get("current_check_events"), list)

@@ -71,6 +71,7 @@ def _seed(store: Path, *, title: str = "Add rate limit to login") -> None:
                 "objective": title,
                 "kind": "implementation",
                 "files": ["src/login.py"],
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )
@@ -97,6 +98,8 @@ def _add_section(store: Path, *, section_id: str, status: str, at: float) -> Non
                 "section_title": "handoff task",
                 "objective": "handoff task",
                 "kind": "implementation",
+                "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+                "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
             },
         }
     )
@@ -415,6 +418,8 @@ def test_receipt_detail_discloses_touched_files_overflow(tmp_path: Path) -> None
                 "objective": "t",
                 "kind": "implementation",
                 "files": files,
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )
@@ -464,6 +469,8 @@ def test_receipt_detail_escapes_markup_in_touched_paths(tmp_path: Path) -> None:
                 "objective": "t",
                 "kind": "implementation",
                 "files": ["src/[red]evil[/red].py"],
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )

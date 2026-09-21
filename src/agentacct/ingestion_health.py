@@ -1014,6 +1014,7 @@ class IngestionHealthStore:
         watcher_importer_version = str(watcher.get("importer_version") or "") if watcher else ""
         source_rows: list[dict[str, Any]] = []
         last_success_values: list[float] = []
+        reconciliation_sources: list[str] = []
         receipts = state.get("sources") if isinstance(state.get("sources"), dict) else {}
         for source in sorted(set(receipts) | configured_sources):
             receipt = receipts.get(source) if isinstance(receipts.get(source), dict) else {}
@@ -1320,18 +1321,9 @@ class IngestionHealthStore:
                         }
                     )
                 if EVIDENCE_REFRESHABLE_USAGE_ERROR_CODE in receipt_error_codes:
-                    issues.append(
-                        {
-                            "code": EVIDENCE_REFRESHABLE_USAGE_ERROR_CODE,
-                            "source": source,
-                            "action": (
-                                "The local usage ledger was saved, but Evidence v2 current-usage "
-                                "reconciliation did not reach a clean state. Retry usage refresh; "
-                                "if it persists, inspect Evidence v2 health and unresolved conflicts "
-                                "before rebuilding or cleaning any store."
-                            ),
-                        }
-                    )
+                    # One store-wide fault, reported once below with every
+                    # source it touched — never one copy per source.
+                    reconciliation_sources.append(source)
             source_rows.append(
                 {
                     "source": source,
@@ -1393,6 +1385,21 @@ class IngestionHealthStore:
                         )
                     ),
                     "consecutive_failures": _nonnegative_int(receipt.get("consecutive_failures")),
+                }
+            )
+
+        if reconciliation_sources:
+            affected = sorted(set(reconciliation_sources))
+            issues.append(
+                {
+                    "code": EVIDENCE_REFRESHABLE_USAGE_ERROR_CODE,
+                    "source": None,
+                    "affected_sources": affected,
+                    "action": (
+                        f"Recorded usage for {', '.join(affected)} did not reconcile cleanly, "
+                        "so usage totals may be incomplete or conflicting. Refresh usage; if it "
+                        "persists, run `agentacct doctor` before rebuilding or cleaning any store."
+                    ),
                 }
             )
 

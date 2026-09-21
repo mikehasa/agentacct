@@ -280,14 +280,37 @@ GLOBAL_INSTALL_NOTES = (
 
 # The per-task directive bullets, shared verbatim by every recording surface.
 _RECORDING_CONTRACT_LINES = (
+    # Budget: the guide test caps this block at 14 non-blank lines and the
+    # session-start variant at 10, because a long directive competes with the
+    # user's actual request for the agent's attention. So every line here earns
+    # its place: one idea, reason first.
+    #
     # `section_title`, not `title`: the MCP tool's own argument name. The old
     # `title` wording named a parameter agentacct_record_section rejected
     # outright ("unexpected argument(s): title"), so the instruction shipped a
     # call that could not succeed. mcp.py now also accepts `title` as an alias,
     # which is what keeps already-rendered CLAUDE.md/AGENTS.md files working.
-    "- Open a section with `agentacct_record_section` BEFORE your first other tool call, and again before each meaningful task. REQUIRED args: `source` (your client name, e.g. \"codex\" or \"claude-code\"), a stable `section_id` (reuse the SAME id across this section's started/checkpoint/terminal calls), and `section_status`; also set `section_title` to a short human goal. Start with `section_status=started`; normally finish with `completed` or `blocked`. Example: agentacct_record_section(source=\"codex\", section_id=\"add-rate-limit\", section_status=\"started\", section_title=\"add rate-limit to login\").",
-    "- For a long task, send `section_status=checkpoint` updates rather than one giant section.",
-    "- When the user hands the work off or says they are continuing in a new session, record the section as `section_status=handed_off` (a clean stop) — do not leave it `started`/`checkpoint`.",
+    "- Open a section with `agentacct_record_section` BEFORE your first other tool "
+    "call, and again before each meaningful task: it is the only thing that groups "
+    "your actions, files, checks and cost into one readable unit. Use `source` (your "
+    "client name), a stable `section_id` (the SAME id for this section's "
+    "started/checkpoint/terminal calls), `section_status=started`, and a short "
+    "`section_title`. Long task: send `section_status=checkpoint` updates rather than "
+    "one giant section. If unsure whether something is worth recording, record it: "
+    "a short section beats a gap; skip only genuinely trivial throwaway commands.",
+    "- Pass `client_session_id` when you know it — the only key that links this work to "
+    "the session's token and cost usage. Never guess it: an installed hook bridge fills "
+    "it in, and a wrong id is worse than a missing one. Add `turn_id` when your client "
+    "exposes it, so usage attributes per turn rather than per session.",
+    "- Finish with `section_status=completed` and a `summary`: one sentence stating the "
+    "outcome, then short lines for what changed and what was verified. The user reads "
+    "this prose, so lead with the result. A terminal section without it is refused. "
+    "Call `agentacct_work_status` before you finish: it lists sections you left open and "
+    "completed work that still has no check behind it.",
+    "- Blocked or handing off: `section_status=blocked` with `blocker` (what stopped "
+    "you) plus `next_step`, or `section_status=handed_off` with `summary` and "
+    "`next_step` when the user continues in a new session — never leave it "
+    "`started`/`checkpoint`.",
     # The whole-job-done capstone. The per-task bullet above closes each task,
     # but nothing cued a SESSION-level close when the user signals the whole
     # deliverable is finished ("ship it" / a merge). Without it a finished session
@@ -297,9 +320,16 @@ _RECORDING_CONTRACT_LINES = (
     # checks — so this cues only the honest close, and the machine_check bullet
     # below owns the evidence. Triggers stay unambiguous (a mid-task "looks good"
     # must not fire it).
-    "- When the user signals the whole job is done (\"ship it\", or after a merge), record a final `section_status=completed` summarizing the whole deliverable, and leave no section on `started`/`checkpoint`.",
-    "- After running tests or a build, record the objective result with `agentacct_record_machine_check`.",
-    "- Keep MCP/event evidence separate from token/cost claims: MCP events prove what work happened; a token or cost figure is only real if it comes from actual client usage the importer read — never fabricate one.",
+    "- When the user signals the whole job is done (\"ship it\", or after a merge), "
+    "record a final `section_status=completed` summarizing the whole deliverable, "
+    "and leave no section on `started`/`checkpoint`.",
+    "- After tests, a build, a lint, a smoke test or a browser check, call "
+    "`agentacct_record_machine_check` with `command` (what you ran) or `files` (what it "
+    "covered) plus `exit_code`; a check naming neither cannot be audited and is "
+    "refused.",
+    "- Keep MCP/event evidence separate from token/cost claims: MCP events prove what "
+    "work happened; a token or cost figure is only real if it comes from actual client "
+    "usage the importer read — never fabricate one.",
 )
 
 # The load-if-deferred hint. This is the KEY line for Claude Code, whose client

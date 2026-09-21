@@ -331,7 +331,10 @@ enum Type {
     static let dataSmallSemibold = Face.monoFont(12, .semibold)
     /// Eyebrows, column headers, strip captions — 12/700 mono, tracking +0.9.
     /// Reserved for the label species; row content stays sentence case.
-    static let labelCaps = Face.monoFont(12, .bold)
+    /// Caps eyebrows are labels, not values: they set in the sans face so
+    /// monospace stays reserved for numbers, ids and paths, and pages stop
+    /// reading as terminal output.
+    static let labelCaps = Face.sansFont(11, .bold)
     static let labelCapsTracking: CGFloat = 0.9
 }
 
@@ -355,7 +358,7 @@ enum WorkFontRole {
         case .captionSemibold: return (12, .semibold, .caption, false)
         case .dataSmall: return (12, .regular, .caption, true)
         case .dataSmallSemibold: return (12, .semibold, .caption, true)
-        case .labelCaps: return (12, .bold, .caption, true)
+        case .labelCaps: return (11, .bold, .caption, false)
         }
     }
 
@@ -700,8 +703,12 @@ struct TierBadge: View {
 /// * danger (coral) — needs the user: blocked / failed / failing check.
 /// * accent (cobalt, OUTLINED) — live right now; the outline (unfilled = still
 ///   in flight) keeps it apart from the settled claimed family below.
-/// * claimed (cobalt on the accent wash) — done-ish on a claim's strength:
-///   the agent said so, or a stop was its deliberate last word. Never green.
+/// * claimed (ink on the neutral wash) — done-ish on a claim's strength:
+///   the agent said so, or a stop was its deliberate last word. Never green,
+///   and never the live cobalt: a claim is settled, not in flight, so it must
+///   not share a colour with "In progress".
+/// * neutral (muted on the chip wash) — agentacct's own inference or an
+///   unknown state; quieter than a claim.
 /// * inferredStop (amber) — agentacct inferred the stop; honestly weaker than
 ///   a claim, so it wears the same claim≠proof amber as unverified evidence.
 /// * verified (green) — machine-verified completion only.
@@ -735,8 +742,9 @@ enum DecisionTintClass {
 
     var text: Color {
         switch self {
-        case .neutral: return Theme.ink
-        case .accent, .claimed: return Theme.accent
+        case .neutral: return Theme.muted
+        case .claimed: return Theme.ink
+        case .accent: return Theme.accent
         case .inferredStop: return Theme.amber
         case .danger: return Theme.coral
         case .verified: return Theme.green
@@ -745,9 +753,9 @@ enum DecisionTintClass {
 
     var wash: Color {
         switch self {
-        case .neutral: return Theme.tintNeutral
+        case .neutral: return Theme.chipBg
         case .accent: return .clear
-        case .claimed: return Theme.tintAccent
+        case .claimed: return Theme.tintNeutral
         case .inferredStop: return Theme.tintAmber
         case .danger: return Theme.tintCoral
         case .verified: return Theme.tintGreen
@@ -793,8 +801,25 @@ struct ProvenanceChip: View {
     let text: String
     var tint: Color = Theme.muted
 
+    /// Provenance ids are payload tokens (`client_log`, `mcp`, …). The chip
+    /// shows the same human label the terminal UI uses for them; anything
+    /// that is not a known token (a client name, say) passes through.
+    static func label(for raw: String) -> String {
+        switch raw {
+        case "mcp": return "MCP record"
+        case "client_log": return "Client log"
+        case "hook": return "Client hook"
+        case "transcript_scan": return "Transcript scan"
+        case "ci": return "CI"
+        case "external": return "External"
+        case "provider": return "Provider"
+        case "none": return "Not captured"
+        default: return raw
+        }
+    }
+
     var body: some View {
-        Text(text)
+        Text(Self.label(for: text))
             .workFont(.dataSmall)
             .foregroundStyle(tint)
             .padding(.horizontal, 12)
@@ -1257,6 +1282,9 @@ enum SnapshotMode {
     /// fixture renderers leave it `false` and keep the real interactive controls
     /// — so the golden references are unchanged.
     nonisolated(unsafe) static var rendersStaticControls = false
+    /// Snapshot-only: render the Usage page's "About these numbers"
+    /// disclosure open, so its contents are reviewed like any other surface.
+    nonisolated(unsafe) static var expandsUsageAbout = false
 
     /// How many steps a snapshot opens: check-bearing steps first, then
     /// un-checked ones. The golden fixture renders keep the default (2 + 1) so
@@ -1265,6 +1293,9 @@ enum SnapshotMode {
     /// screenshot fits the step spine and the activity timeline together.
     nonisolated(unsafe) static var expandedStepsWithChecks = 2
     nonisolated(unsafe) static var expandedStepsWithoutChecks = 1
+    /// Snapshot-only: pin the Usage chart's selected bar so a render can show
+    /// the tooltip on a chosen period (nil keeps the live default).
+    nonisolated(unsafe) static var usageChartSelectedIndex: Int? = nil
 }
 
 struct ScrollBox<Content: View>: View {

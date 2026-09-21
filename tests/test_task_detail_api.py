@@ -55,6 +55,7 @@ def _seed_task(store_root: Path) -> tuple[TestClient, str]:
                 "section_summary": "The agent reported completing the implementation.",
                 "client": "codex",
                 "client_session_id": session_id,
+                "summary": "Recorded outcome for this fixture section.",
             },
         }
     )

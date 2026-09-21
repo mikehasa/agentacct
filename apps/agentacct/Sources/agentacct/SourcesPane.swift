@@ -66,14 +66,28 @@ struct V1IngestionIssue: Decodable, Identifiable {
     /// error | attention | advisory | transient. Absent → treated as error, so a
     /// new issue is never silently demoted to a quiet note.
     let severity: String?
+    /// A store-wide issue is reported once and names the sources it touched
+    /// here instead of carrying one copy per source.
+    let affectedSources: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case code, source, action, severity
+        case affectedSources = "affected_sources"
+    }
 
     // Explicit init so `severity` defaults to nil at call sites (test fixtures)
     // without dropping the synthesized Decodable conformance.
-    init(code: String?, source: String?, action: String?, severity: String? = nil) {
+    init(code: String?, source: String?, action: String?, severity: String? = nil, affectedSources: [String]? = nil) {
         self.code = code
         self.source = source
         self.action = action
         self.severity = severity
+        self.affectedSources = affectedSources
+    }
+
+    /// Every source this issue names: its own source plus any affected list.
+    var namedSources: [String] {
+        (source.map { [$0] } ?? []) + (affectedSources ?? [])
     }
 
     var id: String { "\(code ?? "?")-\(source ?? "*")" }
@@ -133,7 +147,7 @@ struct SourceIssueGroup: Identifiable {
     private(set) var issues: [V1IngestionIssue]
 
     var isGlobalReconciliation: Bool { issues.first?.code == Self.globalReconciliationCode }
-    var affectedSources: [String] { Array(Set(issues.compactMap(\.source))).sorted() }
+    var affectedSources: [String] { Array(Set(issues.flatMap(\.namedSources))).sorted() }
 
     static func group(_ issues: [V1IngestionIssue]) -> [Self] {
         var result: [Self] = []
@@ -300,6 +314,41 @@ struct SourcesPane: View {
         .accessibilityIdentifier("sources-retained-health")
     }
 
+    /// When every row wears the same state the rows already say it; a
+    /// seventh copy in the header adds nothing.
+    static func rowsShareState(_ sources: [V1IngestionSource], overall: String?, watcherRunning: Bool) -> Bool {
+        guard sources.count > 1, let overall else { return false }
+        // Compare what the reader sees, not the raw state: three "healthy"
+        // rows can display Reporting, Reporting and Watching, and then the
+        // header's Reporting is not a repeat.
+        let header = overallStatusLabel(overall, watcherRunning: watcherRunning)
+        return sources.allSatisfy { sourceStatusLabel($0, watcherRunning: watcherRunning) == header }
+    }
+
+    /// The live per-source status word, shared by the row lozenge and the
+    /// header-repeat rule so the two can never disagree.
+    static func sourceStatusLabel(_ source: V1IngestionSource, watcherRunning: Bool) -> String {
+        switch source.state ?? "unknown" {
+        case "healthy" where watcherRunning && (source.parsed ?? 0) > 0: return "Reporting"
+        case "healthy" where watcherRunning: return "Watching · no data yet"
+        case "healthy": return "Idle"
+        case "degraded": return "Degraded"
+        case "pending": return "Pending"
+        case let state: return state.capitalized
+        }
+    }
+
+    /// The live card-level status word, shared with the header lozenge.
+    static func overallStatusLabel(_ state: String, watcherRunning: Bool) -> String {
+        switch state {
+        case "healthy" where watcherRunning: return "Reporting"
+        case "healthy": return "Idle"
+        case "attention": return "Attention"
+        case "degraded": return "Needs a fix"
+        case let state: return state.capitalized
+        }
+    }
+
     private func connectedCard(_ snapshot: V1IngestionSnapshot) -> some View {
         let sources = (snapshot.sources ?? []).sorted { $0.source < $1.source }
         let watcherRunning = presentation.watcherIsCurrentlyRunning(snapshot.watcher)
@@ -311,7 +360,8 @@ struct SourcesPane: View {
                         Text("\(sources.count)").workFont(.dataSmall).foregroundStyle(Theme.muted)
                     }
                     if !stacksRows { Spacer() }
-                    if let overall = snapshot.state {
+                    if let overall = snapshot.state,
+                       presentation.isRetained || !Self.rowsShareState(sources, overall: overall, watcherRunning: watcherRunning) {
                         overallLozenge(overall, watcherRunning: watcherRunning)
                     }
                 }
@@ -804,17 +854,14 @@ struct SourcesPane: View {
 
     private func sharedReconciliationIssue(_ group: SourceIssueGroup) -> some View {
         VStack(alignment: .leading, spacing: Space.m) {
-            Text("Evidence reconciliation needs review")
+            Text("Usage totals may be incomplete")
                 .workFont(.rowLabel).foregroundStyle(presentation.isRetained ? Theme.muted : Theme.amber)
             Text(group.affectedSources.isEmpty
-                ? "One global reconciliation fault is reported. Affected sources were not identified."
-                : "One global reconciliation fault is reported across \(group.affectedSources.count) source \(group.affectedSources.count == 1 ? "summary" : "summaries").")
+                ? "Recorded usage did not reconcile cleanly. The affected sources were not identified."
+                : "Recorded usage for \(group.affectedSources.joined(separator: ", ")) did not reconcile cleanly.")
                 .workFont(.body).foregroundStyle(Theme.ink)
-            if !group.affectedSources.isEmpty {
-                Text("Affected sources: \(group.affectedSources.joined(separator: ", "))")
-                    .workFont(.caption).foregroundStyle(Theme.muted)
-            }
-            Text("Usage history may be incomplete or conflicting. This shared fault does not establish that every affected client stopped recording.")
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Refresh usage; if it persists, run agentacct doctor before rebuilding or cleaning any store. This does not mean any client stopped recording.")
                 .workFont(.caption).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: Space.l) {
@@ -834,9 +881,11 @@ struct SourcesPane: View {
 
     private func originalDiagnostic(_ issue: V1IngestionIssue) -> some View {
         VStack(alignment: .leading, spacing: Space.s) {
+            // The raw code is for diagnostics, so it lives on hover; the
+            // title already says the same thing in words.
             Text(issueTitle(issue))
                 .workFont(.rowLabel).foregroundStyle(presentation.isRetained ? Theme.muted : issue.tint)
-            Text(issue.code ?? "code not supplied").workFont(.dataSmall).foregroundStyle(Theme.muted)
+                .help("Diagnostic code: \(issue.code ?? "not supplied")")
             Text(issue.action ?? "See agentacct doctor for source diagnostics.")
                 .workFont(.caption).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)

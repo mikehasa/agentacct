@@ -33,6 +33,8 @@ def _section(service: SentinelService, *, section_id: str, status: str, session:
                 "client": "codex",
                 "client_session_id": session,
                 **extra,
+                "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+                "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
             },
         }
     )
@@ -187,6 +189,10 @@ def test_supersedes_check_event_id_requires_a_passing_result(tmp_path: Path) -> 
         "section_id": "s",
         "project_dir": "/tmp/p",
         "evidence_type": "build",
+        # R5: a check must name what it ran or what it produced.
+        "command": "pnpm build:web",
+        # R6: and its name must identify it, because supersession keys on it.
+        "name": "pnpm build:web",
         "supersedes_check_event_id": "evt_earlier_failure",
     }
     rejected = call({**base, "result": "failed", "exit_code": 1})
@@ -238,7 +244,8 @@ def test_resolution_pointing_at_a_failed_check_surfaces_its_own_diagnostic(tmp_p
             "project_dir": project,
             "evidence_type": "artifact",
             "result": "passed",
-            "name": "fix",
+            "name": "pytest tests/test_publish.py",
+            "command": "./probe.sh",
             "exit_code": 0,
             "summary": "fixed",
             "resolves_blocked_event_id": failed_id,

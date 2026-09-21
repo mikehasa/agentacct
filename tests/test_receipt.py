@@ -789,7 +789,7 @@ def test_plan_share_headline_is_calibrated_or_nothing() -> None:
     # Not calibrated: a NAMED state, never a number — even when a pct is present.
     assert (
         plan_share_headline({"pct": 9.9, "calibration_state": "calibrating"})
-        == "calibrating — not enough 7-day history yet"
+        == "still learning — not enough 7-day history yet"
     )
     assert (
         plan_share_headline({"pct": None, "calibration_state": "never"})
