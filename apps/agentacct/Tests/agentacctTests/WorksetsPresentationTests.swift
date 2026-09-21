@@ -123,6 +123,20 @@ final class WorksetsPresentationTests: XCTestCase {
         XCTAssertNil(none.sharedSessions)
     }
 
+    func testCombinedHoursFormatsSumOfSessionTime() {
+        XCTAssertNil(WorksetFormat.combinedHours(nil))
+        XCTAssertNil(WorksetFormat.combinedHours(0))
+        XCTAssertEqual(WorksetFormat.combinedHours(1800), "30m")       // under an hour
+        XCTAssertEqual(WorksetFormat.combinedHours(3 * 3600), "3h")
+        XCTAssertEqual(WorksetFormat.combinedHours(1340 * 3600), "1,340h")  // thousands-separated
+    }
+
+    func testSummaryDecodesCombinedDuration() {
+        let s = summary(#"{"session_count":9,"sources":[],"combined_duration_seconds":18000}"#)
+        XCTAssertEqual(s.combinedDurationSeconds, 18000)
+        XCTAssertNil(summary(#"{"session_count":3,"sources":[]}"#).combinedDurationSeconds)
+    }
+
     func testAxisUsesTrueSpanOverrideSoTruncatedPreviewStaysHonest() {
         // Two visible bars early in a much wider true window (the later sessions
         // are truncated away). The axis + bar positions must reflect the TRUE

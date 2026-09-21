@@ -1525,6 +1525,9 @@ struct WorksetSummary: Decodable {
     /// Members that also ran in other folders and are counted in those groups
     /// too — surfaced so the card can disclose the same run appears more than once.
     let sharedSessions: Int?
+    /// Sum of each member's own begin→end span (wall-clock; overlaps included),
+    /// so the Activity header can label the group's combined session-hours.
+    let combinedDurationSeconds: Double?
     let costConfidence: String?
     let costBasis: String?
 
@@ -1539,6 +1542,7 @@ struct WorksetSummary: Decodable {
         case pricedSessions = "priced_sessions"
         case unpricedSessions = "unpriced_sessions"
         case sharedSessions = "shared_sessions"
+        case combinedDurationSeconds = "combined_duration_seconds"
         case costConfidence = "cost_confidence"
         case costBasis = "cost_basis"
     }

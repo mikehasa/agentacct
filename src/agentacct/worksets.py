@@ -626,12 +626,18 @@ def summarize_members(members: list[Mapping[str, Any]]) -> dict[str, Any]:
     priced_sessions = 0
     unpriced_sessions = 0
     shared_sessions = 0
+    combined_duration = 0.0
+    timed_sessions = 0
     cost_confidences: set[str] = set()
 
     for entry in members:
         sources[_source_label(entry)] += 1
         if len(_entry_identities(entry)) > 1:
             shared_sessions += 1
+        dur = entry.get("duration_seconds")
+        if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > 0:
+            combined_duration += float(dur)
+            timed_sessions += 1
         ef = _safe_time(entry.get("first_activity_at"))
         el = _safe_time(entry.get("last_activity_at"))
         if ef is not None:
@@ -672,6 +678,11 @@ def summarize_members(members: list[Mapping[str, Any]]) -> dict[str, Any]:
         # too, so the client can disclose that the same run appears more than
         # once — the group total is a sum that includes shared sessions.
         "shared_sessions": shared_sessions,
+        # Sum of each member's own begin->end span (wall-clock, overlaps
+        # included), so the Activity header can label the group's combined
+        # session-hours next to its span. None when no member has a usable
+        # duration, so the client never fabricates a zero.
+        "combined_duration_seconds": combined_duration if timed_sessions else None,
         "cost_confidence": cost_confidence,
         "cost_basis": "sum_of_independent_receipts",
     }

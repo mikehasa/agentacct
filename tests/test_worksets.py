@@ -273,6 +273,17 @@ def test_summary_counts_shared_sessions_for_honest_disclosure() -> None:
     assert summary["shared_sessions"] == 1  # the wander session is counted here and in its other folder
 
 
+def test_summary_sums_combined_session_duration() -> None:
+    summary = summarize_members([
+        {"client": "claude-code", "session_kind": "root", "duration_seconds": 3600, "usage": {}},
+        {"client": "codex", "session_kind": "root", "duration_seconds": 1800, "usage": {}},
+        {"client": "claude-code", "session_kind": "root", "usage": {}},  # no duration — skipped
+    ])
+    assert summary["combined_duration_seconds"] == 5400.0
+    # None (never a fabricated zero) when nothing has a usable duration.
+    assert summarize_members([{"client": "codex", "session_kind": "root", "usage": {}}])["combined_duration_seconds"] is None
+
+
 def test_summary_is_a_labeled_partial_sum_when_a_member_is_unpriced() -> None:
     members = [
         {"client": "claude-code", "session_kind": "root",

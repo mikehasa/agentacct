@@ -743,14 +743,30 @@ private struct WorksetTimeline: View {
         )
     }
 
+    // Once a bar is wide enough (i.e. you've zoomed in on it) the session's
+    // title reads straight off the bar, like the session-detail timeline —
+    // hover is no longer the only way to tell the bars apart.
+    private static let barLabelMinWidth: CGFloat = 52
+
     private func packedBar(_ bar: WorksetTimelineLayout.Bar, width: CGFloat, offset: CGFloat, faded: Bool) -> some View {
         Button {
             if let key = bar.lane.sessionKey, !key.isEmpty { appSelection.open(.session(key)) }
         } label: {
             RoundedRectangle(cornerRadius: 3)
                 .fill(faded ? Theme.muted : Theme.sourceColor(bar.lane.client))
-                .frame(width: width, height: 12)
+                .frame(width: width, height: 14)
                 .opacity(faded ? 0.5 : 1)
+                .overlay(alignment: .leading) {
+                    if !faded, width >= Self.barLabelMinWidth {
+                        Text(bar.lane.displayTitle)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1).truncationMode(.tail)
+                            .padding(.horizontal, 4)
+                            .frame(width: width, alignment: .leading)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .contentShape(Rectangle())
         }
         // The bar owns its geometry; SurfaceButtonStyle is the shared `.plain`
@@ -1047,6 +1063,18 @@ private struct WorksetDetailView: View {
 
     private var sessionsTotal: Int { workset.sessionsTotal ?? workset.summary.sessionCount }
 
+    /// The Activity chart's header stat line: how many sessions, how many hours
+    /// of session time combined, and the wall-clock span they cover.
+    private var activityTrailing: String {
+        var parts = ["\(sessionsTotal) session\(sessionsTotal == 1 ? "" : "s")"]
+        if let hours = WorksetFormat.combinedHours(workset.summary.combinedDurationSeconds) {
+            parts.append("\(hours) combined")
+        }
+        let span = WorksetFormat.span(from: workset.summary.firstActivityAt, to: workset.summary.lastActivityAt)
+        if span != "—" { parts.append(span) }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             Button(action: onBack) {
@@ -1085,7 +1113,7 @@ private struct WorksetDetailView: View {
 
             WorksetDetailSectionHeader(
                 title: "Activity",
-                trailing: WorksetFormat.span(from: workset.summary.firstActivityAt, to: workset.summary.lastActivityAt)
+                trailing: activityTrailing
             )
             WorksetTimeline(
                 lanes: workset.sessions,
@@ -1398,6 +1426,15 @@ enum WorksetFormat {
     /// unpriced — never a fabricated $0.
     static func laneCost(_ lane: WorksetLane) -> String? {
         Fmt.costDisplay(usd: lane.estimatedCostUsd, complete: lane.estimatedCostUsd != nil, confidence: lane.costConfidence)
+    }
+
+    /// The group's combined session-time as whole hours (or minutes when under
+    /// an hour), thousands-separated. A labeled sum of overlapping spans, so it
+    /// can exceed the wall-clock span — the header says "combined" to be clear.
+    static func combinedHours(_ seconds: Double?) -> String? {
+        guard let seconds, seconds.isFinite, seconds > 0 else { return nil }
+        if seconds < 3_600 { return "\(Int((seconds / 60).rounded()))m" }
+        return "\(Int((seconds / 3_600).rounded()).formatted())h"
     }
 
     /// A short human duration for a single session (its own begin→end span).
