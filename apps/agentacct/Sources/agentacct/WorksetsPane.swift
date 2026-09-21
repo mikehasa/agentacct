@@ -479,7 +479,9 @@ private struct WorksetTimeline: View {
     private static let hoverCardWidth: CGFloat = 240
     private static let scrubberHeight: CGFloat = 26
     // The detail canvas traps the scroll wheel for zoom, so it must fit the
-    // viewport; bound it to this many rows and disclose the rest.
+    // viewport. Bin-packing collapses the sessions into a handful of shared
+    // lanes; this bounds the lane count so the canvas height stays fixed (real
+    // groups pack into far fewer, so nothing is dropped in practice).
     private static let maxDetailRows = 16
     // The per-row button's horizontal inset (QuietButtonStyle horizontalPadding),
     // so the bar track the input math uses matches where the bars actually draw.
@@ -529,32 +531,45 @@ private struct WorksetTimeline: View {
         WorksetTimelineLayout(lanes: visibleLanes, windowStart: window?.start, windowEnd: window?.end)
     }
 
-    // The list collapses to a handful and scrolls in place. The detail is a
-    // native scroll-to-zoom canvas that traps the wheel, so it must fit the
-    // viewport (a taller canvas would trap the page scroll): it's bounded to
-    // maxDetailRows and discloses any sessions beyond the cap, which zooming
-    // into a time range brings into view.
-    private var visibleRows: Int { zoomable ? Self.maxDetailRows : 8 }
-    private var scrollsInternally: Bool { !zoomable && layout.bars.count > visibleRows }
-
-    // The bars actually drawn. In the bounded detail we keep every timeless bar
-    // (its note points at it) plus the most recent timed bars up to the cap.
-    private var renderedBars: [WorksetTimelineLayout.Bar] {
-        guard zoomable, layout.bars.count > Self.maxDetailRows else { return layout.bars }
-        let timeless = layout.bars.filter { $0.timeUnknown }
-        let timed = layout.bars.filter { !$0.timeUnknown }
-        let keepTimed = max(0, Self.maxDetailRows - timeless.count)
-        return Array(timed.suffix(keepTimed)) + timeless
+    // The detail (zoomable) packs every session into a handful of shared rows —
+    // a real Gantt — so the whole history is visible at once without a per-row
+    // label list, and titles come from hover / the Sessions list above. Bin-
+    // packing keeps this small (dozens of sessions → a few rows); it is bounded
+    // to maxDetailRows so the scroll-to-zoom canvas still fits its viewport.
+    private var packed: (rows: [[WorksetTimelineLayout.Bar]], timeless: [WorksetTimelineLayout.Bar]) {
+        layout.packedRows(maxRows: Self.maxDetailRows)
     }
 
-    // Timed sessions inside the window but past the row cap (disjoint from
-    // hiddenByZoom, which is sessions outside the window entirely).
-    private var cappedOverflow: Int { max(0, layout.bars.count - renderedBars.count) }
+    // The card (non-zoomable) keeps one labeled row per session and scrolls in
+    // place when there are more than a handful.
+    private var visibleRows: Int { 8 }
+    private var scrollsInternally: Bool { !zoomable && layout.bars.count > visibleRows }
+
+    // The bars drawn by the non-zoomable card list (every member; it scrolls).
+    private var renderedBars: [WorksetTimelineLayout.Bar] { layout.bars }
+
+    // The number of lane rows the packed detail occupies (a trailing row holds
+    // any timeless sessions, laid out apart from the real times).
+    private var packedRowCount: Int { packed.rows.count + (packed.timeless.isEmpty ? 0 : 1) }
+
+    // The canvas height is fixed by the FULL-range packing, not the zoomed
+    // subset, so zooming in (which shows fewer sessions) never shrinks the
+    // scroll-to-zoom surface to a sliver. A small floor keeps a tiny group's
+    // canvas comfortably clickable.
+    private var stablePackedRowCount: Int {
+        let full = WorksetTimelineLayout(lanes: lanes).packedRows(maxRows: Self.maxDetailRows)
+        return full.rows.count + (full.timeless.isEmpty ? 0 : 1)
+    }
 
     private var rowsHeight: CGFloat {
+        if zoomable { return CGFloat(max(3, stablePackedRowCount)) * Self.rowUnit }
         let shown = scrollsInternally ? visibleRows : max(1, renderedBars.count)
         return CGFloat(shown) * Self.rowUnit
     }
+
+    // Where the bar track starts. The card reserves a left label column; the
+    // packed detail runs the track edge-to-edge (labels move to hover / click).
+    private var leadingTrackInset: CGFloat { zoomable ? Self.barInset : (Self.labelWidth + Space.m + Self.barInset) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
@@ -625,7 +640,7 @@ private struct WorksetTimeline: View {
     private var timelineArea: some View {
         GeometryReader { geo in
             let canvasW = geo.size.width
-            let trackWidth = max(1, canvasW - Self.labelWidth - Space.m - Self.barInset * 2)
+            let trackWidth = max(1, canvasW - leadingTrackInset - Self.barInset)
             Group {
                 if zoomable {
                     WorkTimeCanvasInput(
@@ -672,12 +687,104 @@ private struct WorksetTimeline: View {
 
     @ViewBuilder
     private var rowsContent: some View {
-        let rows = VStack(spacing: 0) { ForEach(renderedBars) { bar in laneRow(bar) } }
-        if scrollsInternally {
-            ScrollView { rows }.frame(height: rowsHeight)
+        if zoomable {
+            packedRowsContent
         } else {
-            rows.frame(height: rowsHeight, alignment: .top)
+            let rows = VStack(spacing: 0) { ForEach(renderedBars) { bar in laneRow(bar) } }
+            if scrollsInternally {
+                ScrollView { rows }.frame(height: rowsHeight)
+            } else {
+                rows.frame(height: rowsHeight, alignment: .top)
+            }
         }
+    }
+
+    // The packed Gantt: each row holds several non-overlapping sessions as bars
+    // on the shared time axis. No per-row label — titles come from hover and the
+    // Sessions list above. A trailing row gathers any timeless sessions.
+    private var packedRowsContent: some View {
+        let model = packed
+        return VStack(spacing: 0) {
+            ForEach(Array(model.rows.enumerated()), id: \.offset) { _, barsInRow in
+                packedLaneRow(barsInRow, timeless: false)
+            }
+            if !model.timeless.isEmpty {
+                packedLaneRow(model.timeless, timeless: true)
+            }
+        }
+        .frame(height: rowsHeight, alignment: .top)
+    }
+
+    private func packedLaneRow(_ barsInRow: [WorksetTimelineLayout.Bar], timeless: Bool) -> some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2).fill(Theme.hairline).frame(height: 2)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                ForEach(Array(barsInRow.enumerated()), id: \.element.id) { index, bar in
+                    // Timeless sessions have no position: lay them out side by
+                    // side at the start as faded pips, flagged by the note below.
+                    let width: CGFloat = timeless ? 20 : max(6, w * CGFloat(bar.widthFraction))
+                    let offset: CGFloat = timeless ? CGFloat(index) * 24 : w * CGFloat(bar.leftFraction)
+                    packedBar(bar, width: width, offset: offset, faded: timeless)
+                }
+            }
+            .frame(height: 16)
+        }
+        .frame(height: Self.rowUnit)
+        // The whole lane row is an interactive region so its bars stay clickable
+        // and hoverable while the canvas keeps scroll-to-zoom; gaps between bars
+        // are no-ops (panning is the scrubber's job).
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: WorksetRowFrameKey.self,
+                                       value: [proxy.frame(in: .named("wsTimeline"))])
+            }
+        )
+    }
+
+    // Once a bar is wide enough (i.e. you've zoomed in on it) the session's
+    // title reads straight off the bar, like the session-detail timeline —
+    // hover is no longer the only way to tell the bars apart.
+    private static let barLabelMinWidth: CGFloat = 52
+
+    private func packedBar(_ bar: WorksetTimelineLayout.Bar, width: CGFloat, offset: CGFloat, faded: Bool) -> some View {
+        Button {
+            if let key = bar.lane.sessionKey, !key.isEmpty { appSelection.open(.session(key)) }
+        } label: {
+            RoundedRectangle(cornerRadius: 3)
+                .fill(faded ? Theme.muted : Theme.sourceColor(bar.lane.client))
+                .frame(width: width, height: 14)
+                .opacity(faded ? 0.5 : 1)
+                .overlay(alignment: .leading) {
+                    if !faded, width >= Self.barLabelMinWidth {
+                        Text(bar.lane.displayTitle)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1).truncationMode(.tail)
+                            .padding(.horizontal, 4)
+                            .frame(width: width, alignment: .leading)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        // The bar owns its geometry; SurfaceButtonStyle is the shared `.plain`
+        // replacement that keeps that layout while adding hover / press / focus
+        // feedback (and renders as its resting bar in snapshots).
+        .buttonStyle(SurfaceButtonStyle(cornerRadius: 3))
+        .offset(x: offset)
+        .onContinuousHover(coordinateSpace: .named("wsTimeline")) { phase in
+            switch phase {
+            case .active(let point):
+                hovered = bar.lane
+                hoverPoint = point
+            case .ended:
+                if hovered?.id == bar.lane.id { hovered = nil }
+            }
+        }
+        .accessibilityLabel(Self.accessibleLabel(bar.lane))
+        .accessibilityIdentifier("worksets.timeline.bar")
     }
 
     private func laneRow(_ bar: WorksetTimelineLayout.Bar) -> some View {
@@ -770,7 +877,7 @@ private struct WorksetTimeline: View {
     // track starts at labelWidth + Space.m + barInset (the button's own inset).
     private func remapAnchor(_ anchor: Double, canvasW: CGFloat, trackWidth: CGFloat) -> Double {
         guard trackWidth > 0 else { return 0.5 }
-        let x = anchor * Double(canvasW) - Double(Self.labelWidth + Space.m + Self.barInset)
+        let x = anchor * Double(canvasW) - Double(leadingTrackInset)
         return min(1.0, max(0.0, x / Double(trackWidth)))
     }
 
@@ -810,7 +917,7 @@ private struct WorksetTimeline: View {
                 .accessibilityValue(zoomCoverageLabel)
             }
             .frame(height: Self.scrubberHeight)
-            .padding(.leading, Self.labelWidth + Space.m + Self.barInset)
+            .padding(.leading, leadingTrackInset)
             .padding(.trailing, Self.barInset)
         }
     }
@@ -846,7 +953,7 @@ private struct WorksetTimeline: View {
                 Spacer()
                 Text(WorksetFormat.axisLabel(end, span: end - start)).workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
-            .padding(.leading, Self.labelWidth + Space.m + Self.barInset)
+            .padding(.leading, leadingTrackInset)
             .padding(.trailing, Self.barInset)
         }
     }
@@ -855,13 +962,8 @@ private struct WorksetTimeline: View {
     private var notes: some View {
         let timeless = layout.timelessCount
         let hidden = hiddenByZoom
-        let capped = cappedOverflow
-        if truncated || timeless > 0 || hidden > 0 || capped > 0 {
+        if truncated || timeless > 0 || hidden > 0 {
             VStack(alignment: .leading, spacing: 2) {
-                if capped > 0 {
-                    Text("Showing \(renderedBars.count) of \(layout.bars.count) sessions in view — zoom into a time range to see the rest.")
-                        .workFont(.caption).foregroundStyle(Theme.muted)
-                }
                 if hidden > 0 {
                     Text("\(hidden) session\(hidden == 1 ? "" : "s") outside this range — zoom out to see \(hidden == 1 ? "it" : "them").")
                         .workFont(.caption).foregroundStyle(Theme.muted)
@@ -923,6 +1025,11 @@ private struct WorksetHoverCard: View {
                     Text(status).workFont(.caption).foregroundStyle(Theme.muted)
                 }
             }
+            if let shared = lane.sharedFoldersLabel {
+                Text("also ran in \(shared) — counted there too")
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if !facts.isEmpty {
                 Rectangle().fill(Theme.hairline).frame(height: 1)
                 let columns = [GridItem(.flexible(), spacing: Space.m), GridItem(.flexible(), spacing: Space.m)]
@@ -955,6 +1062,18 @@ private struct WorksetDetailView: View {
     let onBack: () -> Void
 
     private var sessionsTotal: Int { workset.sessionsTotal ?? workset.summary.sessionCount }
+
+    /// The Activity chart's header stat line: how many sessions, how many hours
+    /// of session time combined, and the wall-clock span they cover.
+    private var activityTrailing: String {
+        var parts = ["\(sessionsTotal) session\(sessionsTotal == 1 ? "" : "s")"]
+        if let hours = WorksetFormat.combinedHours(workset.summary.combinedDurationSeconds) {
+            parts.append("\(hours) combined")
+        }
+        let span = WorksetFormat.span(from: workset.summary.firstActivityAt, to: workset.summary.lastActivityAt)
+        if span != "—" { parts.append(span) }
+        return parts.joined(separator: " · ")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
@@ -994,7 +1113,7 @@ private struct WorksetDetailView: View {
 
             WorksetDetailSectionHeader(
                 title: "Activity",
-                trailing: WorksetFormat.span(from: workset.summary.firstActivityAt, to: workset.summary.lastActivityAt)
+                trailing: activityTrailing
             )
             WorksetTimeline(
                 lanes: workset.sessions,
@@ -1095,6 +1214,9 @@ private struct WorksetSessionRow: View {
                         if isSubagent, let kind = lane.sessionKind {
                             Chip(text: kind, tint: Theme.muted)
                         }
+                        if let shared = lane.sharedFoldersLabel {
+                            Chip(text: "also in \(shared)", tint: Theme.muted)
+                        }
                     }
                     HStack(spacing: Space.s) {
                         Text(WorksetFormat.sourceLabel(lane.client ?? "unknown"))
@@ -1157,6 +1279,7 @@ private struct WorksetSessionRow: View {
     private var accessibilityLabel: String {
         var parts = [lane.displayTitle, WorksetFormat.sourceLabel(lane.client ?? "unknown")]
         if isSubagent, let kind = lane.sessionKind { parts.append("\(kind) subagent") }
+        if let shared = lane.sharedFoldersLabel { parts.append("also ran in \(shared)") }
         if let status = lane.status { parts.append(status) }
         if let steps = lane.steps, steps > 0 { parts.append(Fmt.count(steps, "step")) }
         if let failed = lane.checksFailed, failed > 0 { parts.append(Fmt.count(failed, "failed check")) }
@@ -1257,6 +1380,9 @@ private struct WorksetHonestyNote: View {
             if (summary.unpricedSessions ?? 0) > 0 {
                 note("Some sessions here carry no imported cost, so the total above is a partial sum.")
             }
+            if let shared = summary.sharedSessions, shared > 0 {
+                note("\(shared) session\(shared == 1 ? "" : "s") here also ran in other folders and \(shared == 1 ? "is" : "are") counted in those groups too — one run can appear in more than one Work group.")
+            }
             note("Grouped because you pointed this at a folder. Each session keeps its own receipt and evidence; the total is a sum of \(summary.sessionCount) session\(summary.sessionCount == 1 ? "" : "s"), not a combined verdict.")
         }
     }
@@ -1300,6 +1426,15 @@ enum WorksetFormat {
     /// unpriced — never a fabricated $0.
     static func laneCost(_ lane: WorksetLane) -> String? {
         Fmt.costDisplay(usd: lane.estimatedCostUsd, complete: lane.estimatedCostUsd != nil, confidence: lane.costConfidence)
+    }
+
+    /// The group's combined session-time as whole hours (or minutes when under
+    /// an hour), thousands-separated. A labeled sum of overlapping spans, so it
+    /// can exceed the wall-clock span — the header says "combined" to be clear.
+    static func combinedHours(_ seconds: Double?) -> String? {
+        guard let seconds, seconds.isFinite, seconds > 0 else { return nil }
+        if seconds < 3_600 { return "\(Int((seconds / 60).rounded()))m" }
+        return "\(Int((seconds / 3_600).rounded()).formatted())h"
     }
 
     /// A short human duration for a single session (its own begin→end span).

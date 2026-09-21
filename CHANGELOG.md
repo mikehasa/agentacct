@@ -6,8 +6,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Work groups now surface a session that ran across several folders in one run.
+  Previously such a session had no single home folder (its identity was
+  `conflicting`), so it was silently dropped from every Work group and the
+  folder picker — even the folders it clearly worked in. It now joins the group
+  of **each** folder it touched, flagged "also in <folder>" on its row and in
+  its hover, and the group's honesty note discloses how many members are shared
+  (one run can appear in more than one group, and is counted in each). The
+  backend exposes the touched-folder set (`project_identities` on the session
+  rollup; `other_folders`/`shared_sessions` on the Work API) so the app, the
+  TUI, and the CLI stay consistent.
+
 ### Changed
 
+- The Work group's Activity timeline is now a bin-packed Gantt: instead of one
+  labelled row per session capped at the newest 16 (which hid older sessions
+  even at full zoom-out), non-overlapping sessions share a row, so the whole
+  history is visible at once — dozens of sessions collapse into a handful of
+  rows. A bar wide enough (e.g. once you zoom into it) shows the session's title
+  inline, so hover is no longer the only way to tell bars apart; the canvas
+  keeps its scroll/pinch zoom, drag scrubber, and click-to-open, and its height
+  is fixed by the full-range packing so zooming never shrinks the surface. The
+  Activity header now states the group's total sessions and combined
+  session-hours (`combined_duration_seconds` on the Work summary) next to its
+  span.
 - The recorder now rebuilds its work projections in the background when the store changes, instead of leaving the rebuild to the next request. Any write used to make the next reader — expanding a session, opening a Task — wait for a full rebuild of the work ledger (about a second on a 12,000-event store, growing with the store), so clicks were slow whenever agents were recording. Measured on a copy of such a store, a session opened three seconds after a write went from about 1,050 ms to about 15 ms. It runs only while something has read work data in the last three minutes, waits for a burst of writes to settle, and rests after each rebuild so it never takes more than a third of one core. Freshness is unchanged: every request still keys on the store as it is at that moment, so a background build is reused only when it matches the store exactly.
 
 ### Fixed

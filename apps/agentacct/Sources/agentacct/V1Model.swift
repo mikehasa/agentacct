@@ -1522,6 +1522,12 @@ struct WorksetSummary: Decodable {
     let costComplete: Bool?
     let pricedSessions: Int?
     let unpricedSessions: Int?
+    /// Members that also ran in other folders and are counted in those groups
+    /// too — surfaced so the card can disclose the same run appears more than once.
+    let sharedSessions: Int?
+    /// Sum of each member's own begin→end span (wall-clock; overlaps included),
+    /// so the Activity header can label the group's combined session-hours.
+    let combinedDurationSeconds: Double?
     let costConfidence: String?
     let costBasis: String?
 
@@ -1535,6 +1541,8 @@ struct WorksetSummary: Decodable {
         case costComplete = "cost_complete"
         case pricedSessions = "priced_sessions"
         case unpricedSessions = "unpriced_sessions"
+        case sharedSessions = "shared_sessions"
+        case combinedDurationSeconds = "combined_duration_seconds"
         case costConfidence = "cost_confidence"
         case costBasis = "cost_basis"
     }
@@ -1557,6 +1565,10 @@ struct WorksetLane: Decodable, Identifiable {
     let steps: Int?
     let checks: Int?
     let checksFailed: Int?
+    /// Friendly labels of the OTHER folders this run also worked in (relative to
+    /// the group being viewed). Non-empty means the run is counted here AND in
+    /// each of those groups — disclosed with a muted "also in …" chip.
+    let otherFolders: [String]?
 
     var id: String { sessionKey ?? "\(client ?? "")::\(clientSessionId ?? "")" }
 
@@ -1564,6 +1576,17 @@ struct WorksetLane: Decodable, Identifiable {
         if let title, !title.isEmpty { return title }
         let short = clientSessionId.map { String($0.prefix(8)) } ?? "session"
         return "\(client ?? "session") · \(short)"
+    }
+
+    /// The run also worked in at least one other folder (and is counted there too).
+    var alsoRanElsewhere: Bool { !(otherFolders ?? []).isEmpty }
+
+    /// A short "also in tofuai · api" disclosure, or nil when this run has one home.
+    var sharedFoldersLabel: String? {
+        let others = otherFolders ?? []
+        guard !others.isEmpty else { return nil }
+        let shown = others.prefix(2).joined(separator: " · ")
+        return others.count > 2 ? "\(shown) +\(others.count - 2)" : shown
     }
 
     enum CodingKeys: String, CodingKey {
@@ -1579,6 +1602,7 @@ struct WorksetLane: Decodable, Identifiable {
         case costConfidence = "cost_confidence"
         case toolCalls = "tool_calls"
         case checksFailed = "checks_failed"
+        case otherFolders = "other_folders"
     }
 }
 
@@ -1754,6 +1778,50 @@ struct WorksetTimelineLayout {
     private static func time(_ value: Double?) -> Double? {
         guard let value, value.isFinite, value > 0 else { return nil }
         return value
+    }
+
+    /// Interval bin-packing of the TIMED bars into as few horizontal rows as
+    /// possible, so every session is visible at once without a per-session row.
+    ///
+    /// Bars are placed in start order; each takes the first row whose last bar
+    /// ends (plus a small visual `gap`) before it starts, else a new row. This
+    /// turns e.g. 67 spread-out sessions into a handful of rows instead of a
+    /// 67-tall list that has to be capped. Timeless bars (no position) are
+    /// returned separately so they are never packed against real times.
+    ///
+    /// `maxRows` bounds the height so the zoom canvas still fits its viewport;
+    /// in the rare case packing would exceed it, the overflow stacks onto the
+    /// last row (its bars may visually overlap) rather than being dropped —
+    /// every session stays on screen.
+    func packedRows(gap: Double = 0.012, maxRows: Int = 16) -> (rows: [[Bar]], timeless: [Bar]) {
+        let timeless = bars.filter { $0.timeUnknown }
+        let timed = bars.filter { !$0.timeUnknown }
+            .sorted { a, b in
+                a.leftFraction == b.leftFraction ? a.lane.id < b.lane.id : a.leftFraction < b.leftFraction
+            }
+        var rows: [[Bar]] = []
+        var rowEnds: [Double] = []
+        for bar in timed {
+            let start = bar.leftFraction
+            let end = bar.leftFraction + bar.widthFraction
+            var placed = false
+            for i in rowEnds.indices where rowEnds[i] <= start - gap {
+                rows[i].append(bar)
+                rowEnds[i] = end
+                placed = true
+                break
+            }
+            if placed { continue }
+            if rows.count >= max(1, maxRows) {
+                let last = rows.count - 1
+                rows[last].append(bar)
+                rowEnds[last] = Swift.max(rowEnds[last], end)
+            } else {
+                rows.append([bar])
+                rowEnds.append(end)
+            }
+        }
+        return (rows, timeless)
     }
 }
 

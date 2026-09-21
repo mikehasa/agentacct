@@ -48,6 +48,95 @@ final class WorksetsPresentationTests: XCTestCase {
         }
     }
 
+    // MARK: bin-packed Gantt (Bug 2: every session visible without a row cap)
+
+    func testPackingCollapsesNonOverlappingSessionsIntoOneRow() {
+        // Three sessions spread across the range never overlap → one shared row,
+        // so the whole history is visible at once instead of three tall rows.
+        let lanes = [
+            lane(#"{"session_key":"a","client":"claude-code","first_activity_at":100,"last_activity_at":200}"#),
+            lane(#"{"session_key":"b","client":"codex","first_activity_at":400,"last_activity_at":500}"#),
+            lane(#"{"session_key":"c","client":"claude-code","first_activity_at":800,"last_activity_at":900}"#),
+        ]
+        let packed = WorksetTimelineLayout(lanes: lanes).packedRows()
+        XCTAssertEqual(packed.rows.count, 1)
+        XCTAssertEqual(packed.rows[0].map(\.lane.id), ["a", "b", "c"])
+        XCTAssertTrue(packed.timeless.isEmpty)
+    }
+
+    func testPackingOpensASecondRowOnlyForOverlap() {
+        // Two sessions that overlap in time cannot share a row.
+        let lanes = [
+            lane(#"{"session_key":"a","client":"claude-code","first_activity_at":100,"last_activity_at":900}"#),
+            lane(#"{"session_key":"b","client":"codex","first_activity_at":300,"last_activity_at":1000}"#),
+        ]
+        let packed = WorksetTimelineLayout(lanes: lanes).packedRows()
+        XCTAssertEqual(packed.rows.count, 2)
+        XCTAssertEqual(packed.rows[0].map(\.lane.id), ["a"])
+        XCTAssertEqual(packed.rows[1].map(\.lane.id), ["b"])
+    }
+
+    func testPackingKeepsTimelessSessionsSeparate() {
+        let lanes = [
+            lane(#"{"session_key":"timed","client":"claude-code","first_activity_at":100,"last_activity_at":200}"#),
+            lane(#"{"session_key":"noclock","client":"codex"}"#),
+        ]
+        let packed = WorksetTimelineLayout(lanes: lanes).packedRows()
+        XCTAssertEqual(packed.rows.flatMap { $0 }.map(\.lane.id), ["timed"])
+        XCTAssertEqual(packed.timeless.map(\.lane.id), ["noclock"])
+    }
+
+    func testPackingNeverDropsASessionEvenPastTheLaneCap() {
+        // Pathological: many overlapping sessions with a tiny lane cap. Packing
+        // must keep every session on screen (overflow stacks onto the last row),
+        // never silently hide one the way the old newest-16 cap did.
+        let lanes = (0..<10).map { i in
+            lane(#"{"session_key":"s\#(i)","client":"claude-code","first_activity_at":100,"last_activity_at":900}"#)
+        }
+        let packed = WorksetTimelineLayout(lanes: lanes).packedRows(maxRows: 3)
+        XCTAssertLessThanOrEqual(packed.rows.count, 3)
+        XCTAssertEqual(packed.rows.flatMap { $0 }.count, 10)  // all ten still present
+    }
+
+    // MARK: shared (multi-folder) sessions (Bug 1)
+
+    func testLaneDisclosesTheOtherFoldersItAlsoRanIn() {
+        let l = lane(#"{"session_key":"x","client":"claude-code","other_folders":["tofuai","api","zeta"]}"#)
+        XCTAssertTrue(l.alsoRanElsewhere)
+        // At most two names, then a "+N" so a long list stays a compact chip.
+        XCTAssertEqual(l.sharedFoldersLabel, "tofuai · api +1")
+    }
+
+    func testSingleFolderLaneIsNotFlaggedAsShared() {
+        let solo = lane(#"{"session_key":"y","client":"codex"}"#)
+        XCTAssertFalse(solo.alsoRanElsewhere)
+        XCTAssertNil(solo.sharedFoldersLabel)
+        let emptyList = lane(#"{"session_key":"z","client":"codex","other_folders":[]}"#)
+        XCTAssertFalse(emptyList.alsoRanElsewhere)
+        XCTAssertNil(emptyList.sharedFoldersLabel)
+    }
+
+    func testSummaryCarriesTheSharedSessionCountForDisclosure() {
+        let s = summary(#"{"session_count":9,"sources":[],"shared_sessions":1}"#)
+        XCTAssertEqual(s.sharedSessions, 1)
+        let none = summary(#"{"session_count":3,"sources":[]}"#)
+        XCTAssertNil(none.sharedSessions)
+    }
+
+    func testCombinedHoursFormatsSumOfSessionTime() {
+        XCTAssertNil(WorksetFormat.combinedHours(nil))
+        XCTAssertNil(WorksetFormat.combinedHours(0))
+        XCTAssertEqual(WorksetFormat.combinedHours(1800), "30m")       // under an hour
+        XCTAssertEqual(WorksetFormat.combinedHours(3 * 3600), "3h")
+        XCTAssertEqual(WorksetFormat.combinedHours(1340 * 3600), "1,340h")  // thousands-separated
+    }
+
+    func testSummaryDecodesCombinedDuration() {
+        let s = summary(#"{"session_count":9,"sources":[],"combined_duration_seconds":18000}"#)
+        XCTAssertEqual(s.combinedDurationSeconds, 18000)
+        XCTAssertNil(summary(#"{"session_count":3,"sources":[]}"#).combinedDurationSeconds)
+    }
+
     func testAxisUsesTrueSpanOverrideSoTruncatedPreviewStaysHonest() {
         // Two visible bars early in a much wider true window (the later sessions
         // are truncated away). The axis + bar positions must reflect the TRUE
