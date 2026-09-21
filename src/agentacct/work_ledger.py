@@ -2585,6 +2585,12 @@ def _session_rollup_entry(
         for row in [*rows, *items, *all_observations]
         if (identity := _optional_str(row.get("project_identity")))
     }
+    # The full set of folders this session touched, kept even when it wandered
+    # across several (``conflicting``). A single-folder ``project_identity`` is
+    # still the one home for grouping; this set additionally lets a folder
+    # grouping surface a multi-folder session under EACH folder it touched,
+    # honestly flagged as shared, rather than dropping it with no trace.
+    project_identities_list = sorted(project_identities)
     project_identity = next(iter(project_identities)) if len(project_identities) == 1 else None
     project_identity_state = (
         "conflicting"
@@ -2817,6 +2823,7 @@ def _session_rollup_entry(
         "project_source": project_source,
         "project_identity": project_identity,
         "project_identity_state": project_identity_state,
+        "project_identities": project_identities_list,
         "observed_models": observed_models,
         "namespace_fingerprint": namespace_fingerprint,
         "source_namespace_fingerprint": source_namespace_fingerprint,

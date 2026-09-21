@@ -6,6 +6,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Work groups now surface a session that ran across several folders in one run.
+  Previously such a session had no single home folder (its identity was
+  `conflicting`), so it was silently dropped from every Work group and the
+  folder picker — even the folders it clearly worked in. It now joins the group
+  of **each** folder it touched, flagged "also in <folder>" on its row and in
+  its hover, and the group's honesty note discloses how many members are shared
+  (one run can appear in more than one group, and is counted in each). The
+  backend exposes the touched-folder set (`project_identities` on the session
+  rollup; `other_folders`/`shared_sessions` on the Work API) so the app, the
+  TUI, and the CLI stay consistent.
+
+### Changed
+
+- The Work group's Activity timeline is now a bin-packed Gantt: instead of one
+  labelled row per session capped at the newest 16 (which hid older sessions
+  even at full zoom-out), non-overlapping sessions share a row, so the whole
+  history is visible at once — dozens of sessions collapse into a handful of
+  rows. Session titles move to hover and the Sessions list above; the canvas
+  keeps its scroll/pinch zoom, drag scrubber, and click-to-open, and its height
+  is fixed by the full-range packing so zooming never shrinks the surface.
+
 ## [0.11.1] — 2026-09-17
 
 Makes the dashboard fast again — the API-serving caches no longer rebuild the multi-second work ledger on every idle poll, and the recorder stops shadowing its highest-cardinality events into an unbounded store — plus a way to reclaim that store and one-click recorder self-update.

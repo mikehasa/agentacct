@@ -137,6 +137,7 @@ from .worksets import (
     WorksetConflict,
     WorksetError,
     WorksetNotFound,
+    folder_label_of,
     reduce_worksets,
     summarize_members,
     workset_candidates,
@@ -2613,9 +2614,20 @@ def _workset_member_lanes(rollup: Any, project_identity: str) -> list[dict[str, 
     """One session lane per member of a folder grouping, oldest-start first.
 
     The bar order on the shared timeline axis; ties break on session_key so the
-    ordering is stable across reads."""
+    ordering is stable across reads. A member that also ran in other folders is
+    decorated with those OTHER folders' friendly labels (relative to THIS
+    folder) so the UI can disclose the run is shared and counted elsewhere."""
 
     lanes = [workset_session_lane(entry) for entry in workset_member_entries(rollup, project_identity)]
+    for lane in lanes:
+        homes = lane.get("home_identities") if isinstance(lane.get("home_identities"), list) else []
+        others = [
+            label
+            for identity in homes
+            if identity != project_identity and (label := folder_label_of(identity))
+        ]
+        # Stable, de-duped OTHER-folder names for the "also in …" chip.
+        lane["other_folders"] = list(dict.fromkeys(others))
     lanes.sort(
         key=lambda lane: (
             lane.get("first_activity_at") is None,

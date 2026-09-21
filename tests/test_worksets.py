@@ -21,12 +21,14 @@ from agentacct.worksets import (
     WorksetConflict,
     WorksetError,
     WorksetNotFound,
+    folder_label_of,
     mark_trusted_workset,
     reduce_worksets,
     summarize_members,
     workset_candidates,
     workset_member_entries,
     workset_operation_digest,
+    workset_session_lane,
 )
 
 from tests.test_receipt_api import TOKEN, _app, _auth
@@ -189,6 +191,86 @@ def test_candidates_group_cross_source_roots_only() -> None:
     cand = candidates[0]
     assert cand["session_count"] == 2  # child + conflicting excluded
     assert cand["sources"] == ["claude-code", "codex"]
+
+
+def _wander_entry() -> dict:
+    """A root session that ran across two folders in one run (``conflicting``).
+
+    It has no single home ``project_identity``; ``project_identities`` records
+    every folder it touched so a folder grouping can surface it under each.
+    """
+
+    return {
+        "session_key": "claude-code::wander", "client": "claude-code", "session_kind": "root",
+        "project": "webapp", "project_identity": None, "project_identity_state": "conflicting",
+        "project_identities": ["project:api:bbbb", "project:webapp:aaaa"],
+        "first_activity_at": 5.0, "last_activity_at": 6.0,
+        "usage": {"total_tokens": 10, "estimated_cost_usd": 2.0, "cost_confidence": "estimated_from_tokens"},
+    }
+
+
+def test_folder_label_of_parses_leaf_or_returns_none() -> None:
+    assert folder_label_of("project:webapp:aaaa") == "webapp"
+    assert folder_label_of("project:agentacct-site:3bbbf554cc642299") == "agentacct-site"
+    assert folder_label_of("not-an-identity") is None
+    assert folder_label_of("project:missing-digest") is None
+    assert folder_label_of(None) is None
+
+
+def test_multi_folder_session_joins_every_folder_it_touched() -> None:
+    rollup = {"sessions": [
+        {"session_key": "claude-code::home", "client": "claude-code", "session_kind": "root",
+         "project": "webapp", "project_identity": "project:webapp:aaaa",
+         "project_identity_state": "explicit", "usage": {}},
+        _wander_entry(),
+    ]}
+    webapp = workset_member_entries(rollup, "project:webapp:aaaa")
+    api = workset_member_entries(rollup, "project:api:bbbb")
+    assert {e["session_key"] for e in webapp} == {"claude-code::home", "claude-code::wander"}
+    assert {e["session_key"] for e in api} == {"claude-code::wander"}  # shared run reaches its other folder
+
+
+def test_shared_lane_is_flagged_with_its_home_set() -> None:
+    lane = workset_session_lane(_wander_entry())
+    assert lane["also_ran_elsewhere"] is True
+    assert lane["home_identities"] == ["project:api:bbbb", "project:webapp:aaaa"]
+    # A single-folder session is not flagged.
+    solo = workset_session_lane(
+        {"session_key": "claude-code::solo", "client": "claude-code", "session_kind": "root",
+         "project": "webapp", "project_identity": "project:webapp:aaaa",
+         "project_identity_state": "explicit", "usage": {}}
+    )
+    assert solo["also_ran_elsewhere"] is False
+    assert solo["home_identities"] == ["project:webapp:aaaa"]
+
+
+def test_member_lanes_disclose_the_other_folders_relative_to_this_group() -> None:
+    from agentacct.api import _workset_member_lanes
+
+    rollup = {"sessions": [_wander_entry()]}
+    webapp = _workset_member_lanes(rollup, "project:webapp:aaaa")
+    assert webapp[0]["other_folders"] == ["api"]  # the OTHER folder's friendly label
+    api = _workset_member_lanes(rollup, "project:api:bbbb")
+    assert api[0]["other_folders"] == ["webapp"]
+
+
+def test_candidates_count_a_shared_session_in_each_folder_it_touched() -> None:
+    rollup = {"sessions": [_wander_entry()]}
+    candidates = {c["project_identity"]: c for c in workset_candidates(rollup)}
+    assert set(candidates) == {"project:api:bbbb", "project:webapp:aaaa"}
+    assert candidates["project:api:bbbb"]["session_count"] == 1
+    assert candidates["project:webapp:aaaa"]["session_count"] == 1
+    assert candidates["project:api:bbbb"]["label"] == "api"  # parsed from the identity
+
+
+def test_summary_counts_shared_sessions_for_honest_disclosure() -> None:
+    summary = summarize_members([
+        _wander_entry(),
+        {"client": "codex", "session_kind": "root", "project_identity": "project:webapp:aaaa",
+         "project_identity_state": "explicit", "usage": {"total_tokens": 5}},
+    ])
+    assert summary["session_count"] == 2
+    assert summary["shared_sessions"] == 1  # the wander session is counted here and in its other folder
 
 
 def test_summary_is_a_labeled_partial_sum_when_a_member_is_unpriced() -> None:

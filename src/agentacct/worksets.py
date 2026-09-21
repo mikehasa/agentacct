@@ -374,10 +374,13 @@ def reduce_worksets(events: Iterable[Mapping[str, Any]]) -> WorksetProjection:
 # --- read-side projection over the session rollup -----------------------------
 #
 # Membership is a LIVE query: given a folder identity, gather the current
-# root-session rollup entries that share it. Nothing here writes; everything is
-# a labeled sum of independently-attributed parts, never a re-graded verdict.
+# root-session rollup entries that touched it. Nothing here writes; everything
+# is a labeled sum of independently-attributed parts, never a re-graded verdict.
 # Only ROOT sessions are members — a subagent/continuation folds under its own
-# root, exactly as it does in the Sessions tab, so "6 sessions" stays 6.
+# root, exactly as it does in the Sessions tab. A session that ran across
+# several folders in one run joins each of those folders' groups (flagged as
+# shared, and counted in each), so it is never silently dropped for lacking a
+# single home; the group total is honestly a sum that can include shared runs.
 
 _NON_ROOT_KINDS = {"child", "internal"}
 
@@ -395,10 +398,55 @@ def _is_root(entry: Mapping[str, Any]) -> bool:
 
 
 def _entry_identity(entry: Mapping[str, Any]) -> str | None:
+    """The session's single home folder, or None when it has no one home.
+
+    A ``conflicting`` session (it wandered across several folders mid-run) has
+    no single home — use :func:`_entry_identities` to reach every folder it
+    touched. This one-home accessor stays for callers that need the unambiguous
+    anchor (e.g. the picker's primary bucket).
+    """
+
     if str(entry.get("project_identity_state") or "").strip() == "conflicting":
         return None
     identity = entry.get("project_identity")
     return identity if isinstance(identity, str) and identity.strip() else None
+
+
+def _entry_identities(entry: Mapping[str, Any]) -> list[str]:
+    """Every folder identity this session touched (one for a single-folder run).
+
+    Membership is a live query over this set, so a session that ran across
+    several folders joins the group of EACH folder it touched — surfaced there
+    honestly flagged as shared, never silently dropped. Falls back to the single
+    ``project_identity`` for entries a pre-``project_identities`` build produced.
+    """
+
+    raw = entry.get("project_identities")
+    identities = [i for i in raw if isinstance(i, str) and i.strip()] if isinstance(raw, list) else []
+    if identities:
+        # De-dupe while preserving the daemon's sorted order.
+        return list(dict.fromkeys(identities))
+    single = _entry_identity(entry)
+    return [single] if single is not None else []
+
+
+def folder_label_of(identity: Any) -> str | None:
+    """The friendly leaf label embedded in a ``project:<label>:<hash>`` identity.
+
+    Used only to name the OTHER folders a shared session also ran in (a muted
+    chip), never to re-key grouping. Returns None for a shape it can't parse.
+    """
+
+    if not isinstance(identity, str) or not identity.strip():
+        return None
+    text = identity.strip()
+    if not text.startswith("project:"):
+        return None
+    body = text[len("project:") :]
+    label, sep, _digest = body.rpartition(":")
+    if not sep or not label:
+        return None
+    return label
 
 
 def _source_label(entry: Mapping[str, Any]) -> str:
@@ -417,41 +465,54 @@ def workset_candidates(session_rollup: Any) -> list[dict[str, Any]]:
     """Group visible root sessions by folder identity for the "point at a folder" picker.
 
     Only exposes the friendly leaf label + the pseudonymous identity hash the
-    daemon already computes — never a raw absolute path. Sessions whose folder
-    is ``conflicting`` (they wandered directories mid-run) have no single home
-    and are omitted here; they are reported separately as an honest gap.
+    daemon already computes — never a raw absolute path. A session that wandered
+    across several folders mid-run (``conflicting``) has no single home, so it
+    counts toward EACH folder it touched here — matching the live membership a
+    group built on that folder would gather — instead of being dropped.
     """
 
     groups: dict[str, dict[str, Any]] = {}
     for entry in _rollup_entries(session_rollup):
         if not _is_root(entry):
             continue
-        identity = _entry_identity(entry)
-        if identity is None:
+        identities = _entry_identities(entry)
+        if not identities:
             continue
-        bucket = groups.setdefault(
-            identity,
-            {
-                "project_identity": identity,
-                "label": str(entry.get("project") or "").strip() or "project",
-                "session_count": 0,
-                "sources": set(),
-                "first_activity_at": None,
-                "last_activity_at": None,
-            },
-        )
-        bucket["session_count"] += 1
-        bucket["sources"].add(_source_label(entry))
+        # A single-folder session names its bucket with the friendly ``project``
+        # label; a shared session counts toward each folder it touched, labeled
+        # from the folder identity itself (its own ``project`` names only one).
+        single_home = len(identities) == 1
         first = _safe_time(entry.get("first_activity_at"))
         last = _safe_time(entry.get("last_activity_at"))
-        if first is not None:
-            bucket["first_activity_at"] = (
-                first if bucket["first_activity_at"] is None else min(bucket["first_activity_at"], first)
+        for identity in identities:
+            preferred_label = (
+                str(entry.get("project") or "").strip() if single_home else ""
+            ) or folder_label_of(identity) or "project"
+            bucket = groups.setdefault(
+                identity,
+                {
+                    "project_identity": identity,
+                    "label": preferred_label,
+                    "session_count": 0,
+                    "sources": set(),
+                    "first_activity_at": None,
+                    "last_activity_at": None,
+                },
             )
-        if last is not None:
-            bucket["last_activity_at"] = (
-                last if bucket["last_activity_at"] is None else max(bucket["last_activity_at"], last)
-            )
+            # A single-home label is authoritative; don't let a later shared
+            # session's parsed label overwrite it.
+            if single_home:
+                bucket["label"] = preferred_label
+            bucket["session_count"] += 1
+            bucket["sources"].add(_source_label(entry))
+            if first is not None:
+                bucket["first_activity_at"] = (
+                    first if bucket["first_activity_at"] is None else min(bucket["first_activity_at"], first)
+                )
+            if last is not None:
+                bucket["last_activity_at"] = (
+                    last if bucket["last_activity_at"] is None else max(bucket["last_activity_at"], last)
+                )
     rows = []
     for bucket in groups.values():
         bucket["sources"] = sorted(bucket["sources"])
@@ -461,12 +522,17 @@ def workset_candidates(session_rollup: Any) -> list[dict[str, Any]]:
 
 
 def workset_member_entries(session_rollup: Any, project_identity: str) -> list[Mapping[str, Any]]:
-    """The current ROOT sessions whose folder identity matches (live membership)."""
+    """The current ROOT sessions that touched this folder (live membership).
+
+    A single-folder session matches its one home; a multi-folder session
+    matches every folder it touched, so it joins each such group (flagged as
+    shared in the lane) instead of vanishing because it has no single home.
+    """
 
     return [
         entry
         for entry in _rollup_entries(session_rollup)
-        if _is_root(entry) and _entry_identity(entry) == project_identity
+        if _is_root(entry) and project_identity in _entry_identities(entry)
     ]
 
 
@@ -516,8 +582,14 @@ def workset_session_lane(entry: Mapping[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             pass
     checks_graded = sum(int(evidence.get(tier) or 0) for tier in ("strong", "weak", "failed"))
+    home_identities = _entry_identities(entry)
     return {
         "session_key": entry.get("session_key"),
+        # Every folder this session touched. >1 means it also ran elsewhere and
+        # is counted in those groups too; the querying folder decorates the lane
+        # with the OTHER folders' labels so the sharing is disclosed, not hidden.
+        "home_identities": home_identities,
+        "also_ran_elsewhere": len(home_identities) > 1,
         "client": entry.get("client"),
         "client_session_id": entry.get("client_session_id"),
         "title": (str(entry.get("client_session_title")).strip() or None)
@@ -553,10 +625,13 @@ def summarize_members(members: list[Mapping[str, Any]]) -> dict[str, Any]:
     priced_cost = 0.0
     priced_sessions = 0
     unpriced_sessions = 0
+    shared_sessions = 0
     cost_confidences: set[str] = set()
 
     for entry in members:
         sources[_source_label(entry)] += 1
+        if len(_entry_identities(entry)) > 1:
+            shared_sessions += 1
         ef = _safe_time(entry.get("first_activity_at"))
         el = _safe_time(entry.get("last_activity_at"))
         if ef is not None:
@@ -593,6 +668,10 @@ def summarize_members(members: list[Mapping[str, Any]]) -> dict[str, Any]:
         "cost_complete": priced_sessions > 0 and unpriced_sessions == 0,
         "priced_sessions": priced_sessions,
         "unpriced_sessions": unpriced_sessions,
+        # Members that also ran in other folders and are counted in those groups
+        # too, so the client can disclose that the same run appears more than
+        # once — the group total is a sum that includes shared sessions.
+        "shared_sessions": shared_sessions,
         "cost_confidence": cost_confidence,
         "cost_basis": "sum_of_independent_receipts",
     }
@@ -610,6 +689,7 @@ __all__ = [
     "WorksetNotFound",
     "WorksetProjection",
     "WorksetState",
+    "folder_label_of",
     "is_trusted_workset_event",
     "mark_trusted_workset",
     "normalize_identity",

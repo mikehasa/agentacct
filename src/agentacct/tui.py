@@ -2624,6 +2624,12 @@ def _workset_card_markup(w: dict, pal: dict[str, str], width: int = 140,
     ]
     if int(summary.get("unpriced_sessions") or 0) > 0:
         notes.append(f"[{pal['dim']}]Some sessions here carry no imported cost, so the total is a partial sum.[/]")
+    shared = int(summary.get("shared_sessions") or 0)
+    if shared > 0:
+        notes.append(
+            f"[{pal['dim']}]{shared} session{'s' if shared != 1 else ''} here also ran in other folders and "
+            f"{'are' if shared != 1 else 'is'} counted in those groups too — one run can appear in more than one Work group.[/]"
+        )
     if tl["hidden"] or w.get("sessions_truncated"):
         total = int(w.get("sessions_total") or len(lanes))
         notes.append(f"[{pal['dim']}]Showing {tl['shown']} of {total} sessions — press ↵ to open the group's full timeline.[/]")
