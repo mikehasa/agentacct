@@ -58,6 +58,7 @@ A legibility pass across every pane — each fact stated once, in the reader's w
 
 ### Fixed
 
+- A Task grouping change — linking or unlinking a chat, or renaming a Task — now shows in the app's Tasks list and receipts at once. The `/v1` task projection was cached on the event log alone with a 30-second expiry, and a grouping edit records no ledger event, so the app could keep showing the old grouping for up to 30 seconds; appends to the cost, run and Evidence stores lagged the same way. The projection is now keyed on everything it is built from (the shared ledger's change key plus the continuation store), so no store change can be hidden from the next reader. The 30-second bound remains only for the wall clock, which the weekly-plan shares depend on. The background warmer builds this projection too: on a copy of a 12,000-event store, opening a receipt three seconds after a write went from about 280 ms to about 20 ms.
 - Opening a record's "N more sessions" fold no longer freezes the window on a Task with hundreds of sessions. The fold built every session row at once — about 1 ms of main-thread work per row, so roughly a third of a second for 300 sessions; it now builds only the rows scrolled into view (10–20 ms at any count). What each row shows and loads is unchanged, and review renders still draw every row.
 - `audit --replay` reported a silent false-clean: it was replaying against the
   wrong code path, so a real regression in the recording rules could pass
