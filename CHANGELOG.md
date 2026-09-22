@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.2] — 2026-09-22
+
+A legibility pass across every pane — each fact stated once, in the reader's words — plus a data-quality correctness fix, faster background projection rebuilds, and Work-tab timeline and layout fixes.
+
 ### Added
 
 - Work groups now surface a session that ran across several folders in one run.
@@ -18,6 +22,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   backend exposes the touched-folder set (`project_identities` on the session
   rollup; `other_folders`/`shared_sessions` on the Work API) so the app, the
   TUI, and the CLI stay consistent.
+- A data-quality harness for the recording loop: a runnable demo, a falsification
+  run, and the measurement tooling behind the pass, so the rules that turn raw
+  events into a receipt can be exercised and disproven rather than just trusted.
+  (#211)
 
 ### Changed
 
@@ -33,10 +41,34 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   session-hours (`combined_duration_seconds` on the Work summary) next to its
   span.
 - The recorder now rebuilds its work projections in the background when the store changes, instead of leaving the rebuild to the next request. Any write used to make the next reader — expanding a session, opening a Task — wait for a full rebuild of the work ledger (about a second on a 12,000-event store, growing with the store), so clicks were slow whenever agents were recording. Measured on a copy of such a store, a session opened three seconds after a write went from about 1,050 ms to about 15 ms. It runs only while something has read work data in the last three minutes, waits for a burst of writes to settle, and rests after each rebuild so it never takes more than a third of one core. Freshness is unchanged: every request still keys on the store as it is at that moment, so a background build is reused only when it matches the store exactly.
+- Legibility pass across the app: every pane now states each fact once, in plain
+  reader's words instead of design-document or calibration jargon — the Dashboard
+  (the attention item's facts on one line, one caps eyebrow per page, sentence
+  case on the rail), Usage (plain "weekly share" wording, a one-line share chip,
+  freshness stamped once, the chart peak printed once, and the capacity-meter
+  marks explained, with the longer explanations moved into help and About), the
+  menu-bar popover (each session shown once; weekly share on a single row), Steps
+  (each step fact once with the human summary first; the check tier in one
+  capitalized sentence), Diagnostics (each source fact once; the store-wide
+  reconciliation fault reported once), and receipts (provenance shown as words,
+  not payload tokens). (#294)
+- The recording rules are now enforced once, from a single place, for every lane,
+  so a Codex, Claude Code, or dsh session is graded by identical logic. (#211)
+- Work tab: Status and Sort now share one filter menu instead of two. (#304)
 
 ### Fixed
 
 - Opening a record's "N more sessions" fold no longer freezes the window on a Task with hundreds of sessions. The fold built every session row at once — about 1 ms of main-thread work per row, so roughly a third of a second for 300 sessions; it now builds only the rows scrolled into view (10–20 ms at any count). What each row shows and loads is unchanged, and review renders still draw every row.
+- `audit --replay` reported a silent false-clean: it was replaying against the
+  wrong code path, so a real regression in the recording rules could pass
+  unnoticed. It now replays against the code that actually runs. (#211)
+- The Steps and Checks outcome cards on a record now share one height and align,
+  instead of one card standing taller than the other. (#302)
+- Decision badges: **Reported** no longer wears the same blue as **In progress**,
+  so the two states are distinguishable at a glance.
+- Diagnostics: the header chip is shown only when every row displays the same
+  word, and hidden when the rows differ — it no longer implies a single shared
+  state that isn't there.
 
 ## [0.11.1] — 2026-09-17
 
@@ -1289,7 +1321,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.2
 [0.11.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.1
 [0.11.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.0
 [0.10.11]: https://github.com/mikehasa/agentacct/releases/tag/v0.10.11
