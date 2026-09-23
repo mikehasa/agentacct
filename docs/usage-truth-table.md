@@ -174,3 +174,38 @@ agentacct serve --store-dir .agent-sentinel/state
 ```
 
 For normal subscription-based coding-agent workflows, treat local import and MCP events as a local activity ledger. Use the confidence labels on reports and product surfaces before making budget or ROI claims.
+
+## Fresh tokens and all tokens in the macOS Usage view
+
+The Usage page remembers a **Fresh tokens / All tokens** choice (Fresh is the
+initial setting). It changes the Today strip, recorded client totals, range
+summary, token chart and client filter, model/client tables and their token
+shares. The Tokens chart measure follows the same choice; a Cost chart stays
+in dollars. Provider quota windows, session counts and cost estimates do not
+change.
+
+- **Fresh tokens** is normalized non-cached input + output. It excludes both
+  cache creation and cache reads; "fresh" does not mean unique text.
+- **All tokens** is `total_tokens_including_cached`: normalized non-cached
+  input + output + cache creation + cache reads, each counted once. Repeated
+  context reads count again as token traffic. It includes only usage categories
+  the client actually reported; unavailable categories are not inferred.
+- Claude Code reports non-cached input separately from cache creation and cache
+  reads, so those four categories are additive.
+- Codex raw input already includes cached input. The importer subtracts reported
+  cache reads and writes to normalize non-cached input; adding those normalized
+  buckets back recovers raw input + output. Reasoning is already a subset of
+  Codex output and is not added again.
+- The app reads the cube's canonical total at every aggregation level; it does
+  not recalculate totals by adding cached input to a raw inclusive count. When
+  an older daemon omits the total field, All tokens says it is unavailable
+  instead of silently substituting Fresh tokens or zero.
+
+This is the same four-category accounting used for Claude Code and normalized
+Codex model breakdowns in [ccusage's total implementation](https://github.com/ryoppippi/ccusage/blob/5a8e830fe90d3de8bfbf7cdb877f18dd1474a22f/rust/crates/ccusage-core/src/types.rs#L114-L122),
+with Codex normalization visible in [its adapter](https://github.com/ryoppippi/ccusage/blob/5a8e830fe90d3de8bfbf7cdb877f18dd1474a22f/rust/crates/ccusage-adapter-all/src/loader.rs#L842-L872)
+and reasoning handling in [its parser](https://github.com/ryoppippi/ccusage/blob/5a8e830fe90d3de8bfbf7cdb877f18dd1474a22f/rust/adapters/codex/src/types.rs#L319-L325).
+The comparison is about token semantics, not guaranteed identical totals across
+clients or tools: imported scope, reporting gaps, deduplication, timestamps and
+refresh state still matter. See [ccusage's JSON report contract](https://ccusage.com/guide/json-output)
+for its separate input, output, cache creation and cache read columns.

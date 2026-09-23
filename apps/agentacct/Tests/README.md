@@ -739,3 +739,15 @@ separately from product UI changes.
   expectation, references, and this guide together.
 - **Failure directory is empty:** environment validation or compilation failed
   before comparison. Read the test output first.
+
+### Usage token counting
+
+`UsageTokenBasisTests` decodes the canonical fresh/all fields for Today, range,
+client, model and chart values; it checks absent totals, cache-only activity,
+weekly copy and accessibility. The synthetic fixture reconciles every client,
+model, period and client-series total in both modes. The Usage matrix includes
+`all-tokens-minimum`, `all-tokens-reference` and `all-tokens-weekly` in both
+appearances. These snapshots inject their own counting basis, so saved user
+preferences cannot change the reference render. The all-token configurations
+also show the token chart, while the original configurations retain the cost
+chart.

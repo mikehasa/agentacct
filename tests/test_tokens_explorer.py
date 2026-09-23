@@ -976,3 +976,25 @@ def test_usage_summary_resolves_today_once_and_passes_it_to_the_cube(tmp_path, m
     monkeypatch.setattr(usage_cube_module, "date", _NoClock)
 
     assert client.get("/usage/summary").status_code == 200
+
+
+@pytest.mark.parametrize("granularity", ["daily", "weekly"])
+def test_all_token_basis_counts_normalized_cache_buckets_once_everywhere(granularity):
+    # Claude reports uncached input separately. Codex raw input is inclusive:
+    # 1,000 input - 700 reads - 50 writes = 250 normalized fresh input.
+    records = [
+        _cube_record(client="claude-code", session="claude", day=TODAY,
+                     input_tokens=100, output_tokens=20, cache_creation=30, cache_read=850),
+        _cube_record(client="codex", session="codex", day=TODAY,
+                     input_tokens=250, output_tokens=100, cache_creation=50, cache_read=700),
+    ]
+    cube = _cube(records, days=7, granularity=granularity)
+    assert cube["totals"]["fresh_tokens"] == 470
+    assert cube["totals"]["total_tokens_including_cached"] == 2100
+    for dimension in ("by_client", "by_model", "by_period"):
+        assert sum(bucket["fresh_tokens"] for bucket in cube[dimension]) == 470
+        assert sum(bucket["total_tokens_including_cached"] for bucket in cube[dimension]) == 2100
+    active = next(bucket for bucket in cube["by_period"] if bucket["total_tokens_including_cached"])
+    assert active["by_client"]["claude-code"]["total_tokens_including_cached"] == 1000
+    assert active["by_client"]["codex"]["total_tokens_including_cached"] == 1100
+    assert active["by_client"]["codex"]["fresh_tokens"] == 350

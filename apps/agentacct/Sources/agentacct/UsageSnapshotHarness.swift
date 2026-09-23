@@ -18,6 +18,7 @@ struct UsageSnapshotConfiguration {
     /// Render the About disclosure open (its "This range" basis block and
     /// definitions are otherwise folded away).
     var aboutExpanded = false
+    var tokenBasis: UsageTokenBasis = .fresh
 
     var filename: String {
         let appearance = colorScheme == .dark ? "dark" : "light"
@@ -25,6 +26,12 @@ struct UsageSnapshotConfiguration {
     }
 
     static let reviewConfigurations: [Self] = [
+        Self(viewport: "all-tokens-minimum", width: 960, height: 560, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays, tokenBasis: .all),
+        Self(viewport: "all-tokens-minimum", width: 960, height: 560, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays, tokenBasis: .all),
+        Self(viewport: "all-tokens-reference", width: 1120, height: 1540, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays, tokenBasis: .all),
+        Self(viewport: "all-tokens-reference", width: 1120, height: 1540, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays, tokenBasis: .all),
+        Self(viewport: "all-tokens-weekly", width: 1120, height: 1540, colorScheme: .light, capacityState: .disconnected, recordedUsageState: .ninetyDays, tokenBasis: .all),
+        Self(viewport: "all-tokens-weekly", width: 1120, height: 1540, colorScheme: .dark, capacityState: .disconnected, recordedUsageState: .ninetyDays, tokenBasis: .all),
         // The chart prints its peak once: with the peak bar selected the
         // tooltip carries the value and the peak label yields; with another
         // bar selected both show. The 7-day fixture's peak is its last bar.
@@ -75,6 +82,7 @@ enum UsageSnapshotRenderer {
             SnapshotMode.enabled = false
             SnapshotMode.boundsScrollContentToViewport = false
             SnapshotMode.expandsUsageAbout = false
+            SnapshotMode.usageTokenBasis = .fresh
             SnapshotMode.setFixtureDate(nil)
             SnapshotScheme.override = nil
         }
@@ -82,6 +90,7 @@ enum UsageSnapshotRenderer {
         return try configurations.map { configuration in
             SnapshotScheme.override = configuration.colorScheme
             SnapshotMode.expandsUsageAbout = configuration.aboutExpanded
+            SnapshotMode.usageTokenBasis = configuration.tokenBasis
             let glance: GlanceState
             switch configuration.capacityState {
             case .connected:

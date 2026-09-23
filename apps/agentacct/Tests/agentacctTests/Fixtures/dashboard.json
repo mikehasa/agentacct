@@ -1131,7 +1131,7 @@
             "occurred_at": 1787613433.0,
             "started_at": 1787613433.0,
             "updated_at": 1787614800.0,
-            "time_note": "Recorded section start → latest update; not execution duration",
+            "time_note": "Recorded section start \u2192 latest update; not execution duration",
             "time_warning": null,
             "lane": "primary",
             "title": "Define the review matrix",
@@ -1149,7 +1149,7 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02"
+            "lineage": "Root session \u00b7 fixture-active-02"
           },
           {
             "id": "event:check-scope",
@@ -1184,7 +1184,7 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02",
+            "lineage": "Root session \u00b7 fixture-active-02",
             "exit_code": 0,
             "artifact_ref": null,
             "artifact_path": null,
@@ -1200,7 +1200,7 @@
             "occurred_at": 1787614800.0,
             "started_at": 1787614800.0,
             "updated_at": 1787617600.0,
-            "time_note": "Recorded section start → latest update; not execution duration",
+            "time_note": "Recorded section start \u2192 latest update; not execution duration",
             "time_warning": null,
             "lane": "primary",
             "title": "Render real Work surfaces from the fixture",
@@ -1221,7 +1221,7 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02"
+            "lineage": "Root session \u00b7 fixture-active-02"
           },
           {
             "id": "event:check-render",
@@ -1256,7 +1256,7 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02",
+            "lineage": "Root session \u00b7 fixture-active-02",
             "exit_code": 0,
             "artifact_ref": null,
             "artifact_path": null,
@@ -1272,7 +1272,7 @@
             "occurred_at": 1787617600.0,
             "started_at": 1787617600.0,
             "updated_at": 1787618680.0,
-            "time_note": "Recorded section start → latest update; not execution duration",
+            "time_note": "Recorded section start \u2192 latest update; not execution duration",
             "time_warning": null,
             "lane": "primary",
             "title": "Review the generated PNG matrix",
@@ -1290,7 +1290,7 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02"
+            "lineage": "Root session \u00b7 fixture-active-02"
           },
           {
             "id": "anonymous-check:63c074ac18637361a6526b5b6ad9ea74bd17bd82b3f5a4baba2b459f68406ac1",
@@ -1559,7 +1559,7 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02"
+            "lineage": "Root session \u00b7 fixture-active-02"
           },
           {
             "id": "event:check-review",
@@ -1594,7 +1594,7 @@
             "client_session_id": "fixture-active-02",
             "session_key": "codex::fixture-active-02",
             "session_title": "Build reusable snapshot harness",
-            "lineage": "Root session · fixture-active-02",
+            "lineage": "Root session \u00b7 fixture-active-02",
             "exit_code": 0,
             "artifact_ref": null,
             "artifact_path": null,
@@ -1628,7 +1628,7 @@
             "client_session_id": "fixture-continuation-01",
             "session_key": "codex::fixture-continuation-01",
             "session_title": "Record reviewed visual references",
-            "lineage": "Supporting session · fixture-continuation-01"
+            "lineage": "Supporting session \u00b7 fixture-continuation-01"
           },
           {
             "id": "work:7ca9bf4fbaea0aeba6922a0004b20869c2b1acb48f5dc0954c4dbfbc74dcc218",
@@ -1655,7 +1655,7 @@
             "client_session_id": "fixture-active-02:agent-review",
             "session_key": "codex::fixture-active-02:agent-review",
             "session_title": "Audit snapshot determinism",
-            "lineage": "Supporting session · fixture-active-02:agent-review"
+            "lineage": "Supporting session \u00b7 fixture-active-02:agent-review"
           }
         ],
         "shown": 15,
@@ -2142,7 +2142,9 @@
         "estimated_cost_usd": 402.1,
         "cost_complete": true,
         "known_additive_cost_usd": 402.1,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 127500000
       },
       {
         "client": "claude-code",
@@ -2152,7 +2154,9 @@
         "estimated_cost_usd": 680.32,
         "cost_complete": true,
         "known_additive_cost_usd": 680.32,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 68100000
       },
       {
         "client": "hermes",
@@ -2162,10 +2166,52 @@
         "estimated_cost_usd": 5.0,
         "cost_complete": true,
         "known_additive_cost_usd": 5.0,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 800000
       }
     ],
-    "by_model": [],
+    "by_model": [
+      {
+        "client": "codex",
+        "sessions": 43,
+        "fresh_tokens": 31200000,
+        "cache_read_tokens": 96300000,
+        "estimated_cost_usd": 402.1,
+        "cost_complete": true,
+        "known_additive_cost_usd": 402.1,
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 127500000,
+        "model": "gpt-5.5"
+      },
+      {
+        "client": "claude-code",
+        "sessions": 9,
+        "fresh_tokens": 16500000,
+        "cache_read_tokens": 51600000,
+        "estimated_cost_usd": 680.32,
+        "cost_complete": true,
+        "known_additive_cost_usd": 680.32,
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 68100000,
+        "model": "claude-opus-4-6"
+      },
+      {
+        "client": "hermes",
+        "sessions": 2,
+        "fresh_tokens": 400000,
+        "cache_read_tokens": 400000,
+        "estimated_cost_usd": 5.0,
+        "cost_complete": true,
+        "known_additive_cost_usd": 5.0,
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 800000,
+        "model": "hermes-model"
+      }
+    ],
     "by_period": [
       {
         "period": "2026-08-19",
@@ -2174,12 +2220,21 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 1400000
+            "fresh_tokens": 1400000,
+            "cache_read_tokens": 4349438,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 5749438
           },
           "hermes": {
-            "fresh_tokens": 400000
+            "fresh_tokens": 400000,
+            "cache_read_tokens": 400000,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 800000
           }
-        }
+        },
+        "cache_read_tokens": 4749438,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 6549438
       },
       {
         "period": "2026-08-20",
@@ -2188,9 +2243,15 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 2400000
+            "fresh_tokens": 2400000,
+            "cache_read_tokens": 7456179,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 9856179
           }
-        }
+        },
+        "cache_read_tokens": 7456179,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 9856179
       },
       {
         "period": "2026-08-21",
@@ -2199,9 +2260,15 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 900000
+            "fresh_tokens": 900000,
+            "cache_read_tokens": 2796067,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 3696067
           }
-        }
+        },
+        "cache_read_tokens": 2796067,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 3696067
       },
       {
         "period": "2026-08-22",
@@ -2210,9 +2277,15 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 3600000
+            "fresh_tokens": 3600000,
+            "cache_read_tokens": 11184269,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 14784269
           }
-        }
+        },
+        "cache_read_tokens": 11184269,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 14784269
       },
       {
         "period": "2026-08-23",
@@ -2221,12 +2294,21 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 2700000
+            "fresh_tokens": 2700000,
+            "cache_read_tokens": 8388202,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 11088202
           },
           "claude-code": {
-            "fresh_tokens": 2100000
+            "fresh_tokens": 2100000,
+            "cache_read_tokens": 6782432,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 8882432
           }
-        }
+        },
+        "cache_read_tokens": 15170634,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 19970634
       },
       {
         "period": "2026-08-24",
@@ -2235,12 +2317,21 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 6800000
+            "fresh_tokens": 6800000,
+            "cache_read_tokens": 21125845,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 27925845
           },
           "claude-code": {
-            "fresh_tokens": 5300000
+            "fresh_tokens": 5300000,
+            "cache_read_tokens": 17117568,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 22417568
           }
-        }
+        },
+        "cache_read_tokens": 38243413,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 50343413
       },
       {
         "period": "2026-08-25",
@@ -2249,12 +2340,21 @@
         "cost_complete": true,
         "by_client": {
           "codex": {
-            "fresh_tokens": 13400000
+            "fresh_tokens": 13400000,
+            "cache_read_tokens": 41000000,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 54400000
           },
           "claude-code": {
-            "fresh_tokens": 9100000
+            "fresh_tokens": 9100000,
+            "cache_read_tokens": 27700000,
+            "cache_creation_tokens": 0,
+            "total_tokens_including_cached": 36800000
           }
-        }
+        },
+        "cache_read_tokens": 68700000,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 91200000
       }
     ],
     "filters_echo": {
@@ -2270,7 +2370,9 @@
       "estimated_cost_usd": 1087.42,
       "cost_complete": true,
       "known_additive_cost_usd": 1087.42,
-      "cost_confidence_label": "complete"
+      "cost_confidence_label": "complete",
+      "cache_creation_tokens": 0,
+      "total_tokens_including_cached": 196400000
     }
   },
   "usage_90_days": {
@@ -2283,7 +2385,9 @@
         "estimated_cost_usd": 920.5,
         "cost_complete": true,
         "known_additive_cost_usd": 920.5,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 325000000
       },
       {
         "client": "claude-code",
@@ -2293,7 +2397,9 @@
         "estimated_cost_usd": 1174.25,
         "cost_complete": true,
         "known_additive_cost_usd": 1174.25,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 185000000
       },
       {
         "client": "hermes",
@@ -2303,92 +2409,176 @@
         "estimated_cost_usd": 18.0,
         "cost_complete": true,
         "known_additive_cost_usd": 18.0,
-        "cost_confidence_label": "complete"
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 6500000
       }
     ],
-    "by_model": [],
+    "by_model": [
+      {
+        "client": "codex",
+        "sessions": 160,
+        "fresh_tokens": 85000000,
+        "cache_read_tokens": 240000000,
+        "estimated_cost_usd": 920.5,
+        "cost_complete": true,
+        "known_additive_cost_usd": 920.5,
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 325000000,
+        "model": "gpt-5.5"
+      },
+      {
+        "client": "claude-code",
+        "sessions": 43,
+        "fresh_tokens": 50000000,
+        "cache_read_tokens": 135000000,
+        "estimated_cost_usd": 1174.25,
+        "cost_complete": true,
+        "known_additive_cost_usd": 1174.25,
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 185000000,
+        "model": "claude-opus-4-6"
+      },
+      {
+        "client": "hermes",
+        "sessions": 6,
+        "fresh_tokens": 1500000,
+        "cache_read_tokens": 5000000,
+        "estimated_cost_usd": 18.0,
+        "cost_complete": true,
+        "known_additive_cost_usd": 18.0,
+        "cost_confidence_label": "complete",
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 6500000,
+        "model": "hermes-model"
+      }
+    ],
     "by_period": [
       {
         "period": "2026-05-25",
         "fresh_tokens": 6200000,
         "estimated_cost_usd": 100.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 17260073,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 23460073
       },
       {
         "period": "2026-06-01",
         "fresh_tokens": 8100000,
         "estimated_cost_usd": 130.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 22549450,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 30649450
       },
       {
         "period": "2026-06-08",
-        "fresh_tokens": 0
+        "fresh_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 0
       },
       {
         "period": "2026-06-15",
         "fresh_tokens": 9400000,
         "estimated_cost_usd": 145.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 26168498,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 35568498
       },
       {
         "period": "2026-06-22",
         "fresh_tokens": 7800000,
         "estimated_cost_usd": 121.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 21714285,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 29514285
       },
       {
         "period": "2026-06-29",
         "fresh_tokens": 10200000,
         "estimated_cost_usd": 158.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 28395604,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 38595604
       },
       {
         "period": "2026-07-06",
         "fresh_tokens": 8700000,
         "estimated_cost_usd": 135.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 24219780,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 32919780
       },
       {
         "period": "2026-07-13",
         "fresh_tokens": 11300000,
         "estimated_cost_usd": 175.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 31457875,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 42757875
       },
       {
         "period": "2026-07-20",
         "fresh_tokens": 9900000,
         "estimated_cost_usd": 154.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 27560439,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 37460439
       },
       {
         "period": "2026-07-27",
         "fresh_tokens": 12400000,
         "estimated_cost_usd": 192.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 34520146,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 46920146
       },
       {
         "period": "2026-08-03",
         "fresh_tokens": 10800000,
         "estimated_cost_usd": 167.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 30065934,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 40865934
       },
       {
         "period": "2026-08-10",
         "fresh_tokens": 13100000,
         "estimated_cost_usd": 204.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 36468864,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 49568864
       },
       {
         "period": "2026-08-17",
         "fresh_tokens": 14600000,
         "estimated_cost_usd": 226.0,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 40644688,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 55244688
       },
       {
         "period": "2026-08-24",
         "fresh_tokens": 14000000,
         "estimated_cost_usd": 205.75,
-        "cost_complete": true
+        "cost_complete": true,
+        "cache_read_tokens": 38974364,
+        "cache_creation_tokens": 0,
+        "total_tokens_including_cached": 52974364
       }
     ],
     "filters_echo": {
@@ -2404,7 +2594,9 @@
       "estimated_cost_usd": 2112.75,
       "cost_complete": true,
       "known_additive_cost_usd": 2112.75,
-      "cost_confidence_label": "complete"
+      "cost_confidence_label": "complete",
+      "cache_creation_tokens": 0,
+      "total_tokens_including_cached": 516500000
     }
   }
 }
