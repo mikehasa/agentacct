@@ -4,6 +4,12 @@ import XCTest
 
 final class UsageVisualRegressionTests: XCTestCase {
     private let expectedFilenames = [
+        "usage-all-tokens-minimum-light.png",
+        "usage-all-tokens-minimum-dark.png",
+        "usage-all-tokens-reference-light.png",
+        "usage-all-tokens-reference-dark.png",
+        "usage-all-tokens-weekly-light.png",
+        "usage-all-tokens-weekly-dark.png",
         "usage-chart-peak-selected-light.png",
         "usage-chart-peak-selected-dark.png",
         "usage-chart-peak-elsewhere-light.png",
