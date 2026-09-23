@@ -1170,6 +1170,7 @@ private struct DashboardAttentionQueueRow: View {
             } label: {
                 Label(brief.buttonTitle, systemImage: "doc.on.doc")
             }
+            .buttonStyle(QuietButtonStyle())
             .accessibilityLabel("\(brief.buttonTitle) for \(item.title)")
             .accessibilityHint("Copies recorded facts only; it does not resume or rerun an agent")
         }
