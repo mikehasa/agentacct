@@ -63,8 +63,11 @@ def test_usage_bundle_rejects_dashboard_scope_and_preserves_other_references(tmp
     refs = tmp_path / "references"
     destination = refs / RENDERER
     destination.mkdir(parents=True)
-    for path in REFERENCES.glob("dashboard-*.png"):
-        shutil.copyfile(path, destination / path.name)
+    # Exercise the real upgrade from the complete older 20-image Usage suite,
+    # alongside the unaffected Dashboard suite, to the expanded 24-image suite.
+    for path in REFERENCES.glob("*.png"):
+        if path.name.startswith("dashboard-") or (path.name.startswith("usage-") and not path.name.startswith("usage-day-clients-")):
+            shutil.copyfile(path, destination / path.name)
     before = {path.name: path.read_bytes() for path in destination.iterdir()}
     unreviewed = run_tool("promote-dashboard-reference-candidate", "--suite", "usage", *args,
                          "--references-root", refs)
@@ -74,7 +77,8 @@ def test_usage_bundle_rejects_dashboard_scope_and_preserves_other_references(tmp
                         "--references-root", refs, "--reviewed")
     assert promoted.returncode == 0, promoted.stderr
     for name, data in before.items():
-        assert (destination / name).read_bytes() == data
+        if not name.startswith("usage-"):
+            assert (destination / name).read_bytes() == data
     for image in (root / "images").iterdir():
         assert (destination / image.name).read_bytes() == image.read_bytes()
 

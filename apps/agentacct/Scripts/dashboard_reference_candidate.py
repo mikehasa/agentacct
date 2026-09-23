@@ -41,6 +41,13 @@ USAGE_IMAGES = {
     for appearance in ("light", "dark")
 }
 SUITE_IMAGES = {"dashboard": DASHBOARD_IMAGES, "usage": USAGE_IMAGES}
+# A reviewed suite can grow. Accept only the complete prior inventory at the
+# destination; candidates and the staged replacement still require all images.
+PREVIOUS_USAGE_IMAGES = set(USAGE_IMAGES) - {
+    f"usage-day-clients-{variant}-{appearance}.png"
+    for variant in ("reference", "other-day")
+    for appearance in ("light", "dark")
+}
 
 
 def select_suite(suite: str) -> None:
@@ -224,7 +231,10 @@ def _reference_files(directory: Path) -> dict[str, Path]:
 
     expected_names = set(EXPECTED_IMAGES)
     present_dashboard_names = set(files) & expected_names
-    if present_dashboard_names and present_dashboard_names != expected_names:
+    accepted_inventories = [expected_names]
+    if EXPECTED_IMAGES is USAGE_IMAGES:
+        accepted_inventories.append(PREVIOUS_USAGE_IMAGES)
+    if present_dashboard_names and present_dashboard_names not in accepted_inventories:
         missing = sorted(expected_names - present_dashboard_names)
         raise CandidateError(
             "reference destination Dashboard inventory mismatch "
