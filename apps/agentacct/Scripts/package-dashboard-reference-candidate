@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from dashboard_reference_candidate import CandidateError, build_manifest, write_manifest
+from dashboard_reference_candidate import CandidateError, select_suite, build_manifest, write_manifest
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -19,12 +19,14 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--renderer-id", required=True)
     parser.add_argument("--runner-image", required=True)
     parser.add_argument("--runner-image-version", required=True)
+    parser.add_argument("--suite", choices=("dashboard", "usage"), default="dashboard")
     return parser.parse_args()
 
 
 def main() -> int:
     arguments = parse_arguments()
     try:
+        select_suite(arguments.suite)
         manifest = build_manifest(
             arguments.images,
             arguments.source_commit,

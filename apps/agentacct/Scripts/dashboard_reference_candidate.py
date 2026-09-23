@@ -1,4 +1,4 @@
-"""Shared validation for dashboard reference-image candidate bundles."""
+"""Shared validation for explicitly selected visual reference suites."""
 
 from __future__ import annotations
 
@@ -20,6 +20,37 @@ EXPECTED_IMAGES = {
     "dashboard-reference-dark.png": (2240, 1600),
     "dashboard-reference-light.png": (2240, 1600),
 }
+# Explicit inventories keep a candidate from choosing its own promotion scope.
+DASHBOARD_IMAGES = EXPECTED_IMAGES
+USAGE_IMAGES = {
+    f"usage-{viewport}-{appearance}.png": (width * 2, height * 2)
+    for viewport, width, height in (
+        ("all-tokens-minimum", 960, 560),
+        ("all-tokens-reference", 1120, 1540),
+        ("all-tokens-weekly", 1120, 1540),
+        ("chart-peak-selected", 1120, 1120),
+        ("chart-peak-elsewhere", 1120, 1120),
+        ("minimum", 960, 560),
+        ("reference", 1120, 900),
+        ("weekly-reference", 1120, 1120),
+        ("disconnected-reference", 1120, 900),
+        ("about-expanded", 1120, 2400),
+        ("day-clients-reference", 1120, 1300),
+        ("day-clients-other-day", 1120, 1300),
+    )
+    for appearance in ("light", "dark")
+}
+SUITE_IMAGES = {"dashboard": DASHBOARD_IMAGES, "usage": USAGE_IMAGES}
+
+
+def select_suite(suite: str) -> None:
+    """Select a fixed inventory once at CLI startup, never from the manifest."""
+    global EXPECTED_IMAGES
+    if suite not in SUITE_IMAGES:
+        raise CandidateError("unsupported visual reference suite")
+    EXPECTED_IMAGES = SUITE_IMAGES[suite]
+
+
 FULL_COMMIT_PATTERN = re.compile(r"[0-9a-f]{40}")
 SAFE_RENDERER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 SAFE_REFERENCE_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.png")

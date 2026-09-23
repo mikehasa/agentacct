@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from dashboard_reference_candidate import CandidateError, validate_candidate_bundle
+from dashboard_reference_candidate import CandidateError, select_suite, validate_candidate_bundle
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -16,12 +16,14 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--candidate", required=True, type=Path)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--renderer-id", required=True)
+    parser.add_argument("--suite", choices=("dashboard", "usage"), default="dashboard")
     return parser.parse_args()
 
 
 def main() -> int:
     arguments = parse_arguments()
     try:
+        select_suite(arguments.suite)
         manifest = validate_candidate_bundle(
             arguments.candidate,
             arguments.source_commit,
@@ -31,7 +33,7 @@ def main() -> int:
         raise SystemExit(f"validate-dashboard-reference-candidate: {error}") from error
 
     print(
-        "Validated dashboard reference candidate: "
+        f"Validated {arguments.suite} reference candidate: "
         f"{manifest['source_commit']} on {manifest['renderer_id']} "
         f"({len(manifest['artifacts'])} images)."
     )

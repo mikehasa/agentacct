@@ -93,6 +93,18 @@ The reference update is therefore the reviewer-facing before/after artifact.
 
 ## Request an authoritative candidate remotely
 
+Usage redesigns use the same two-replica workflow with the explicit
+`suite=usage` input. Pass `--suite usage` to the package, validate and promote
+tools (their historical filenames retain `dashboard`). The default remains
+Dashboard. Each suite has its own fixed image inventory and dimensions;
+promoting Usage preserves the other suites byte-for-byte.
+
+```bash
+gh workflow run visual-reference-candidates.yml -f ref="$source_commit" -f suite=usage
+# Download usage-reference-candidate-$source_commit, inspect every image,
+# then validate/promote with --suite usage and the exact source/renderer ids.
+```
+
 Developer machines are not authoritative renderers. To generate a candidate
 without using or reconfiguring a developer's Mac, push the source commit to
 this repository and request its full lowercase commit SHA:
