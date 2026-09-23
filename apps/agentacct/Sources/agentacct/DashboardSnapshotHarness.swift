@@ -27,9 +27,12 @@ struct DashboardSnapshotFixture: Decodable {
     let usage90Days: UsageSummary
     let usageDailyBreakdown: UsageSummary?
     let work: WorkSnapshotFixture?
+    let worksets: WorksetsPayload?
+    let worksetCandidates: WorksetCandidatesPayload?
 
     enum CodingKeys: String, CodingKey {
-        case glance, plan, attention, ingestion, tasks, usage, work
+        case glance, plan, attention, ingestion, tasks, usage, work, worksets
+        case worksetCandidates = "workset_candidates"
         case usage90Days = "usage_90_days"
         case usageDailyBreakdown = "usage_daily_breakdown"
         case menuSparseGlance = "menu_sparse_glance"

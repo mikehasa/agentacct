@@ -829,7 +829,7 @@ extension MainPane {
         switch self {
         case .dashboard: return selected ? "square.grid.2x2.fill" : "square.grid.2x2"
         case .worksets: return selected ? "folder.fill" : "folder"
-        case .work: return "checklist"
+        case .work: return "list.bullet.rectangle"
         case .usage: return "chart.bar.xaxis"
         case .sources: return "point.3.connected.trianglepath.dotted"
         }

@@ -10,11 +10,12 @@ struct NativeTimelineReviewFrame: Decodable {
 }
 
 enum NativeReviewScreen: String, CaseIterable, Identifiable {
-    case dashboard, compactDashboard, usage, compactUsage, largeDashboard, largeWork, largeUsage, liveTimeline, largeOffline, largeSources, largeTimeline, largeHealth, largeSetup, compactLargeSetup, largeSetupContent, largeActivation, welcome, review, setupContent, working, pending, failure, recovery, recovered, updateRecovery, activation, timeline, recordDetail, focus, work, compactWork, offline, health, sources
+    case dashboard, compactDashboard, worksets, compactWorksets, sessions, compactSessions, usage, compactUsage, largeDashboard, largeWork, largeUsage, liveTimeline, largeOffline, largeSources, largeTimeline, largeHealth, largeSetup, compactLargeSetup, largeSetupContent, largeActivation, welcome, review, setupContent, working, pending, failure, recovery, recovered, updateRecovery, activation, timeline, recordDetail, focus, work, compactWork, offline, health, sources
     var id: String { rawValue }
     var usesLargeText: Bool { [.largeDashboard, .largeWork, .largeUsage, .largeOffline, .largeSources, .largeTimeline, .largeHealth, .largeSetup, .compactLargeSetup, .largeSetupContent, .largeActivation].contains(self) }
     var mainPane: MainPane {
         if [.dashboard, .compactDashboard, .largeDashboard].contains(self) { return .dashboard }
+        if [.worksets, .compactWorksets].contains(self) { return .worksets }
         if [.usage, .compactUsage, .largeUsage].contains(self) { return .usage }
         return .work
     }
@@ -66,7 +67,7 @@ struct NativeReviewSurface: View {
         _glance = State(initialValue: GlanceState(preloaded: fixture.glanceSnapshot))
         let initialSelection = AppSelection()
         initialSelection.pane = screen.mainPane
-        initialSelection.taskId = fixture.work?.receipt.taskId
+        initialSelection.taskId = [.sessions, .compactSessions].contains(screen) ? nil : fixture.work?.receipt.taskId
         _selection = State(initialValue: initialSelection)
         let phase: SetupModel.Phase
         switch screen {
@@ -151,11 +152,11 @@ struct NativeReviewSurface: View {
                             }
                         }
                     }
-                case .dashboard, .compactDashboard, .work, .compactWork, .largeWork, .usage, .compactUsage:
+                case .dashboard, .compactDashboard, .worksets, .compactWorksets, .sessions, .compactSessions, .work, .compactWork, .largeWork, .usage, .compactUsage:
                     MainWindow(canSetUpOverride: true)
                         .onAppear {
                             selection.pane = screen.mainPane
-                            selection.taskId = fixture.work?.receipt.taskId
+                            selection.taskId = [.sessions, .compactSessions].contains(screen) ? nil : fixture.work?.receipt.taskId
                         }
                 case .health, .largeHealth:
                     HStack(alignment: .top, spacing: 30) {
@@ -368,7 +369,7 @@ enum NativeReviewRunner {
         for screen in NativeReviewScreen.allCases where requestedScenes == nil || requestedScenes!.contains(screen.rawValue) {
             for scheme in [ColorScheme.light, .dark] {
                 SnapshotScheme.override = scheme
-                let compact = screen == .largeOffline || screen == .largeSources || screen == .compactWork || screen == .compactDashboard || screen == .compactUsage || screen == .compactLargeSetup || screen == .largeActivation
+                let compact = screen == .largeOffline || screen == .largeSources || screen == .compactWork || screen == .compactSessions || screen == .compactWorksets || screen == .compactDashboard || screen == .compactUsage || screen == .compactLargeSetup || screen == .largeActivation
                 let tall = screen == .usage || screen == .recordDetail || screen == .sources || screen == .setupContent || screen == .largeSetupContent
                 let size = CGSize(width: screen == .focus ? 1320 : compact ? 960 : 1120, height: compact ? 640 : tall ? 1500 : 860)
                 let view = NativeReviewSurface(fixture: fixture, screen: screen)
