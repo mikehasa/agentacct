@@ -170,3 +170,18 @@ def test_replayed_parent_work_does_not_end_before_child_creation(tmp_path):
     with sqlite3.connect(home / "state_5.sqlite") as db:
         db.execute("update threads set created_at=?, recency_at=null", (WORK + 100,))
     assert discover_codex_usage(codex_home=home)[0].updated_at == WORK + 100
+
+
+def test_timestamped_identity_does_not_hide_legacy_untimestamped_work(tmp_path):
+    home, rollout = _home(tmp_path)
+    records = [json.loads(line) for line in rollout.read_text().splitlines()]
+    records = [row for row in records if row["payload"].get("type") != "thread_settings_applied"]
+    for row in records:
+        if row["type"] != "session_meta":
+            row.pop("timestamp")
+    rollout.write_text("".join(json.dumps(row) + "\n" for row in records))
+    with sqlite3.connect(home / "state_5.sqlite") as db:
+        db.execute("update threads set updated_at=?, recency_at=null", (WORK,))
+    observations = []
+    usage = discover_codex_usage(codex_home=home, _session_observations=observations)
+    assert usage[0].updated_at == observations[0].updated_at == WORK

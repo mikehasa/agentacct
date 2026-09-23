@@ -6905,7 +6905,7 @@ def _codex_activity_updated_at(
     if candidates:
         # A replayed parent prefix can predate this thread's own creation.
         return max(*candidates, started or 0)
-    if observation.get("has_timestamped_records"):
+    if observation.get("has_timestamped_records") and not observation.get("has_untimestamped_activity"):
         # A new thread with only metadata/settings has no later work to report.
         return started
     # Older clients/fixtures may expose neither timestamped rollout records
@@ -8502,6 +8502,7 @@ def _read_codex_rollout_usage_uncached(
     first_activity_at: int | None = None
     last_activity_at: int | None = None
     has_timestamped_records = False
+    has_untimestamped_activity = False
     # Discovery-side Actions retain only bounded identities and scrubbed commands.
     # Patch bodies are revisited, never retained, after all duplicate call
     # representations have been reconciled.
@@ -8562,9 +8563,11 @@ def _read_codex_rollout_usage_uncached(
                 continue
             saw_valid_object = True
             timestamp = _timestamp_seconds(obj.get("timestamp"))
+            is_activity = _codex_record_is_activity(obj)
+            if is_activity and timestamp is None:
+                has_untimestamped_activity = True
             if timestamp is not None:
                 has_timestamped_records = True
-                is_activity = _codex_record_is_activity(obj)
                 if is_activity or (obj.get("type") == "session_meta" and not session_meta_seen):
                     first_activity_at = min(first_activity_at or timestamp, timestamp)
                 if is_activity:
@@ -8777,6 +8780,7 @@ def _read_codex_rollout_usage_uncached(
                 "first_activity_at": first_activity_at,
                 "last_activity_at": last_activity_at,
                 "has_timestamped_records": has_timestamped_records,
+                "has_untimestamped_activity": has_untimestamped_activity,
                 "observed_models": [model] if model else [],
                 "valid_object_count": int(saw_valid_object),
                 "tool_activity": rollout_tool_activity,
