@@ -39,6 +39,9 @@ from .pricing_catalog import (
 # Local published-price estimates for preflight validation and ledger estimates.
 # Provider invoices remain the source of truth; these values are intentionally
 # treated as estimated cost unless a provider returns actual cost directly.
+# Opus 5.5 standard rates (2026-09-22), including the 0.05x cache-read rate:
+# https://platform.claude.com/docs/en/models/opus-5-5/overview
+# The claude-code provider alias below shares these Anthropic list prices.
 MODEL_PRICES_PER_1M_INPUT: dict[tuple[str, str], float] = {
     ("openai", "gpt-5-mini"): 0.25,
     ("openai", "gpt-5.4-mini"): 0.75,
@@ -60,6 +63,7 @@ MODEL_PRICES_PER_1M_INPUT: dict[tuple[str, str], float] = {
     ("openrouter", "deepseek/deepseek-chat"): 0.2002,
     ("deepseek", "deepseek-chat"): 0.14,
     ("anthropic", "claude-fable-5"): 10.00,
+    ("anthropic", "claude-opus-5-5"): 4.00,
     ("anthropic", "claude-sonnet-4"): 3.00,
     ("anthropic", "claude-haiku-4-5-20251001"): 1.00,
     ("anthropic", "claude-3-5-haiku"): 0.80,
@@ -89,6 +93,7 @@ MODEL_PRICES_PER_1M_OUTPUT: dict[tuple[str, str], float] = {
     ("openrouter", "deepseek/deepseek-chat"): 0.80,
     ("deepseek", "deepseek-chat"): 0.28,
     ("anthropic", "claude-fable-5"): 50.00,
+    ("anthropic", "claude-opus-5-5"): 20.00,
     ("anthropic", "claude-sonnet-4"): 15.00,
     ("anthropic", "claude-haiku-4-5-20251001"): 5.00,
     ("anthropic", "claude-3-5-haiku"): 4.00,
@@ -102,6 +107,7 @@ MODEL_PRICES_PER_1M_CACHE_WRITE_5M: dict[tuple[str, str], float] = {
     ("claude-code", "claude-opus-4-8"): 6.25,
     ("claude-code", "claude-haiku-4-5-20251001"): 1.25,
     ("anthropic", "claude-fable-5"): 12.50,
+    ("anthropic", "claude-opus-5-5"): 5.00,
     ("anthropic", "claude-sonnet-4"): 3.75,
     ("anthropic", "claude-haiku-4-5-20251001"): 1.25,
     ("anthropic", "claude-3-5-haiku"): 1.00,
@@ -112,6 +118,7 @@ MODEL_PRICES_PER_1M_CACHE_WRITE_1H: dict[tuple[str, str], float] = {
     ("claude-code", "claude-opus-4-8"): 10.00,
     ("claude-code", "claude-haiku-4-5-20251001"): 2.00,
     ("anthropic", "claude-fable-5"): 20.00,
+    ("anthropic", "claude-opus-5-5"): 8.00,
     ("anthropic", "claude-sonnet-4"): 6.00,
     ("anthropic", "claude-haiku-4-5-20251001"): 2.00,
     ("anthropic", "claude-3-5-haiku"): 1.60,
@@ -125,6 +132,7 @@ MODEL_PRICES_PER_1M_CACHE_READ: dict[tuple[str, str], float] = {
     ("claude-code", "claude-opus-4-8"): 0.50,
     ("claude-code", "claude-haiku-4-5-20251001"): 0.10,
     ("anthropic", "claude-fable-5"): 1.00,
+    ("anthropic", "claude-opus-5-5"): 0.20,
     ("anthropic", "claude-sonnet-4"): 0.30,
     ("anthropic", "claude-haiku-4-5-20251001"): 0.10,
     ("anthropic", "claude-3-5-haiku"): 0.08,
