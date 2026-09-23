@@ -274,16 +274,10 @@ enum SnapshotRunner {
             defer { finished = true }
             do {
                 let fixture = try DashboardSnapshotFixture.load(from: fixtureURL)
-                let pages = try WorkSnapshotRenderer.render(
+                let rendered = try renderWorkFixture(
                     fixture: fixture,
                     outputDirectory: outputURL
                 )
-                let sessionSteps = try SessionStepsSnapshotRenderer.render(
-                    fixture: fixture,
-                    outputDirectory: outputURL
-                )
-                let components = try WorkComponentSnapshotRenderer.render(outputDirectory: outputURL)
-                let rendered = pages + sessionSteps + components
                 print("work snapshots written to \(outputURL.path): \(rendered.count) files")
             } catch {
                 exitCode = 1
@@ -294,6 +288,22 @@ enum SnapshotRunner {
             RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
         exit(exitCode)
+    }
+
+    /// The CLI and its regression test share the complete Work render path.
+    /// Keep action/check galleries alongside pages, steps and shared components
+    /// so a successful review render can satisfy the fixed candidate inventory.
+    @MainActor
+    static func renderWorkFixture(
+        fixture: DashboardSnapshotFixture,
+        outputDirectory: URL
+    ) throws -> [URL] {
+        let pages = try WorkSnapshotRenderer.render(fixture: fixture, outputDirectory: outputDirectory)
+        let steps = try SessionStepsSnapshotRenderer.render(fixture: fixture, outputDirectory: outputDirectory)
+        let actions = try ReceiptActionSnapshotRenderer.render(outputDirectory: outputDirectory)
+        let checks = try ReceiptCheckSnapshotRenderer.render(outputDirectory: outputDirectory)
+        let components = try WorkComponentSnapshotRenderer.render(outputDirectory: outputDirectory)
+        return pages + steps + actions + checks + components
     }
 
     static func runAbout(applicationIconPath: String, outputDir: String) {
