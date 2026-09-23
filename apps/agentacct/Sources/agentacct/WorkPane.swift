@@ -1980,8 +1980,8 @@ struct WorkRecordPage: View {
     @Environment(\.savedWorkReconnect) private var reconnectSavedWork
     @FocusState private var backFocused: Bool
     @AccessibilityFocusState private var backAccessibilityFocused: Bool
-    // The primary session's steps power both the outcome bars and the spine, so
-    // the page owns the one load and hands the detail to both.
+    // The receipt-wide overview renders immediately; only the primary step
+    // spine depends on this separate session load.
     @State private var sessionDetail: V1SessionDetail?
     @State private var sessionLoading = false
     @State private var sessionFailed = false
@@ -2005,34 +2005,19 @@ struct WorkRecordPage: View {
                     if let refreshError {
                         staleDetailBanner(refreshError).padding(.top, Space.m)
                     }
-                    // The outcome leads: the honest gradient (proven → claimed →
-                    // failed) as two segmented bars — did it succeed, and how
-                    // strong is the proof — replacing the old flat metric strip.
-                    // Rendered once the primary session's steps load.
-                    outcomeBars.padding(.top, compactViewport ? Space.s : Space.l)
-                    // Then what needs a human, if anything.
-                    let decision = WorkReceiptDecisionPresentation(receipt: receipt)
-                    if decision.isAttention, receipt.axes.decisionStatus.blocker?.text == nil {
-                        Text(decision.explanation)
-                            .workFont(.body).foregroundStyle(Theme.coral)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, Space.m)
-                    }
+                    ReceiptOverview(receipt: receipt)
+                        .padding(.top, compactViewport ? Space.s : Space.l)
                     if let blocker = receipt.axes.decisionStatus.blocker, blocker.text != nil {
                         BlockerCallout(blocker: blocker, taskId: receipt.taskId)
                             .padding(.top, Space.m)
                     }
-                    // The step-by-step is the record's readable core, so it leads
-                    // — what happened, and what passed or failed, without leaving
-                    // the page. The activity timeline stays inline right below it
-                    // (never behind a tab); "Focus timeline" only lifts the
-                    // timeline to the top. Both orderings render the SAME four
-                    // sections keyed by a stable id, so the toggle reorders them
-                    // in place: it never tears down the loaded steps or the
-                    // reader's expansion/scroll state (which a plain if/else,
-                    // giving each branch its own identity, would discard).
+                    sectionNavigation(proxy: proxy).padding(.top, Space.m)
+                    // Stable section identities preserve timeline inspector and
+                    // step expansion state when Focus timeline reorders them.
                     VStack(alignment: .leading, spacing: Space.xl) {
-                        ForEach(orderedSections(proxy: proxy)) { $0.view }
+                        ForEach(orderedSections(proxy: proxy)) { section in
+                            section.view.id("work.record.\(section.id)")
+                        }
                     }
                     .padding(.top, compactViewport ? Space.l : Space.xl)
                 }
@@ -2066,6 +2051,48 @@ struct WorkRecordPage: View {
         }
     }
 
+    private func sectionNavigation(proxy: ScrollViewProxy) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Space.s) { sectionLinks(proxy: proxy) }
+            VStack(alignment: .leading, spacing: Space.xs) {
+                HStack(spacing: Space.s) {
+                    sectionLink("Steps", section: "steps", proxy: proxy)
+                    sectionLink("Checks", section: "checks", proxy: proxy)
+                    sectionLink("Activity", section: "timeline", proxy: proxy)
+                }
+                HStack(spacing: Space.s) {
+                    if !otherSessionMembers.isEmpty {
+                        sectionLink("Other sessions", section: "subagents", proxy: proxy)
+                    }
+                    sectionLink("Usage & recording", section: "supporting", proxy: proxy)
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Explore this receipt")
+        .accessibilityIdentifier("work.receipt.navigation")
+    }
+
+    @ViewBuilder
+    private func sectionLinks(proxy: ScrollViewProxy) -> some View {
+        sectionLink("Steps", section: "steps", proxy: proxy)
+        sectionLink("Checks", section: "checks", proxy: proxy)
+        sectionLink("Activity", section: "timeline", proxy: proxy)
+        if !otherSessionMembers.isEmpty {
+            sectionLink("Other sessions", section: "subagents", proxy: proxy)
+        }
+        sectionLink("Usage & recording", section: "supporting", proxy: proxy)
+    }
+
+    private func sectionLink(_ title: String, section: String, proxy: ScrollViewProxy) -> some View {
+        Button { proxy.scrollTo("work.record.\(section)", anchor: .top) } label: {
+            Label(title, systemImage: "arrow.down")
+                .workFont(.captionSemibold)
+        }
+        .buttonStyle(QuietButtonStyle(horizontalPadding: 8))
+        .accessibilityIdentifier("work.receipt.jump.\(section)")
+    }
+
     /// The activity timeline band, inline (never tabbed). Kept as a function so
     /// both orderings (steps-first, or timeline-first under "Focus timeline")
     /// share the one scroll proxy that drives its reveal callbacks.
@@ -2095,12 +2122,22 @@ struct WorkRecordPage: View {
         return result
     }
 
-    /// The readable core: the primary session's steps rendered directly as the
-    /// numbered spine, failed and blocked steps open by default.
+    /// The primary session's narrative is explicitly scoped. Readers choose
+    /// which step to expand; failed outcomes remain visible in each row.
     private var stepsSection: some View {
         ReceiptSection(title: "Steps", identifier: "steps") {
+            if let member = primarySessionMember {
+                Text("Primary session · \(member.client)")
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+                    .padding(.bottom, Space.s)
+            }
             stepsContent
         }
+    }
+
+    private var checksSection: some View {
+        RecordChecksCard(evidence: receipt.dimensions.evidence, taskId: receipt.taskId,
+                         initiallyShowsRoutineGroups: false)
     }
 
     private var primaryKey: String? {
@@ -2137,14 +2174,6 @@ struct WorkRecordPage: View {
         }
     }
 
-    /// The two colored outcome bars — shown once the primary session's steps
-    /// have loaded (nothing to summarize before then).
-    @ViewBuilder private var outcomeBars: some View {
-        if let detail = effectiveSessionDetail, !detail.steps.isEmpty {
-            RecordOutcomeBars(steps: detail.steps)
-        }
-    }
-
     /// The step spine, or an honest load / empty / failed / offline state.
     @ViewBuilder private var stepsContent: some View {
         if let projection = sessionProjection ?? effectiveSessionDetail?.projection {
@@ -2160,7 +2189,7 @@ struct WorkRecordPage: View {
                     .workFont(.caption).foregroundStyle(Theme.muted)
             } else {
                 let items = SessionStepItem.make(detail.steps)
-                SessionStepSpine(items: items, openedIDs: openedStepIDs(items))
+                SessionStepSpine(items: items, openedIDs: [])
             }
         } else if dashboard.isOfflineSnapshot {
             stepsOfflineNotice
@@ -2169,13 +2198,6 @@ struct WorkRecordPage: View {
         } else {
             stepsLoadingRow
         }
-    }
-
-    private func openedStepIDs(_ items: [SessionStepItem]) -> Set<String> {
-        if SnapshotMode.enabled { return SessionStepItem.snapshotOpenedIDs(items) }
-        return Set(items.filter {
-            $0.step.latestStatus == "blocked" || $0.step.latestStatus == "failed" || $0.step.evidenceStatus == "failed"
-        }.map(\.id))
     }
 
     private var stepsLoadingRow: some View {
@@ -2233,32 +2255,35 @@ struct WorkRecordPage: View {
         let view: AnyView
     }
 
-    /// Steps → timeline → subagents → supporting, or timeline first under
+    /// Steps → checks → timeline → subagents → supporting, or timeline first under
     /// "Focus timeline". Same views, same ids, only the order changes.
     private func orderedSections(proxy: ScrollViewProxy) -> [OrderedSection] {
         let steps = OrderedSection(id: "steps", view: AnyView(stepsSection))
+        let checks = OrderedSection(id: "checks", view: AnyView(checksSection))
         let timeline = OrderedSection(id: "timeline", view: AnyView(timelineView(proxy: proxy)))
         let subagents = OrderedSection(id: "subagents", view: AnyView(subagentsSection))
         let supporting = OrderedSection(id: "supporting", view: AnyView(supportingSections))
         return timelineFocused
-            ? [timeline, steps, subagents, supporting]
-            : [steps, timeline, subagents, supporting]
+            ? [timeline, steps, checks, subagents, supporting]
+            : [steps, checks, timeline, subagents, supporting]
     }
 
-    /// Supporting captured detail, below the steps and the timeline: each fact
-    /// once, no duplication of the summary strip above.
+    /// Detailed usage and provenance stay available without dominating the
+    /// initial task overview.
     private var supportingSections: some View {
-        VStack(alignment: .leading, spacing: Space.xl) {
-            ReceiptSection(
-                title: "Usage", identifier: "usage",
-                help: "Counts describe captured tool calls, not progress or success. Related paths are recorded associations, not modified files. Current receipts have no ordered action ledger, so captured call counts cannot be linked to results or timing."
-            ) {
-                RecordDimensionsCard(receipt: receipt, included: [.actions, .cost],
-                                     showsProvenance: false, compactDigest: true)
-            }
-            ReceiptSection(title: "Recording", identifier: "recording",
-                           help: receipt.axes.orthogonalityNote) {
-                recordingDetails
+        OverflowDisclosure(label: "Usage and recording details", identifier: "work.receipt.details") {
+            VStack(alignment: .leading, spacing: Space.xl) {
+                ReceiptSection(
+                    title: "Usage", identifier: "usage",
+                    help: "Counts describe captured tool calls, not progress or success. Related paths are recorded associations, not modified files. Current receipts have no ordered action ledger, so captured call counts cannot be linked to results or timing."
+                ) {
+                    RecordDimensionsCard(receipt: receipt, included: [.actions, .cost],
+                                         showsProvenance: false, compactDigest: true)
+                }
+                ReceiptSection(title: "Recording", identifier: "recording",
+                               help: receipt.axes.orthogonalityNote) {
+                    recordingDetails
+                }
             }
         }
         .accessibilityIdentifier("work.all-captured-details")
@@ -2394,23 +2419,12 @@ struct WorkRecordPage: View {
         Rectangle().fill(Theme.hairline).frame(height: 1)
     }
 
-    /// Identity and provenance in one place: task and agent facts, evidence
-    /// coverage, sources and gaps. Each fact appears once on the page.
+    /// Identity and provenance in one place: task and agent facts, sources and
+    /// gaps. Claim coverage is already visible in the receipt overview.
     private var recordingDetails: some View {
         VStack(alignment: .leading, spacing: 0) {
             RecordDimensionsCard(receipt: receipt, included: [.task, .agents],
                                  showsProvenance: false, showsGaps: false)
-            receiptFactRow("Coverage") {
-                let presentation = ReceiptCoveragePresentation(evidence: receipt.axes.evidenceStrength)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(presentation.value).workFont(.body)
-                        .foregroundStyle(presentation.isInconsistent ? Theme.amber : Theme.ink)
-                    Text(presentation.qualifier).workFont(.caption).foregroundStyle(Theme.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                // Definition on hover — never permanent teaching copy.
-                .help("Evidence coverage: the share of checkable claims that carry recorded evidence. A claim is not the same as an independent machine check.")
-            }
             receiptFactRow("Sources") {
                 let sources = receipt.dimensions.provenance.sourcesPresent ?? []
                 if sources.isEmpty {
