@@ -11,6 +11,12 @@ final class UsageSnapshotHarnessTests: XCTestCase {
     }
 
     private let expectedArtifacts = [
+        ExpectedArtifact(filename: "usage-all-tokens-minimum-light.png", pixelsWide: 1920, pixelsHigh: 1120),
+        ExpectedArtifact(filename: "usage-all-tokens-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
+        ExpectedArtifact(filename: "usage-all-tokens-reference-light.png", pixelsWide: 2240, pixelsHigh: 3080),
+        ExpectedArtifact(filename: "usage-all-tokens-reference-dark.png", pixelsWide: 2240, pixelsHigh: 3080),
+        ExpectedArtifact(filename: "usage-all-tokens-weekly-light.png", pixelsWide: 2240, pixelsHigh: 3080),
+        ExpectedArtifact(filename: "usage-all-tokens-weekly-dark.png", pixelsWide: 2240, pixelsHigh: 3080),
         ExpectedArtifact(filename: "usage-chart-peak-selected-light.png", pixelsWide: 2240, pixelsHigh: 2240),
         ExpectedArtifact(filename: "usage-chart-peak-selected-dark.png", pixelsWide: 2240, pixelsHigh: 2240),
         ExpectedArtifact(filename: "usage-chart-peak-elsewhere-light.png", pixelsWide: 2240, pixelsHigh: 2240),
@@ -98,6 +104,7 @@ final class UsageSnapshotHarnessTests: XCTestCase {
                 VisualSnapshotTolerance.crossMinorRenderingNoise.maximumChangedChannelFraction
             )
         }
+        XCTAssertEqual(SnapshotMode.usageTokenBasis, .fresh)
         XCTAssertFalse(SnapshotMode.enabled)
         XCTAssertFalse(SnapshotMode.boundsScrollContentToViewport)
         XCTAssertNil(SnapshotScheme.override)

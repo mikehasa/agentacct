@@ -6,6 +6,12 @@ import SwiftUI
 struct UsagePane: View {
     @Environment(DashboardStore.self) var dashboard
     @Environment(GlanceState.self) var glance
+    @AppStorage("usage.tokenBasis") private var savedTokenBasis: UsageTokenBasis = .fresh
+
+    private var tokenBasis: UsageTokenBasis {
+        SnapshotMode.enabled && !SnapshotMode.interactiveFixture ? SnapshotMode.usageTokenBasis : savedTokenBasis
+    }
+
     @State private var showStale = false
     @State private var showAbout = false
 
@@ -24,6 +30,7 @@ struct UsagePane: View {
             // whole pane slide sideways on wide windows when switching tabs.
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .environment(\.usageTokenBasis, tokenBasis)
     }
 
     private var header: some View {
@@ -37,6 +44,12 @@ struct UsagePane: View {
             HStack(spacing: Space.m) {
                 Text("Recorded usage range").workFont(.caption).foregroundStyle(Theme.muted)
                 usageRangeControl
+            }
+            // Notices occupy the top-right corner, so keep the page-wide
+            // token choice on the leading edge even when capacity is offline.
+            HStack(spacing: Space.s) {
+                UsageTokenBasisControl(selection: Binding(get: { tokenBasis }, set: { savedTokenBasis = $0 }))
+                ContextHelp(title: "How tokens are counted", message: UsageTokenBasis.explanation, identifier: "usage.tokens.help")
             }
         }
     }
@@ -121,7 +134,7 @@ struct UsagePane: View {
     private func staleControl(count: Int) -> some View {
         Group {
             if count > 0 {
-                if SnapshotMode.enabled {
+                if SnapshotMode.enabled && !SnapshotMode.interactiveFixture {
                     Chip(text: "\(count) stale hidden", tint: Theme.amber)
                 } else {
                     Toggle("Show \(count) stale capacity reading\(count == 1 ? "" : "s")", isOn: $showStale)
@@ -166,11 +179,11 @@ struct UsagePane: View {
     private func todayStrip(_ totals: UsageTotals) -> some View {
         HStack(spacing: Space.l) {
             CapsLabel(text: "Today · all agents")
-            Text(totals.freshTokens.map(UsageTotals.compact) ?? "Tokens not reported")
+            Text(tokenBasis.value(totals).map(UsageTotals.compact) ?? "Tokens not reported")
                 .workFont(.dataSmallSemibold)
-                .foregroundStyle(totals.freshTokens == nil ? Theme.muted : Theme.ink)
-            if totals.freshTokens != nil {
-                Text("fresh tokens").workFont(.caption).foregroundStyle(Theme.muted)
+                .foregroundStyle(tokenBasis.value(totals) == nil ? Theme.muted : Theme.ink)
+            if tokenBasis.value(totals) != nil {
+                Text(tokenBasis.label.lowercased()).workFont(.caption).foregroundStyle(Theme.muted)
             }
             Rectangle().fill(Theme.hairline).frame(width: 1, height: 20)
             Text(totals.costText == "—" ? "Cost unpriced" : totals.costText)
@@ -242,7 +255,7 @@ struct UsagePane: View {
 
     @ViewBuilder
     private var usageRangeControl: some View {
-        if SnapshotMode.enabled {
+        if SnapshotMode.enabled && !SnapshotMode.interactiveFixture {
             HStack(spacing: Space.s) {
                 Chip(text: "\(dashboard.usageDays)d", tint: Theme.accent)
             }
@@ -268,10 +281,10 @@ struct UsagePane: View {
         return StripRow(cells: [
             StripRow.Cell(
                 id: "tokens",
-                label: "Tokens",
-                value: totals?.freshTokens.map(UsageTotals.compact),
-                qualifier: "fresh · client-reported",
-                absent: "none recorded"
+                label: tokenBasis.label,
+                value: tokenBasis.value(totals).map(UsageTotals.compact),
+                qualifier: tokenBasis.qualifier,
+                absent: "not reported"
             ),
             StripRow.Cell(
                 id: "sessions",
@@ -298,7 +311,6 @@ struct UsagePane: View {
         ])
     }
 
-    @ViewBuilder
     /// The basis facts for the loaded range. They used to trail the page as
     /// a fourth disclaimer line; they now open the About disclosure, where
     /// the rest of the numbers' definitions already live.
@@ -306,16 +318,14 @@ struct UsagePane: View {
         let parts: [String] = [
             Fmt.costConfidenceLabel(usage.totals?.costConfidence).map { "cost: \($0)" },
             "token counts come from client usage records",
-            usage.totals?.cacheReadTokens.map {
-                "fresh tokens exclude \(UsageTotals.compact($0)) cache-read tokens"
-            },
+            "\(tokenBasis.label.lowercased()): \(tokenBasis.qualifier)",
         ].compactMap { $0 }
         return parts.joined(separator: " · ")
     }
 
     @ViewBuilder
     private var aboutSection: some View {
-        if SnapshotMode.enabled {
+        if SnapshotMode.enabled && !SnapshotMode.interactiveFixture {
             Card {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack {
@@ -359,6 +369,12 @@ struct UsagePane: View {
                 }
                 Rectangle().fill(Theme.hairline).frame(height: 1)
             }
+            VStack(alignment: .leading, spacing: 6) {
+                CapsLabel(text: "Token counting")
+                Text(UsageTokenBasis.explanation)
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+            }
+            Rectangle().fill(Theme.hairline).frame(height: 1)
             VStack(alignment: .leading, spacing: 6) {
                 CapsLabel(text: "Cost grammar")
                 Text("$ complete reported or billed · ≈$ estimate · ~$ known partial subtotal · unpriced when no amount is available")
@@ -414,15 +430,15 @@ struct UsagePeriodPresentation {
 
         let periods = usage.byPeriod ?? []
         let activeCount = periods.filter {
-            ($0.freshTokens ?? 0) > 0 || $0.estimatedCostUsd != nil
+            ($0.totalTokensIncludingCached ?? $0.freshTokens ?? 0) > 0 || $0.estimatedCostUsd != nil
         }.count
         value = periods.isEmpty ? nil : "\(activeCount)/\(periods.count)"
     }
 
     var costChartTitle: String { "Cost per \(unit)" }
 
-    func tokenChartTitle(group: String?) -> String {
-        let title = "Fresh tokens per \(unit)"
+    func tokenChartTitle(group: String?, basis: UsageTokenBasis = .fresh) -> String {
+        let title = "\(basis.label) per \(unit)"
         return group.map { "\(title) · \($0)" } ?? title
     }
 
@@ -548,12 +564,13 @@ enum UsageChartPeakLabel {
 }
 
 struct UsagePeriodChart: View {
+    @Environment(\.usageTokenBasis) private var tokenBasis
     let periods: [PeriodBucket]
     let presentation: UsagePeriodPresentation
 
     enum Series: String, CaseIterable, Identifiable {
         case cost = "Cost"
-        case tokens = "Fresh tokens"
+        case tokens = "Tokens"
         var id: String { rawValue }
     }
 
@@ -568,7 +585,8 @@ struct UsagePeriodChart: View {
     init(periods: [PeriodBucket], presentation: UsagePeriodPresentation) {
         self.periods = periods
         self.presentation = presentation
-        let initialSeries: Series = periods.contains { $0.estimatedCostUsd != nil } ? .cost : .tokens
+        let showsTokens = SnapshotMode.enabled && SnapshotMode.usageTokenBasis == .all
+        let initialSeries: Series = !showsTokens && periods.contains { $0.estimatedCostUsd != nil } ? .cost : .tokens
         _series = State(initialValue: initialSeries)
         // Deterministic renders may pin the selection to show the tooltip on
         // a chosen bar; the live app starts on the newest period.
@@ -592,9 +610,9 @@ struct UsagePeriodChart: View {
             return period.estimatedCostUsd
         case .tokens:
             if let group {
-                return (period.byClient?[group]?.freshTokens).map(Double.init)
+                return tokenBasis.value(period.byClient?[group]).map(Double.init)
             }
-            return period.freshTokens.map(Double.init)
+            return tokenBasis.value(period).map(Double.init)
         }
     }
 
@@ -619,7 +637,7 @@ struct UsagePeriodChart: View {
             return period.costText == "—" ? "unpriced" : period.costText
         case .tokens:
             if let tokens = value(period) { return UsageTotals.compact(tokens) }
-            return "none recorded"
+            return "not reported"
         }
     }
 
@@ -667,7 +685,7 @@ struct UsagePeriodChart: View {
     private var chartTitle: String {
         switch series {
         case .cost: return presentation.costChartTitle
-        case .tokens: return presentation.tokenChartTitle(group: group)
+        case .tokens: return presentation.tokenChartTitle(group: group, basis: tokenBasis)
         }
     }
 
@@ -677,7 +695,7 @@ struct UsagePeriodChart: View {
                 HStack(spacing: Space.m) {
                     Text(chartTitle).workFont(.titleCard).foregroundStyle(Theme.ink)
                     Spacer()
-                    if let selectedIndex, periods.indices.contains(selectedIndex), !SnapshotMode.enabled {
+                    if let selectedIndex, periods.indices.contains(selectedIndex), (!SnapshotMode.enabled || SnapshotMode.interactiveFixture) {
                         Button {
                             self.selectedIndex = max(0, selectedIndex - 1)
                         } label: {
@@ -715,7 +733,7 @@ struct UsagePeriodChart: View {
                         .disabled(selectedIndex == periods.index(before: periods.endIndex))
                         .accessibilityLabel(presentation.nextAccessibilityLabel)
                     }
-                    if SnapshotMode.enabled {
+                    if SnapshotMode.enabled && !SnapshotMode.interactiveFixture {
                         Chip(text: series.rawValue, tint: Theme.accent)
                     } else {
                         CapsLabel(text: "Measure")
@@ -867,8 +885,9 @@ struct UsagePeriodChart: View {
 // MARK: - Breakdown tables
 
 /// A v7 breakdown table: NAME · SESSIONS · TOKENS · SHARE · COST, ranked
-/// by fresh tokens, share bars strictly proportional to the table's own total.
+/// by the selected token basis, share bars strictly proportional to the table's own total.
 struct UsageBreakdownTable: View {
+    @Environment(\.usageTokenBasis) private var tokenBasis
     let title: String
     let nameHeader: String
     let days: Int
@@ -876,7 +895,7 @@ struct UsageBreakdownTable: View {
 
     private var sorted: [(name: String, bucket: UsageBucket)] {
         rows.sorted { left, right in
-            switch (left.bucket.freshTokens, right.bucket.freshTokens) {
+            switch (tokenBasis.value(left.bucket), tokenBasis.value(right.bucket)) {
             case let (lhs?, rhs?) where lhs != rhs: return lhs > rhs
             case (_?, nil): return true
             case (nil, _?): return false
@@ -885,8 +904,8 @@ struct UsageBreakdownTable: View {
         }
     }
 
-    private var totalFresh: Int {
-        rows.reduce(0) { $0 + ($1.bucket.freshTokens ?? 0) }
+    private var totalTokens: Int {
+        rows.reduce(0) { $0 + (tokenBasis.value($1.bucket) ?? 0) }
     }
 
     var body: some View {
@@ -905,7 +924,7 @@ struct UsageBreakdownTable: View {
                 HStack(spacing: Space.l) {
                     CapsLabel(text: nameHeader).frame(maxWidth: .infinity, alignment: .leading)
                     CapsLabel(text: "Sessions").frame(width: 76, alignment: .trailing)
-                    CapsLabel(text: "Tokens").frame(width: 76, alignment: .trailing)
+                    CapsLabel(text: tokenBasis.label).frame(width: 96, alignment: .trailing)
                     CapsLabel(text: "Share").frame(width: 140, alignment: .leading)
                     CapsLabel(text: "Cost").frame(width: 90, alignment: .trailing)
                 }
@@ -938,8 +957,8 @@ struct UsageBreakdownTable: View {
     }
 
     private func tableRow(_ name: String, _ bucket: UsageBucket) -> some View {
-        let share = bucket.freshTokens.flatMap { tokens in
-            totalFresh > 0 ? Double(tokens) / Double(totalFresh) : 0
+        let share = tokenBasis.value(bucket).flatMap { tokens in
+            totalTokens > 0 ? Double(tokens) / Double(totalTokens) : 0
         }
         return HStack(spacing: Space.l) {
             Text(name)
@@ -950,9 +969,9 @@ struct UsageBreakdownTable: View {
             Text(bucket.sessions.map(String.init) ?? "not reported")
                 .workFont(.dataSmall).foregroundStyle(bucket.sessions == nil ? Theme.muted : Theme.ink)
                 .frame(width: 76, alignment: .trailing)
-            Text(bucket.freshTokens.map(UsageTotals.compact) ?? "not reported")
-                .workFont(.dataSmall).foregroundStyle(bucket.freshTokens == nil ? Theme.muted : Theme.ink)
-                .frame(width: 76, alignment: .trailing)
+            Text(tokenBasis.value(bucket).map(UsageTotals.compact) ?? "not reported")
+                .workFont(.dataSmall).foregroundStyle(tokenBasis.value(bucket) == nil ? Theme.muted : Theme.ink)
+                .frame(width: 96, alignment: .trailing)
             Group {
                 if let share {
                     HStack(spacing: Space.s) {
@@ -980,8 +999,8 @@ struct UsageBreakdownTable: View {
             [
                 name,
                 bucket.sessions.map { Fmt.count($0, "session") } ?? "sessions not reported",
-                bucket.freshTokens.map { "\($0) fresh tokens" } ?? "tokens not reported",
-                share.map { "\(Int(($0 * 100).rounded())) percent of known fresh tokens" }
+                tokenBasis.value(bucket).map { "\($0) \(tokenBasis.label.lowercased())" } ?? "tokens not reported",
+                share.map { "\(Int(($0 * 100).rounded())) percent of known \(tokenBasis.label.lowercased())" }
                     ?? "token share not reported",
                 bucket.costText == "—" ? "cost unpriced" : bucket.costText,
                 Fmt.costConfidenceLabel(bucket.costConfidence),

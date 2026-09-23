@@ -1285,6 +1285,7 @@ enum SnapshotMode {
     /// Snapshot-only: render the Usage page's "About these numbers"
     /// disclosure open, so its contents are reviewed like any other surface.
     nonisolated(unsafe) static var expandsUsageAbout = false
+    nonisolated(unsafe) static var usageTokenBasis: UsageTokenBasis = .fresh
 
     /// How many steps a snapshot opens: check-bearing steps first, then
     /// un-checked ones. The golden fixture renders keep the default (2 + 1) so

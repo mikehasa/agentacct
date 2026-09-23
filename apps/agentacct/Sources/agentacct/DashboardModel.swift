@@ -190,6 +190,7 @@ struct UsageFiltersEcho: Decodable {
 struct PeriodBucket: Decodable {
     let period: String?
     let freshTokens: Int?
+    let totalTokensIncludingCached: Int?
     let estimatedCostUsd: Double?
     let costComplete: Bool?
     let costConfidence: String?
@@ -216,6 +217,7 @@ struct PeriodBucket: Decodable {
     enum CodingKeys: String, CodingKey {
         case period
         case freshTokens = "fresh_tokens"
+        case totalTokensIncludingCached = "total_tokens_including_cached"
         case estimatedCostUsd = "estimated_cost_usd"
         case costComplete = "cost_complete"
         case costConfidence = "cost_confidence"
@@ -225,9 +227,11 @@ struct PeriodBucket: Decodable {
 
 struct PeriodClientSlice: Decodable {
     let freshTokens: Int?
+    let totalTokensIncludingCached: Int?
 
     enum CodingKeys: String, CodingKey {
         case freshTokens = "fresh_tokens"
+        case totalTokensIncludingCached = "total_tokens_including_cached"
     }
 }
 
@@ -236,6 +240,7 @@ struct UsageBucket: Decodable, Identifiable {
     let model: String?
     let sessions: Int?
     let freshTokens: Int?
+    let totalTokensIncludingCached: Int?
     let cacheReadTokens: Int?
     let estimatedCostUsd: Double?
     let costComplete: Bool?
@@ -248,6 +253,7 @@ struct UsageBucket: Decodable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case client, model, sessions
         case freshTokens = "fresh_tokens"
+        case totalTokensIncludingCached = "total_tokens_including_cached"
         case cacheReadTokens = "cache_read_tokens"
         case estimatedCostUsd = "estimated_cost_usd"
         case costComplete = "cost_complete"

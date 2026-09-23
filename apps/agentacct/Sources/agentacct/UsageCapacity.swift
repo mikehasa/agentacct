@@ -152,7 +152,7 @@ struct UsageCapacityRow: Identifiable {
         }
     }
 
-    func accessibilitySummary(days: Int, usageLoaded: Bool = true) -> String {
+    func accessibilitySummary(days: Int, usageLoaded: Bool = true, tokenBasis: UsageTokenBasis = .fresh) -> String {
         var parts = [client]
         if let plan {
             parts.append(UsagePlanPresentation(client: plan, days: days).detailText)
@@ -178,7 +178,7 @@ struct UsageCapacityRow: Identifiable {
         }
         if let usage {
             parts.append("last \(days) days")
-            parts.append(usage.freshTokens.map { "\($0) fresh tokens" } ?? "tokens not reported")
+            parts.append(tokenBasis.value(usage).map { "\($0) \(tokenBasis.label.lowercased())" } ?? "tokens not reported")
             parts.append(usage.sessions.map { Fmt.count($0, "session") } ?? "sessions not reported")
             parts.append(usage.costText == "—" ? "cost unpriced" : usage.costText)
             parts.append(usage.costComplete == false ? "Partial subtotal" : "")
@@ -403,6 +403,7 @@ struct UsageCapacityLedger: View {
 }
 
 private struct UsageCapacityLedgerRow: View {
+    @Environment(\.usageTokenBasis) private var tokenBasis
     let row: UsageCapacityRow
     let days: Int
     let usageLoaded: Bool
@@ -431,7 +432,7 @@ private struct UsageCapacityLedgerRow: View {
         .padding(.horizontal, Space.xl)
         .padding(.vertical, Space.l)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(row.accessibilitySummary(days: days, usageLoaded: usageLoaded))
+        .accessibilityLabel(row.accessibilitySummary(days: days, usageLoaded: usageLoaded, tokenBasis: tokenBasis))
     }
 
     private var clientLane: some View {
@@ -492,10 +493,10 @@ private struct UsageCapacityLedgerRow: View {
         if let usage = row.usage {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: Space.s) {
-                    Text(usage.freshTokens.map(UsageTotals.compact) ?? "Tokens not reported")
+                    Text(tokenBasis.value(usage).map(UsageTotals.compact) ?? "Tokens not reported")
                         .workFont(.dataSmallSemibold)
-                        .foregroundStyle(usage.freshTokens == nil ? Theme.muted : Theme.ink)
-                    Text("fresh tokens").workFont(.caption).foregroundStyle(Theme.muted)
+                        .foregroundStyle(tokenBasis.value(usage) == nil ? Theme.muted : Theme.ink)
+                    Text(tokenBasis.label.lowercased()).workFont(.caption).foregroundStyle(Theme.muted)
                 }
                 Text(usage.sessions.map { Fmt.count($0, "session") } ?? "Sessions not reported")
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
