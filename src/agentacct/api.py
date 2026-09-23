@@ -2917,16 +2917,43 @@ def create_local_api_app(
         return _mechanical_projection_envelopes_for(service, store_dir)
 
     ledger_cache = WorkLedgerCache()
-    # Rebuilds the projections once at startup, then again after each store
-    # change while someone has been reading work data recently (see
-    # agentacct.ledger_warmer). Its callables are defined further down.
+    # The legacy reader warmer starts on demand and watches subsequent store
+    # changes. Its callables are defined further down.
     ledger_warmer = LedgerWarmer(
         read_change_token=lambda: _ledger_change_token(),
         rebuild=lambda: _warm_ledger_caches(),
     )
     app.state.ledger_warmer = ledger_warmer
-    app.router.add_event_handler("startup", ledger_warmer.start)
+    # Legacy synchronous readers retain the warmer, activated on first use.
+    # Native snapshot reads must not also wake a second full-ledger builder.
     app.router.add_event_handler("shutdown", ledger_warmer.stop)
+    strict_warmer_enabled = False
+    strict_warmer_start_lock = threading.Lock()
+
+    def _enable_strict_warmer() -> None:
+        nonlocal strict_warmer_enabled
+        strict_warmer_enabled = True
+
+    def _note_strict_reader() -> None:
+        ledger_warmer.note_reader()
+        if strict_warmer_enabled:
+            with strict_warmer_start_lock:
+                ledger_warmer.start()
+
+    app.router.add_event_handler("startup", _enable_strict_warmer)
+
+    from .receipt_snapshot_builder import snapshot_input_state
+    from .receipt_snapshot_runtime import ReceiptSnapshotManager
+    from .receipt_snapshot_http import SnapshotWorkReader
+
+    snapshot_inputs = lambda: snapshot_input_state(store_dir, service)
+    receipt_snapshots = ReceiptSnapshotManager(store_dir, snapshot_inputs)
+    snapshot_reader = SnapshotWorkReader(receipt_snapshots, snapshot_inputs)
+    app.state.receipt_snapshots = receipt_snapshots
+    app.router.add_event_handler("shutdown", receipt_snapshots.close)
+
+    def _snapshot_requested(request: Request) -> bool:
+        return request.headers.get("X-Agentacct-Read-Mode") == "snapshot"
 
     def _ledger_secondary_signature() -> int:
         """Cheap append-only change key for the ledger inputs the events
@@ -2989,7 +3016,7 @@ def create_local_api_app(
             # Someone is looking at work data: keep it warm across store
             # changes for a while (see LedgerWarmer). The warmer's own rebuild
             # passes for_reader=False so it can never keep itself awake.
-            ledger_warmer.note_reader()
+            _note_strict_reader()
         if events is None:
             events = service.list_all_events()
         if fingerprint is None:
@@ -3231,6 +3258,8 @@ def create_local_api_app(
         """
 
         _require_v1_token(request)
+        if _snapshot_requested(request):
+            return snapshot_reader.response("sessions", roots_only=roots_only, limit=limit, offset=offset, client=client)
         events, fingerprint = _dashboard_events()
         ledger_key = _ledger_cache_key(fingerprint)
         view = v1_sessions_cache.view(
@@ -3255,6 +3284,8 @@ def create_local_api_app(
         never an empty fabrication."""
 
         _require_v1_token(request)
+        if _snapshot_requested(request):
+            return snapshot_reader.response("session", client=client, session_id=session_id)
         events, fingerprint = _dashboard_events()
         ledger_key = _ledger_cache_key(fingerprint)
         ledger = _derived_work_ledger(events, fingerprint=fingerprint, cache_key=ledger_key)
@@ -3314,7 +3345,7 @@ def create_local_api_app(
         # SAME reused-ledger profile the sessions lane already accepts.
         # A reader even when this projection is served from its own cache and
         # never reaches the shared ledger below.
-        ledger_warmer.note_reader()
+        _note_strict_reader()
         events, fingerprint = _dashboard_events()
         cached = v1_receipt_projection_cache.get("projection")
         if cached is not None and cached[0] == fingerprint and (time.time() - cached[1]) < 30.0:
@@ -3479,6 +3510,8 @@ def create_local_api_app(
         once per cache refresh, while each request maps only its recent slice."""
 
         _require_v1_token(request)
+        if _snapshot_requested(request):
+            return snapshot_reader.response("tasks", limit=limit, offset=offset)
         projection = _v1_task_projection()
         tasks = _visible_tasks(projection)
         latest = latest_store_activity(tasks)
@@ -3525,6 +3558,8 @@ def create_local_api_app(
         """
 
         _require_v1_token(request)
+        if _snapshot_requested(request):
+            return snapshot_reader.response("attention", limit=limit, offset=offset)
         projection = _v1_task_projection()
         candidates, latest, starts, counts, snapshot = _v1_attention_candidates(projection)
         selected = candidates[offset : offset + limit]
@@ -3565,6 +3600,8 @@ def create_local_api_app(
     ) -> dict[str, Any]:
         """Pages from one immutable, task-scoped timeline snapshot. Expired cursors return 409."""
         _require_v1_token(request)
+        if _snapshot_requested(request):
+            return snapshot_reader.response("timeline", key=task, limit=limit, cursor=cursor)
         if cursor is not None:
             try:
                 return timeline_snapshots.page(task, limit=limit, cursor=cursor)
@@ -3588,6 +3625,8 @@ def create_local_api_app(
         such Task — never an empty fabrication."""
 
         _require_v1_token(request)
+        if _snapshot_requested(request):
+            return snapshot_reader.response("receipt", key=task)
         projection = _v1_task_projection()
         tasks = _visible_tasks(projection)
         selected = next((row for row in tasks if str(row.get("public_task_id")) == task), None)

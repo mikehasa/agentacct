@@ -207,6 +207,10 @@ struct MainWindow: View {
                 .padding(.trailing, Space.m)
             }
         }
+        .onChange(of: dashboard.projectionSafetyRevision) { _, _ in
+            savedWork = nil
+            offlineDashboard = nil
+        }
         .onChange(of: health, initial: true) { _, snapshot in
             healthCoordinator.update(snapshot)
         }
@@ -215,8 +219,10 @@ struct MainWindow: View {
             // State initializers are evaluated whenever the parent recreates
             // this view. Load the potentially large file once per window, away
             // from rendering and the main actor.
+            let safetyRevision = dashboard.projectionSafetyRevision
             let loaded = await Task.detached(priority: .utility) { SavedWorkSnapshot.current() }.value
-            guard !Task.isCancelled, savedWork == nil else { return }
+            guard !Task.isCancelled, savedWork == nil,
+                  safetyRevision == dashboard.projectionSafetyRevision else { return }
             savedWork = loaded
         }
         .task {
@@ -281,6 +287,14 @@ struct MainWindow: View {
                     }
                 }
                 do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            }
+        }
+        .task(id: dashboard.projectedCollectionsNeedRefresh) {
+            guard !SnapshotMode.enabled, !dashboard.isOfflineSnapshot else { return }
+            while dashboard.projectedCollectionsNeedRefresh && !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                guard !Task.isCancelled else { return }
+                await dashboard.refreshProjectedCollections()
             }
         }
         .task(id: recorderSynchronizationFinished) {

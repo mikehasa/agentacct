@@ -119,6 +119,33 @@ final class TaskTimelineTests: XCTestCase {
         XCTAssertFalse(SavedWorkSnapshot.accepts("/v1/task-timeline?task=task&cursor=abc"))
     }
 
+    func testProjectionGenerationsCannotBeMixedBetweenTimelinePages() async throws {
+        var calls = 0
+        do {
+            _ = try await TaskTimelineLoader.load(taskID: "task") { _ in
+                calls += 1
+                var page = try self.page(ids: calls == 1 ? ["new"] : ["old"], offset: calls == 1 ? 0 : 1,
+                                         total: 2, cursor: calls == 1 ? "snapshot:1" : nil)
+                page.workProjection = .init(state: "current", builtAt: 100, generation: "g\(calls)", error: nil)
+                return page
+            }
+            XCTFail("Mixed generations must not publish a timeline")
+        } catch { XCTAssertTrue(error is TaskTimelineError) }
+    }
+
+    func testUnchangedTimelineStillUpdatesProjectionFreshness() async throws {
+        var previous = try page(ids: ["a"], total: 1)
+        previous.workProjection = .init(state: "updating", builtAt: 100, generation: "g1", error: nil)
+        let current = WorkProjectionMetadata(state: "current", builtAt: 120, generation: "g2", error: nil)
+        let result = try await TaskTimelineLoader.load(taskID: "task", previous: previous) { _ in
+            var page = try self.page(ids: ["a"], total: 1)
+            page.workProjection = current
+            return page
+        }
+        XCTAssertEqual(result.events, previous.events)
+        XCTAssertEqual(result.workProjection, current)
+    }
+
     private func page(ids: [String], offset: Int = 0, total: Int, cursor: String? = nil,
                       task: String = "task", snapshot: String = "snapshot") throws -> TaskTimelinePage {
         var raw: [String: Any] = ["schema_version": TaskTimelinePage.schema, "task_id": task,

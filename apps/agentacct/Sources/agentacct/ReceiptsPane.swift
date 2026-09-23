@@ -1186,8 +1186,8 @@ struct DispositionControls: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .disabled(dashboard.isOfflineSnapshot)
-        .help(dashboard.isOfflineSnapshot ? "Saved work is read-only. Reconnect to change a finding." : "")
+        .disabled(!dashboard.canMutateReceipts)
+        .help(dashboard.isOfflineSnapshot ? "Saved work is read-only. Reconnect to change a finding." : (!dashboard.canMutateReceipts ? "Wait for the current work receipt before changing a finding." : ""))
     }
 
     private func actionButton(_ label: String, action: @escaping () -> Void) -> some View {

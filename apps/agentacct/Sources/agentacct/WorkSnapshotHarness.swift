@@ -10,6 +10,8 @@ enum WorkSnapshotState: String {
     case receiptLoading = "receipt-loading"
     case receiptError = "receipt-error"
     case receiptStale = "receipt-stale"
+    case projectionPending = "projection-pending"
+    case projectionUpdating = "projection-updating"
 
     var storeState: SnapshotWorkStoreState {
         switch self {
@@ -21,13 +23,15 @@ enum WorkSnapshotState: String {
         case .receiptLoading: return .receiptLoading
         case .receiptError: return .receiptError
         case .receiptStale: return .receiptStale
+        case .projectionPending: return .projectionPending
+        case .projectionUpdating: return .projectionUpdating
         }
     }
 
     var selectsReceipt: Bool {
         switch self {
-        case .receipt, .attentionReceipt, .receiptLoading, .receiptError, .receiptStale: return true
-        case .table, .listLoading, .empty, .listError: return false
+        case .receipt, .attentionReceipt, .receiptLoading, .receiptError, .receiptStale, .projectionUpdating: return true
+        case .table, .listLoading, .empty, .listError, .projectionPending: return false
         }
     }
 }

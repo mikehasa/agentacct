@@ -38,6 +38,47 @@ it cannot grant itself dispatch authority.
 
 ## Main components
 
+### Completed work snapshots
+
+The macOS app reads completed work projections from
+`receipt-snapshots/snapshots.sqlite3`. A background process captures stored
+inputs and builds one coherent generation of task summaries, receipts, sessions,
+attention and timelines. Publication is atomic; failed builds retain the last
+complete generation. The cache contains public work-view fields, not another
+copy of the raw ledger or transcripts, and retains only the current generation
+(at most 256 MiB of serialized payloads, with a 32 MiB per-entry limit).
+
+Reads never wait for that process. With no usable generation, the app displays
+“Preparing work receipts”; while ordinary new activity is being processed, it
+shows the previous generation and its capture time. Input revisions, rather than
+a periodic cache expiry, trigger rebuilds. Unchanged stores require no rebuild,
+including after a daemon restart. Plan-window estimates in a snapshot are as of
+its capture time. Optional descendant labels read directly from external Claude
+transcripts remain exclusive to synchronous reads; they have no stored revision
+or deletion signal and are not persisted in snapshots.
+
+The worker has lower scheduling priority, a store-scoped process lock, change
+coalescing and a default rest of nine times the CPU seconds consumed per build.
+This limits sustained rebuilding to approximately 10% of one core; it is not a
+hard instantaneous CPU cap. After three minutes without a work reader, no new
+build starts. Failures back off, and successful/failed worker exits persist their
+rest budget across daemon restarts. An orphan worker killed before its final
+checkpoint, or a lost filesystem, cannot preserve that checkpoint.
+
+SQLite updates, deletions, replacements and supported backup restores invalidate
+the prior snapshot immediately. The trusted usage importer has one narrow
+exception: a transaction may retain snapshots only after proving every previous
+row survives, with changes limited to numeric usage/cost counters and capture
+times. Identity, text, provenance, presence flags and replay lineage stay exact.
+Mechanical evidence has its own revision, so unrelated usage-shadow bookkeeping
+does not revoke receipts. Changes to file-backed continuation, identity,
+cost and run inputs invalidate conservatively. Old generations are refused on
+the read path even before background cleanup. The first implementation reduces
+all captured inputs together: cross-session joins and continuation relationships
+are not yet maintained incrementally. Separate source stores do not constitute
+one cross-database transaction; activity during capture/build leaves the result
+marked updating and queues a later generation.
+
 ### CLI
 
 The CLI is the primary development and debugging interface.

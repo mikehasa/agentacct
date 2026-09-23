@@ -67,6 +67,7 @@ struct TaskTimelineEvent: Codable, Equatable {
 }
 
 struct TaskTimelinePage: Codable, Equatable {
+    var workProjection: WorkProjectionMetadata? = nil
     static let schema = "agentacct.task-timeline.v1"
     var schemaVersion: String?
     var taskID: String?
@@ -79,6 +80,7 @@ struct TaskTimelinePage: Codable, Equatable {
     var nextCursor: String?
 
     enum CodingKeys: String, CodingKey {
+        case workProjection = "projection"
         case events, offset, shown, total, truncated
         case schemaVersion = "schema_version", taskID = "task_id", snapshotID = "snapshot_id", nextCursor = "next_cursor"
     }
@@ -114,6 +116,7 @@ enum TaskTimelineLoader {
                                  fetch: (String?) async throws -> TaskTimelinePage) async throws -> TaskTimelinePage {
         var page = try await fetch(nil)
         let snapshotID = page.snapshotID
+        let generation = page.workProjection?.generation
         let total = page.total
         var events: [TaskTimelineEvent] = []
         var identities = Set<String>()
@@ -122,6 +125,7 @@ enum TaskTimelineLoader {
             try Task.checkCancellation()
             guard page.schemaVersion == TaskTimelinePage.schema, page.taskID == taskID,
                   let snapshotID, !snapshotID.isEmpty, page.snapshotID == snapshotID,
+                  page.workProjection?.generation == generation,
                   total >= 0, page.total == total, page.offset == events.count,
                   page.shown == page.events.count, page.shown <= 500,
                   events.count + page.shown <= total, page.truncated == (page.nextCursor != nil),
@@ -135,7 +139,9 @@ enum TaskTimelineLoader {
             if events.isEmpty, let previous, previous.taskID == taskID,
                previous.snapshotID == snapshotID, previous.total == total,
                previous.events.count == total, !previous.truncated {
-                return previous
+                var retained = previous
+                retained.workProjection = page.workProjection
+                return retained
             }
             events += page.events
             guard let cursor = page.nextCursor else { break }

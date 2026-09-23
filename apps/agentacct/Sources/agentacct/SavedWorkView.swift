@@ -36,9 +36,11 @@ struct SavedWorkView: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Saved work · read-only").workFont(.rowLabel)
-                    Text("Task list saved \(store.savedWork?.collectionDate?.formatted(date: .abbreviated, time: .standard) ?? "at an unknown time"). Only previously opened details are available.")
+                    Text("Task list \(store.receiptListProjection == nil ? "saved" : "as of") \(store.savedWork?.collectionDate?.formatted(date: .abbreviated, time: .standard) ?? "at an unknown time"). Only previously opened details are available.")
                     if let date = store.receiptSavedAt, store.receipt?.taskId == selection.taskId {
-                        Text("Selected task saved \(date.formatted(date: .abbreviated, time: .standard)). Session copies may have different saved dates.")
+                        Text(store.receipt?.projection == nil
+                             ? "Selected task saved \(date.formatted(date: .abbreviated, time: .standard)). Session copies may have different saved dates."
+                             : "Selected task as of \(date.formatted(date: .abbreviated, time: .standard)). Session copies may have different dates.")
                     }
                     Text("Recording status is unavailable here. Changes after these copies were saved are not shown.")
                 }

@@ -2381,6 +2381,8 @@ class SentinelService:
         self,
         events: list[dict[str, Any]],
         preserved_unparseable: list[str],
+        *,
+        preserve_usage_snapshots: bool = False,
     ) -> None:
         """Atomically replace the whole ledger while its write lock is held.
 
@@ -2391,7 +2393,7 @@ class SentinelService:
 
         lines = [*preserved_unparseable, *(serialize_event(event) for event in events)]
         if self._authoritative():
-            self.event_log.replace_all(lines)
+            self.event_log.replace_all(lines, preserve_usage_snapshots=preserve_usage_snapshots)
             return
         tmp_fd, tmp_name = tempfile.mkstemp(
             prefix=self.events_path.name + ".",
@@ -2775,7 +2777,8 @@ class SentinelService:
                     for event in prepared_events
                 ]
                 self._write_event_partition_unlocked(
-                    [*kept, *recorded], preserved_unparseable
+                    [*kept, *recorded], preserved_unparseable,
+                    preserve_usage_snapshots=trusted_usage_import,
                 )
             else:
                 recorded = conflict_recorded

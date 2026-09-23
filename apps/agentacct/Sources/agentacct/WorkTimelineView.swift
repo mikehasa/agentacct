@@ -46,7 +46,9 @@ struct WorkTimelineView: View {
     @State private var followWindowSpan: Double = 30 * 60
     @State private var timeline: TaskTimelinePage?
     @State private var timelineError: String?
+    @State private var workProjection: WorkProjectionMetadata?
     @State private var activeTaskID: String?
+    @State private var safetyRevision = 0
     @State private var loadingInitialSnapshot = false
     @State private var restoredPositionFromCurrentEvidence = false
     @State private var lastObserved: Date?
@@ -112,6 +114,9 @@ struct WorkTimelineView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             heading
+            if let projection = workProjection ?? timeline?.workProjection {
+                WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot)
+            }
             filters
             if !loadingInitialSnapshot, incomplete || timelineError != nil {
                 Text(timelineError == nil ? "Activity history is incomplete" : "Activity refresh failed · showing retained records")
@@ -804,7 +809,9 @@ struct WorkTimelineView: View {
         }
     }
     private func saveMemory() {
-        guard let activeTaskID, !dashboard.isOfflineSnapshot, !SnapshotMode.enabled else { return }
+        guard let activeTaskID, !dashboard.isOfflineSnapshot, !SnapshotMode.enabled,
+              dashboard.receiptProjection?.available != false,
+              safetyRevision == dashboard.projectionSafetyRevision else { return }
         WorkTimelineMemory.cache.save(.init(feed: feed), for: activeTaskID)
         WorkTimelinePreferences.save(navigation, taskID: activeTaskID)
     }
@@ -813,6 +820,7 @@ struct WorkTimelineView: View {
         let taskID = receipt.taskId
         saveMemory()
         activeTaskID = taskID
+        safetyRevision = dashboard.projectionSafetyRevision
         navigation = WorkTimelinePreferences.load(taskID: taskID)
         followWindowSpan = max(navigation.view.interval?.span ?? 0, 30 * 60)
         let cached = dashboard.isOfflineSnapshot || SnapshotMode.enabled ? nil : WorkTimelineMemory.cache.load(taskID)
@@ -822,6 +830,7 @@ struct WorkTimelineView: View {
         if dashboard.isOfflineSnapshot { navigation.following = false }
         loadingInitialSnapshot = cached == nil && !SnapshotMode.enabled && !dashboard.isOfflineSnapshot
         timelineError = nil
+        workProjection = nil
         lastObserved = nil
         showingArrivals = navigation.history != nil
         scrollTarget = navigation.view.anchorID
@@ -845,12 +854,23 @@ struct WorkTimelineView: View {
                     receive(page.projection(taskID: taskID))
                 }
                 timelineError = nil
-                lastObserved = Date()
+                workProjection = page.workProjection
+                lastObserved = page.workProjection == nil ? Date() : page.workProjection?.builtDate
+            } catch let pending as WorkProjectionPending {
+                guard !Task.isCancelled, activeTaskID == taskID else { return }
+                workProjection = pending.projection.retainingBuild(from: workProjection)
+                if pending.projection.available == false {
+                    timeline = nil
+                    feed = WorkTimelineFeed()
+                    lastObserved = nil
+                    navigation.view.selectedID = nil
+                }
+                timelineError = nil
             } catch {
                 guard !Task.isCancelled, activeTaskID == taskID else { return }
                 timelineError = error.localizedDescription
             }
-            loadingInitialSnapshot = false
+            loadingInitialSnapshot = workProjection?.state == "pending" && timeline == nil
             // Missing/filtered evidence focuses the heading, never another row.
             restoreReturnFocusIfReady()
             do { try await Task.sleep(for: .seconds(3)) } catch { return }

@@ -2,6 +2,30 @@
 
 The deep reference for agentacct: the daily workflow, confidence labels, MCP tools, per-client capability claims, verification evidence, and migration notes. For the quick start, see the [README](../README.md); for the canonical install runbook, see [INSTALL.md](../INSTALL.md).
 
+## Nonblocking native work reads
+
+The authenticated local API supports `X-Agentacct-Read-Mode: snapshot` on
+`GET /v1/tasks`, `/v1/receipt`, `/v1/sessions`, `/v1/session`,
+`/v1/attention` and `/v1/task-timeline`. Without that header, existing synchronous
+read and write semantics are unchanged.
+
+A completed response keeps its existing schema and adds `projection` metadata:
+`state` (`current`, `updating`, `pending`, or `error`), `built_at` (Unix capture
+time), `generation`, `available`, `rebuilding`, and an optional generic `error`.
+An old but safe generation returns HTTP 200 with its original capture time.
+No usable generation returns HTTP 202 with `detail: "Preparing work receipts"`
+and projection metadata; this is neither an empty result nor a disconnection.
+Clients must not save HTTP 202 as a completed result. `available: false` means
+previous work content is invalid: clear displayed and cached work data before
+retrying. HTTP 200 responses can have no change in content despite a new capture.
+
+Timeline cursors bind to a task and generation. A replaced generation expires
+its cursors with HTTP 409, requiring a fresh first page. Native finding actions
+are disabled until their work view is current; write endpoints still validate
+the latest source state and optimistic revision. Snapshots never improve the
+verification grade of their underlying evidence.
+
+
 ## What each client can claim
 
 <!-- Consistency contract: the capability matrix below is defined in

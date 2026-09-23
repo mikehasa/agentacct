@@ -625,6 +625,7 @@ def build_v1_session_detail(
     *,
     client: str,
     session_id: str,
+    enrich_roles: bool = True,
 ) -> dict[str, Any] | None:
     """The one-session deep view: the list row + expandable steps + descendants.
 
@@ -686,7 +687,10 @@ def build_v1_session_detail(
     # Enrich with the subagent's role + Task prompt read from its transcript
     # on disk (the same bounded, fail-soft reader the TUI detail uses) — an
     # untitled child otherwise renders as a bare id, which unravels nothing.
-    if descendants:
+    # Durable snapshots contain stored inputs only. Optional transcript-only
+    # enrichment has no importer revision/deletion signal, so it must not be
+    # copied into a persistent view with an unrelated freshness token.
+    if descendants and enrich_roles:
         from .client_usage import _sanitized_session_title
         from .service import _redact_secret_spans
         from .subagent_roles import read_roles_for_children, scan_enabled

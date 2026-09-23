@@ -29,7 +29,8 @@ func mergedAttentionPages(
         snapshot: next.snapshot,
         offset: current.offset,
         limit: items.count,
-        truncated: next.truncated
+        truncated: next.truncated,
+        projection: next.projection
     )
 }
 
@@ -50,6 +51,8 @@ func attentionPageCanAppend(
 /// the live initializer and network lifecycle remain unchanged.
 enum SnapshotWorkStoreState {
     case populated
+    case projectionPending
+    case projectionUpdating
     case listLoading
     case empty
     case listError
@@ -90,6 +93,17 @@ final class DashboardStore {
     private(set) var attentionError: String?
     private(set) var isLoadingMoreAttention = false
     private(set) var receipt: Receipt?
+    private(set) var projectionSafetyRevision = 0
+    private(set) var receiptListProjection: WorkProjectionMetadata?
+    private(set) var attentionProjection: WorkProjectionMetadata?
+    private(set) var receiptProjection: WorkProjectionMetadata?
+    var projectedCollectionsNeedRefresh: Bool {
+        receiptListProjection?.needsRefresh == true || attentionProjection?.needsRefresh == true
+    }
+    var canMutateReceipts: Bool {
+        !isOfflineSnapshot && [receiptListProjection, attentionProjection, receiptProjection]
+            .allSatisfy { $0?.isCurrent != false }
+    }
     private(set) var receiptListError: String?
     private(set) var receiptError: String?
     private(set) var receiptErrorTaskId: String?
@@ -161,10 +175,10 @@ final class DashboardStore {
     var isOfflineSnapshot: Bool { savedWork != nil }
     var receiptSavedAt: Date? {
         guard let taskID = receipt?.taskId else { return nil }
-        return savedWork?.entries["/v1/receipt?task=\(Self.queryValue(taskID))"]?.receivedAt
+        return savedWork?.entries["/v1/receipt?task=\(Self.queryValue(taskID))"]?.evidenceDate
     }
     func sessionSavedAt(client: String, sessionID: String) -> Date? {
-        savedWork?.entries["/v1/session?client=\(Self.queryValue(client))&session_id=\(Self.queryValue(sessionID))"]?.receivedAt
+        savedWork?.entries["/v1/session?client=\(Self.queryValue(client))&session_id=\(Self.queryValue(sessionID))"]?.evidenceDate
     }
     static func queryValue(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? value
@@ -202,9 +216,12 @@ final class DashboardStore {
         usage = usageState?.summary ?? fixture.usage
         usageDays = usageState?.days ?? 7
         attention = fixture.attention
+        attentionProjection = fixture.attention.projection
+        receiptListProjection = fixture.tasks.projection
+        receiptProjection = fixture.work?.receipt.projection
         ingestion = ingestionOverride ?? fixture.ingestion?.ingestion
         switch workState {
-        case .populated:
+        case .populated, .projectionUpdating:
             receiptTasks = fixture.tasks.tasks
             totalReceiptTasks = fixture.tasks.total
             receiptTasksTruncated = fixture.tasks.truncated
@@ -214,6 +231,12 @@ final class DashboardStore {
                 let key = "\(session.session.client)::\(session.session.clientSessionId)"
                 preloadedSessions[key] = session
             }
+        case .projectionPending:
+            receiptListProjection = .pending
+            receiptProjection = .pending
+            attentionProjection = .pending
+            receiptTasks = []
+            attention = nil
         case .listLoading:
             receiptTasks = []
             isLoadingReceipts = true
@@ -304,13 +327,20 @@ final class DashboardStore {
             receiptAttention = fixture.tasks.attention
             receipt = fixture.work?.attentionReceipt
         }
+        if workState == .projectionUpdating {
+            let metadata = WorkProjectionMetadata(state: "updating", builtAt: fixture.glance.generatedAt,
+                                                  generation: "review-generation", error: nil)
+            receiptListProjection = metadata
+            receiptProjection = metadata
+            attentionProjection = metadata
+        }
         let updated = fixture.glance.generatedAt.map(Date.init(timeIntervalSince1970:))
-        lastUpdated = updated
+        lastUpdated = receiptListProjection == nil ? updated : receiptListProjection?.builtDate
         switch workState {
-        case .listLoading, .listError:
+        case .listLoading, .listError, .projectionPending:
             receiptListLastUpdated = nil
         default:
-            receiptListLastUpdated = updated
+            receiptListLastUpdated = lastUpdated
         }
         usageLastUpdated = updated
     }
@@ -330,9 +360,9 @@ final class DashboardStore {
         // Launch independent lanes together, but publish each error through
         // its own state so a successful range request cannot hide a stale Task
         // list (or vice versa).
-        async let tasksRequest: ReceiptTasksPayload = client.getAuthed("/v1/tasks?limit=200")
-        async let attentionRequest: V1AttentionPayload = client.getAuthed("/v1/attention?limit=5")
-        async let planRequest: V1PlanPayload = client.getAuthed("/v1/plan?days=\(days)")
+        async let tasksRequest: ReceiptTasksPayload = readAuthed("/v1/tasks?limit=200")
+        async let attentionRequest: V1AttentionPayload = readAuthed("/v1/attention?limit=5")
+        async let planRequest: V1PlanPayload = readAuthed("/v1/plan?days=\(days)")
         async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)")
         async let ingestionRefresh: Void = refreshIngestion()
         async let connectionsRefresh: Void = refreshConnections()
@@ -345,15 +375,20 @@ final class DashboardStore {
                 publishReceiptTasks(tasks)
                 tasksSucceeded = true
             }
+        } catch let pending as WorkProjectionPending {
+            if !Task.isCancelled, receiptListGeneration == self.receiptListGeneration {
+                receiptListProjection = pending.projection.retainingBuild(from: receiptListProjection)
+                receiptListError = nil
+            }
         } catch GlanceClientError.noDiscovery(_) {
             if !Task.isCancelled,
                receiptListGeneration == self.receiptListGeneration {
-                receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
+                recordReceiptListFailure("daemon not running (no discovery file) — start it with `agentacct start`")
             }
         } catch {
             if receiptListGeneration == self.receiptListGeneration,
                !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
-                receiptListError = "receipts fetch failed: \(error.localizedDescription)"
+                recordReceiptListFailure("receipts fetch failed: \(error.localizedDescription)")
             }
         }
         endReceiptListLoad(generation: receiptListGeneration)
@@ -363,24 +398,30 @@ final class DashboardStore {
             if !Task.isCancelled,
                attentionGeneration.accepts(attentionRequestGeneration) {
                 attention = payload
+                attentionProjection = payload.projection
+                attentionError = nil
+            }
+        } catch let pending as WorkProjectionPending {
+            if !Task.isCancelled, attentionGeneration.accepts(attentionRequestGeneration) {
+                attentionProjection = pending.projection.retainingBuild(from: attentionProjection)
                 attentionError = nil
             }
         } catch GlanceClientError.http(404) {
             if attentionGeneration.accepts(attentionRequestGeneration) {
                 // A pre-attention daemon cannot support a complete review claim.
-                attention = nil
-                attentionError = "this daemon predates /v1/attention"
+                if attentionProjection == nil { attention = nil }
+                recordAttentionFailure("this daemon predates /v1/attention")
             }
         } catch GlanceClientError.noDiscovery(_) {
             if attentionGeneration.accepts(attentionRequestGeneration) {
-                attention = nil
-                attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+                if attentionProjection == nil { attention = nil }
+                recordAttentionFailure("daemon not running (no discovery file) — start it with `agentacct start`")
             }
         } catch {
             if attentionGeneration.accepts(attentionRequestGeneration),
                !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
-                attention = nil
-                attentionError = "attention fetch failed: \(error.localizedDescription)"
+                if attentionProjection == nil { attention = nil }
+                recordAttentionFailure("attention fetch failed: \(error.localizedDescription)")
             }
         }
 
@@ -396,7 +437,7 @@ final class DashboardStore {
             errorText = nil
             let updated = Date()
             usageLastUpdated = updated
-            if tasksSucceeded { lastUpdated = updated }
+            if tasksSucceeded { lastUpdated = receiptListLastUpdated }
         } catch GlanceClientError.noDiscovery(_) {
             guard !Task.isCancelled,
                   rangeGeneration == usageDaysGeneration else { return }
@@ -421,7 +462,7 @@ final class DashboardStore {
         isRefreshingIngestion = true
         defer { isRefreshingIngestion = false }
         do {
-            let payload: V1IngestionPayload = try await client.getAuthed("/v1/ingestion")
+            let payload: V1IngestionPayload = try await readAuthed("/v1/ingestion")
             try Task.checkCancellation()
             ingestion = payload.ingestion
             ingestionError = nil
@@ -454,7 +495,7 @@ final class DashboardStore {
         isRefreshingConnections = true
         defer { isRefreshingConnections = false }
         do {
-            let payload: V1ConnectionsPayload = try await client.getAuthed("/v1/connections")
+            let payload: V1ConnectionsPayload = try await readAuthed("/v1/connections")
             try Task.checkCancellation()
             connections = payload.connections
             connectionsError = nil
@@ -478,7 +519,7 @@ final class DashboardStore {
     func refreshVersion() async {
         guard !isOfflineSnapshot, !isApplyingUpdate else { return }
         do {
-            let payload: VersionInfo = try await client.getAuthed("/v1/version")
+            let payload: VersionInfo = try await readAuthed("/v1/version")
             try Task.checkCancellation()
             versionInfo = payload
             versionError = nil
@@ -515,23 +556,91 @@ final class DashboardStore {
         }
     }
 
+    /// A privacy-invalidated generation must disappear from every visible lane,
+    /// including detail views and late responses started before invalidation.
+    private func readAuthed<T: Decodable>(_ path: String) async throws -> T {
+        let revision = projectionSafetyRevision
+        do {
+            let result: T = try await client.getAuthed(path)
+            if GlanceClient.usesSnapshotReadMode(path), revision != projectionSafetyRevision {
+                throw WorkProjectionPending(projection: .pending)
+            }
+            return result
+        } catch let pending as WorkProjectionPending {
+            if !isOfflineSnapshot, pending.projection.available == false {
+                invalidateProjectedWork(pending.projection)
+            }
+            throw pending
+        }
+    }
+
+    func invalidateProjectedWork(_ projection: WorkProjectionMetadata) {
+        guard !isOfflineSnapshot else { return }
+        projectionSafetyRevision += 1
+        receiptTasks = []
+        totalReceiptTasks = nil
+        receiptTasksTruncated = nil
+        receiptAttention = nil
+        attention = nil
+        receipt = nil
+        preloadedSessions = [:]
+        receiptListLastUpdated = nil
+        lastUpdated = nil
+        receiptListError = nil
+        receiptError = nil
+        receiptErrorTaskId = nil
+        attentionError = nil
+        receiptListProjection = projection
+        receiptProjection = projection
+        attentionProjection = projection
+        WorkTimelineMemory.cache = WorkTimelineMemoryCache()
+    }
+
     /// The Task list for the Receipts pane (one compact Receipt summary each).
     func fetchReceipts() async {
         let generation = beginReceiptListLoad()
         defer { endReceiptListLoad(generation: generation) }
         do {
-            let payload: ReceiptTasksPayload = try await client.getAuthed("/v1/tasks?limit=200")
+            let payload: ReceiptTasksPayload = try await readAuthed("/v1/tasks?limit=200")
             guard generation == receiptListGeneration else { return }
             publishReceiptTasks(payload)
+        } catch let pending as WorkProjectionPending {
+            if !Task.isCancelled, generation == receiptListGeneration {
+                receiptListProjection = pending.projection.retainingBuild(from: receiptListProjection)
+                receiptListError = nil
+            }
         } catch GlanceClientError.noDiscovery(_) {
             guard !Task.isCancelled,
                   generation == receiptListGeneration else { return }
-            receiptListError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            recordReceiptListFailure("daemon not running (no discovery file) — start it with `agentacct start`")
         } catch {
             guard generation == receiptListGeneration,
                   !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
-            receiptListError = "receipts fetch failed: \(error.localizedDescription)"
+            recordReceiptListFailure("receipts fetch failed: \(error.localizedDescription)")
         }
+    }
+
+    /// A failed read cannot certify retained evidence as current. Legacy
+    /// daemons have no projection metadata and keep their existing behavior.
+    func recordReceiptListFailure(_ message: String) {
+        receiptListError = message
+        receiptListProjection = receiptListProjection.map { .failed(GlanceClientError.transport(message), retaining: $0) }
+    }
+
+    func recordAttentionFailure(_ message: String) {
+        attentionError = message
+        attentionProjection = attentionProjection.map { .failed(GlanceClientError.transport(message), retaining: $0) }
+    }
+
+    func recordReceiptFailure(_ message: String) {
+        receiptError = message
+        receiptProjection = receiptProjection.map { .failed(GlanceClientError.transport(message), retaining: $0) }
+    }
+
+    func refreshProjectedCollections() async {
+        guard !isOfflineSnapshot else { return }
+        if receiptListProjection?.needsRefresh == true, !isLoadingReceipts { await fetchReceipts() }
+        if attentionProjection?.needsRefresh == true { await fetchAttention() }
     }
 
     /// Refresh the complete attention classification independently of the
@@ -542,23 +651,29 @@ final class DashboardStore {
         let generation = attentionGeneration.begin()
         isLoadingMoreAttention = false
         do {
-            let payload: V1AttentionPayload = try await client.getAuthed("/v1/attention?limit=50&offset=0")
+            let payload: V1AttentionPayload = try await readAuthed("/v1/attention?limit=50&offset=0")
             guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
             attention = payload
+            attentionProjection = payload.projection
             attentionError = nil
+        } catch let pending as WorkProjectionPending {
+            if !Task.isCancelled, attentionGeneration.accepts(generation) {
+                attentionProjection = pending.projection.retainingBuild(from: attentionProjection)
+                attentionError = nil
+            }
         } catch GlanceClientError.http(404) {
             guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
-            attention = nil
-            attentionError = "this daemon predates /v1/attention"
+            if attentionProjection == nil { attention = nil }
+            recordAttentionFailure("this daemon predates /v1/attention")
         } catch GlanceClientError.noDiscovery(_) {
             guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
-            attention = nil
-            attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            if attentionProjection == nil { attention = nil }
+            recordAttentionFailure("daemon not running (no discovery file) — start it with `agentacct start`")
         } catch {
             guard attentionGeneration.accepts(generation),
                   !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
-            attention = nil
-            attentionError = "attention fetch failed: \(error.localizedDescription)"
+            if attentionProjection == nil { attention = nil }
+            recordAttentionFailure("attention fetch failed: \(error.localizedDescription)")
         }
     }
 
@@ -571,12 +686,12 @@ final class DashboardStore {
         }
         let offset = current.offset + current.items.count
         do {
-            let page: V1AttentionPayload = try await client.getAuthed(
+            let page: V1AttentionPayload = try await readAuthed(
                 "/v1/attention?limit=50&offset=\(offset)"
             )
             guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
             guard page.offset == offset else {
-                attentionError = "this daemon predates paged /v1/attention"
+                recordAttentionFailure("this daemon predates paged /v1/attention")
                 return
             }
             guard attentionPageCanAppend(current, page) else {
@@ -585,18 +700,24 @@ final class DashboardStore {
                 await fetchAttention()
                 return
             }
+            attentionProjection = page.projection
             attention = mergedAttentionPages(current, page)
             attentionError = nil
+        } catch let pending as WorkProjectionPending {
+            if !Task.isCancelled, attentionGeneration.accepts(generation) {
+                attentionProjection = pending.projection.retainingBuild(from: attentionProjection)
+                attentionError = nil
+            }
         } catch GlanceClientError.http(404) {
             guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
-            attentionError = "this daemon predates paged /v1/attention"
+            recordAttentionFailure("this daemon predates paged /v1/attention")
         } catch GlanceClientError.noDiscovery(_) {
             guard !Task.isCancelled, attentionGeneration.accepts(generation) else { return }
-            attentionError = "daemon not running (no discovery file) — start it with `agentacct start`"
+            recordAttentionFailure("daemon not running (no discovery file) — start it with `agentacct start`")
         } catch {
             guard attentionGeneration.accepts(generation),
                   !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
-            attentionError = "attention page fetch failed: \(error.localizedDescription)"
+            recordAttentionFailure("attention page fetch failed: \(error.localizedDescription)")
         }
     }
 
@@ -624,12 +745,14 @@ final class DashboardStore {
     }
 
     private func publishReceiptTasks(_ payload: ReceiptTasksPayload) {
+        receiptListProjection = payload.projection
         receiptTasks = payload.tasks
         totalReceiptTasks = payload.total
         receiptTasksTruncated = payload.truncated
         receiptAttention = payload.attention
         receiptListError = nil
-        receiptListLastUpdated = savedWork?.collectionDate ?? Date()
+        receiptListLastUpdated = payload.projection == nil
+            ? (savedWork?.collectionDate ?? Date()) : payload.projection?.builtDate
     }
 
     func fetchReceipt(taskId: String) async {
@@ -637,6 +760,7 @@ final class DashboardStore {
         let generation = receiptGeneration
         if receipt?.taskId != taskId {
             receipt = nil
+            receiptProjection = nil
             receiptError = nil
             receiptErrorTaskId = nil
         }
@@ -646,12 +770,18 @@ final class DashboardStore {
         }
         do {
             let encoded = Self.queryValue(taskId)
-            let payload: Receipt = try await client.getAuthed("/v1/receipt?task=\(encoded)")
+            let payload: Receipt = try await readAuthed("/v1/receipt?task=\(encoded)")
             guard !Task.isCancelled, generation == receiptGeneration else { return }
             receipt = payload
+            receiptProjection = payload.projection
             receiptError = nil
             receiptErrorTaskId = nil
             receiptLoadingTaskId = nil
+        } catch let pending as WorkProjectionPending {
+            if !Task.isCancelled, generation == receiptGeneration {
+                receiptProjection = pending.projection.retainingBuild(from: receiptProjection)
+                receiptError = nil
+            }
         } catch is CancellationError {
             if generation == receiptGeneration { receiptLoadingTaskId = nil }
             return
@@ -660,12 +790,12 @@ final class DashboardStore {
             return
         } catch GlanceClientError.http(404) {
             guard !Task.isCancelled, generation == receiptGeneration else { return }
-            receiptError = "this Task is not in the store (it may have been recorded elsewhere)"
+            recordReceiptFailure("this Task is not in the store (it may have been recorded elsewhere)")
             receiptErrorTaskId = taskId
             receiptLoadingTaskId = nil
         } catch {
             guard !Task.isCancelled, generation == receiptGeneration else { return }
-            receiptError = "receipt fetch failed: \(error.localizedDescription)"
+            recordReceiptFailure("receipt fetch failed: \(error.localizedDescription)")
             receiptErrorTaskId = taskId
             receiptLoadingTaskId = nil
         }
@@ -675,10 +805,10 @@ final class DashboardStore {
     /// is persisted for offline use. Live cursors are never saved as history.
     func loadTimeline(taskID: String, previous: TaskTimelinePage?) async throws -> TaskTimelinePage {
         let path = "/v1/task-timeline?task=\(Self.queryValue(taskID))"
-        if isOfflineSnapshot { return try await client.getAuthed(path) }
+        if isOfflineSnapshot { return try await readAuthed(path) }
         let started = Date()
         let page = try await TaskTimelineLoader.load(taskID: taskID, previous: previous) { cursor in
-            try await self.client.getAuthed(path + "&limit=500" + (cursor.map { "&cursor=\(Self.queryValue($0))" } ?? ""))
+            try await self.readAuthed(path + "&limit=500" + (cursor.map { "&cursor=\(Self.queryValue($0))" } ?? ""))
         }
         try Task.checkCancellation()
         if let store = try? GlanceClient.storeDir(), let data = try? JSONEncoder().encode(page) {
@@ -692,7 +822,7 @@ final class DashboardStore {
     func loadSession(client clientName: String, sessionId: String) async throws -> V1SessionDetail {
         let encodedClient = Self.queryValue(clientName)
         let encodedSession = Self.queryValue(sessionId)
-        return try await client.getAuthed(
+        return try await readAuthed(
             "/v1/session?client=\(encodedClient)&session_id=\(encodedSession)"
         )
     }
@@ -721,7 +851,7 @@ final class DashboardStore {
         let result = try await SetupCaptureLookup.scan(client: target, after: boundary, cursor: ticket.cursor,
             loadPage: { limit, offset in
                 try verifyStore()
-                let page: V1SessionsPayload = try await self.client.getAuthed(
+                let page: V1SessionsPayload = try await self.readAuthed(
                     "/v1/sessions?client=\(Self.queryValue(target.rawValue))&roots_only=false&limit=\(limit)&offset=\(offset)"
                 )
                 try verifyStore()
@@ -753,6 +883,7 @@ final class DashboardStore {
         refreshTaskId: String? = nil
     ) async throws {
         guard !isOfflineSnapshot else { throw SavedWorkError.readOnly }
+        guard canMutateReceipts else { throw WorkProjectionReadOnly() }
         var body: [String: Any] = [
             "kind": kind,
             "action": action,
@@ -794,7 +925,7 @@ final class DashboardStore {
         isLoadingWorksets = true
         defer { isLoadingWorksets = false }
         do {
-            let payload: WorksetsPayload = try await client.getAuthed("/v1/worksets")
+            let payload: WorksetsPayload = try await readAuthed("/v1/worksets")
             try Task.checkCancellation()
             worksets = payload.worksets
             worksetsError = nil
@@ -819,7 +950,7 @@ final class DashboardStore {
     func fetchWorksetCandidates() async {
         guard !isOfflineSnapshot else { return }
         do {
-            let payload: WorksetCandidatesPayload = try await client.getAuthed("/v1/workset-candidates")
+            let payload: WorksetCandidatesPayload = try await readAuthed("/v1/workset-candidates")
             try Task.checkCancellation()
             worksetCandidates = payload.candidates
             worksetCandidatesError = nil
@@ -904,7 +1035,7 @@ final class DashboardStore {
         usageDaysGeneration += 1
         let generation = usageDaysGeneration
         do {
-            async let planRequest: V1PlanPayload = client.getAuthed("/v1/plan?days=\(days)")
+            async let planRequest: V1PlanPayload = readAuthed("/v1/plan?days=\(days)")
             async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)")
             let (plan, summary) = try await (planRequest, usageRequest)
             guard generation == usageDaysGeneration else { return }
@@ -914,7 +1045,7 @@ final class DashboardStore {
             errorText = nil
             let updated = Date()
             usageLastUpdated = updated
-            if receiptListError == nil { lastUpdated = updated }
+            if receiptListError == nil { lastUpdated = receiptListLastUpdated }
         } catch {
             guard generation == usageDaysGeneration else { return }
             errorText = "usage range fetch failed: \(error.localizedDescription)"
