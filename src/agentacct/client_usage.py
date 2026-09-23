@@ -58,11 +58,13 @@ from .usage_truth import (
     is_legacy_local_usage_import_shape,
     is_local_usage_import_event,
     local_usage_additivity,
+    local_usage_event_additivity,
     local_usage_event_key,
     local_usage_row_identity,
     normalized_local_usage_session_id,
     recognized_local_usage_row_identity,
     sanitize_session_key_component,
+    split_shadowed_legacy_usage_events,
 )
 from .tool_activity import (
     _COMMANDS_PER_BATCH_MAX,
@@ -6151,6 +6153,106 @@ def promote_unknown_cost_reprices(plan: LocalUsageImportPlan) -> tuple[LocalUsag
         _cohere_legacy_source_namespace_adoptions(promoted),
         repriced,
     )
+
+
+def build_stored_unknown_cost_reprice_batch(
+    stored_events: list[dict[str, Any]],
+    *,
+    client: str,
+    excluded_bases: set[tuple[str, str]],
+) -> tuple[
+    list[dict[str, Any]],
+    Callable[[dict[str, Any]], bool],
+    Callable[[list[dict[str, Any]]], bool],
+    Callable[[dict[str, Any]], Any],
+]:
+    """Price trusted historical usage outside the current discovery window.
+
+    No transcript is reread and no source fact is inferred. Only an additive,
+    unknown-cost row with complete rates for its recorded token buckets may
+    change. Scanned bases stay with the ordinary importer (including withheld
+    or conflicting observations); ambiguous stored identities stay untouched.
+    The exact base rows are checked again under the ledger writer lock, so a
+    concurrent refresh/delete cannot be overwritten or resurrected.
+    """
+
+    rows_by_base: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    identity_counts: dict[tuple[str, str, str], int] = {}
+    for event in stored_events:
+        identity = recognized_local_usage_row_identity(event)
+        if identity is not None:
+            rows_by_base.setdefault(identity[:2], []).append(event)
+            identity_counts[identity] = identity_counts.get(identity, 0) + 1
+    visible_events, _ = split_shadowed_legacy_usage_events(stored_events)
+    replacements: list[dict[str, Any]] = []
+    replaced_event_ids: set[str] = set()
+    expected_bases: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for event in visible_events:
+        identity = recognized_local_usage_row_identity(event)
+        if identity is None or not is_local_usage_import_event(event):
+            continue
+        if client != "all" and identity[0] != client:
+            continue
+        if identity[:2] in excluded_bases or identity_counts[identity] != 1:
+            continue
+        base_rows = rows_by_base[identity[:2]]
+        if len({_stored_source_namespace_fingerprint(row) for row in base_rows}) > 1:
+            continue
+        if not local_usage_event_additivity(event)[0]:
+            continue
+        if event.get("cost_confidence") not in (None, "", COST_UNKNOWN):
+            continue
+        # A recorded amount with an unclear confidence is not ours to replace.
+        if event.get("estimated_cost_usd") is not None:
+            continue
+        metadata = event.get("metadata") or {}
+        # replace_events redacts new submissions and deliberately strips caller
+        # supplied redaction attestations. Already-redacted stored values cannot
+        # regenerate those attestations, so retain the original row untouched.
+        if "value_redaction_applied" in metadata or "value_redaction_fields" in metadata:
+            continue
+        # A total-only Codex sqlite fallback cannot establish an input/output
+        # split. Compatibility numeric zeros (or total-as-input) are not facts
+        # from which to create a historical dollar estimate.
+        if metadata.get("input_tokens_reported") is False or metadata.get("output_tokens_reported") is False:
+            continue
+        event_id = event.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            continue
+        entry = model_pricing_entry(str(event.get("provider") or ""), str(event.get("model") or ""))
+        if entry is None:
+            continue
+        cache_write = _safe_nonnegative_int(metadata.get("cache_creation_input_tokens"))
+        cache_5m = _safe_nonnegative_int(metadata.get("cache_creation_5m_input_tokens"))
+        cache_1h = _safe_nonnegative_int(metadata.get("cache_creation_1h_input_tokens"))
+        cache_read = _safe_nonnegative_int(metadata.get("cache_read_input_tokens"))
+        if cache_write + cache_read == 0:
+            cache_read = _safe_nonnegative_int(metadata.get("cached_input_tokens"))
+        if cache_read and entry.cache_read_cost_per_1m is None:
+            continue
+        if (cache_5m or cache_write > cache_1h) and entry.cache_write_5m_cost_per_1m is None:
+            continue
+        if cache_1h and entry.cache_write_1h_cost_per_1m is None:
+            continue
+        replacement = copy.deepcopy(event)
+        if not apply_pricing_estimate_to_event(replacement):
+            continue
+        replacements.append(replacement)
+        replaced_event_ids.add(event_id)
+        expected_bases[identity[:2]] = copy.deepcopy(base_rows)
+
+    def should_replace(event: dict[str, Any]) -> bool:
+        return event.get("event_id") in replaced_event_ids
+
+    def guard(current_events: list[dict[str, Any]]) -> bool:
+        current_bases: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for event in current_events:
+            identity = recognized_local_usage_row_identity(event)
+            if identity is not None and identity[:2] in expected_bases:
+                current_bases.setdefault(identity[:2], []).append(event)
+        return current_bases == expected_bases
+
+    return replacements, should_replace, guard, recognized_local_usage_row_identity
 
 
 def apply_pricing_estimate_to_event(event: dict[str, Any]) -> bool:
