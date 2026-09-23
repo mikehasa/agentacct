@@ -88,10 +88,19 @@ final class UsageDailyBreakdownTests: XCTestCase {
     func testLegacyPartialCostAndHeldChartAreHonest() throws {
         let legacy = try JSONDecoder().decode(PeriodBucket.self, from: Data(#"{"period":"2026-08-23","estimated_cost_usd":12.5,"cost_complete":false}"#.utf8))
         XCTAssertEqual(legacy.costText, "~$12.50")
+        XCTAssertEqual(UsageDaySelection.costText(legacy), UsageHistoryMeasure.cost.text(legacy, basis: .fresh))
         let held = try JSONDecoder().decode(PeriodBucket.self, from: Data(#"{"rows":1,"usage_availability":"held","fresh_tokens":0,"total_tokens_including_cached":0}"#.utf8))
         XCTAssertNil(UsageHistoryMeasure.tokens.value(held, basis: .fresh))
         XCTAssertNil(UsageHistoryMeasure.tokens.value(held, basis: .all))
         XCTAssertEqual(UsageHistoryMeasure.tokens.text(held, basis: .all), "Not reported")
+    }
+
+    func testSmallCostHistoryUsesObservedMaximumRatherThanOneDollarFloor() throws {
+        let periods = try JSONDecoder().decode([PeriodBucket].self, from: Data(#"[{"estimated_cost_usd":0.001},{"estimated_cost_usd":0.02}]"#.utf8))
+        let maximum = UsageHistoryMeasure.cost.maximum(in: periods, basis: .fresh)
+        XCTAssertEqual(maximum, 0.02, accuracy: 0.000001)
+        XCTAssertEqual(try XCTUnwrap(UsageHistoryMeasure.cost.value(periods[0], basis: .fresh)) / maximum, 0.05, accuracy: 0.000001)
+        XCTAssertEqual(UsageHistoryMeasure.cost.maximum(in: [], basis: .fresh), 1)
     }
 
     @MainActor func testRenderDailyBreakdownReview() throws {

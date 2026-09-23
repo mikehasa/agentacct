@@ -52,6 +52,10 @@ struct UsageClientModelGroup: Identifiable {
 }
 
 enum UsageDaySelection {
+    static func costText(_ period: PeriodBucket) -> String {
+        period.costText == "—" ? "Unpriced" : period.costText
+    }
+
     static func latestActive(in usage: UsageSummary) -> String? {
         let periods = usage.byPeriod ?? []
         return periods.last(where: { ($0.totalTokensIncludingCached ?? $0.freshTokens ?? 0) > 0 || ($0.usage.rows ?? 0) > 0 })?.period
@@ -87,8 +91,12 @@ enum UsageHistoryMeasure: String, CaseIterable {
         if self == .cost { return period.usage.knownAdditiveCostUsd ?? period.estimatedCostUsd }
         return (basis == .fresh ? UsageTokenColumn.fresh : .total).metric(period.usage).value.map(Double.init)
     }
+    func maximum(in periods: [PeriodBucket], basis: UsageTokenBasis) -> Double {
+        let observed = periods.compactMap { value($0, basis: basis) }.max() ?? 0
+        return observed > 0 ? observed : 1
+    }
     func text(_ period: PeriodBucket, basis: UsageTokenBasis) -> String {
-        if self == .cost { return period.costText == "—" ? "Unpriced" : period.costText }
+        if self == .cost { return UsageDaySelection.costText(period) }
         return (basis == .fresh ? UsageTokenColumn.fresh : .total).metric(period.usage).exactText
     }
 }
@@ -172,7 +180,7 @@ struct UsageRecordedExplorer: View {
                     ContextHelp(title: "How tokens are counted", message: UsageTokenBasis.explanation, identifier: "usage.tokens.help")
                 }
             }
-            let maxValue = max(periods.compactMap { chartMeasure.value($0, basis: tokenBasis) }.max() ?? 1, 1)
+            let maxValue = chartMeasure.maximum(in: periods, basis: tokenBasis)
             HStack(alignment: .bottom, spacing: 3) {
                 ForEach(Array(periods.enumerated()), id: \.offset) { index, period in
                     let value = chartMeasure.value(period, basis: tokenBasis)
@@ -236,6 +244,7 @@ struct UsageRecordedExplorer: View {
                                 }
                             }
                             .frame(height: min(CGFloat(periods.count) * 34, 136))
+                            .onAppear { if let selectedPeriod { proxy.scrollTo(selectedPeriod, anchor: .center) } }
                             .onChange(of: selectedPeriod) { if let selectedPeriod { withAnimation(Motion.contentUpdate) { proxy.scrollTo(selectedPeriod, anchor: .center) } } }
                         }
                     }
@@ -253,7 +262,7 @@ struct UsageRecordedExplorer: View {
                     Text(period.period ?? "Unknown date").foregroundStyle(Theme.ink)
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 tokenCells(period.usage, columns: dailyColumns)
-                costCell(period.usage)
+                costCell(period.usage, displayText: UsageDaySelection.costText(period))
             }
             .workFont(.dataSmall)
             .padding(.horizontal, Space.m).frame(height: 34)
@@ -334,9 +343,10 @@ struct UsageRecordedExplorer: View {
         }
     }
 
-    private func costCell(_ bucket: UsageBucket?) -> some View {
-        Text(bucket?.costText == "—" ? "Unpriced" : bucket?.costText ?? "Unpriced")
-            .workFont(.dataSmall).foregroundStyle(bucket?.costText == "—" || bucket == nil ? Theme.muted : Theme.ink)
+    private func costCell(_ bucket: UsageBucket?, displayText: String? = nil) -> some View {
+        let text = displayText ?? (bucket?.costText == "—" ? "Unpriced" : bucket?.costText ?? "Unpriced")
+        return Text(text)
+            .workFont(.dataSmall).foregroundStyle(text == "Unpriced" ? Theme.muted : Theme.ink)
             .frame(width: 82, alignment: .trailing)
             .help(bucket?.costConfidenceLabel ?? "Cost basis not reported")
     }
