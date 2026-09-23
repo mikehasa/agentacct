@@ -1679,8 +1679,8 @@ final class DashboardInteractionTests: XCTestCase {
     func testSortMenuReadsSentenceCaseWhileRawValuesStayStable() {
         // The menu and its trigger show these words; raw values remain the
         // identifiers the rest of the app keys on.
-        XCTAssertEqual(WorkSort.allCases.map(\.label), ["Attention first", "Latest", "Highest cost"])
-        XCTAssertEqual(WorkSort.allCases.map(\.rawValue), ["attention", "latest", "cost"])
+        XCTAssertEqual(WorkSort.allCases.map(\.label), ["Latest", "Attention first", "Highest cost"])
+        XCTAssertEqual(WorkSort.allCases.map(\.rawValue), ["latest", "attention", "cost"])
     }
 
     func testFailedChecksPutReportedReceiptInAttentionGroupAndSort() throws {
