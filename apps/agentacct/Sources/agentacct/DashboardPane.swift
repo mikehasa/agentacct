@@ -957,10 +957,21 @@ private struct DashboardAttentionQueueCard: View {
 private struct DashboardAttentionQueueRow: View {
     let item: DashboardAttentionItem
     let open: () -> Void
+    @State private var copyFeedback = DashboardCopyFeedback.idle
+    @State private var copyFeedbackToken: UUID?
 
     private var tint: Color { item.reasonKind == "blocker" ? Theme.amber : Theme.coral }
+    private var brief: DashboardActionBrief { DashboardActionBrief(focus: item) }
+    private var feedbackText: String? {
+        switch copyFeedback {
+        case .idle: return nil
+        case .copied: return brief.copiedAccessibilityLabel
+        case .failed: return brief.failedAccessibilityLabel
+        }
+    }
     private var context: String {
-        [item.project, item.client, item.recency].compactMap { $0 }.joined(separator: " · ")
+        [feedbackText, item.project, item.client, item.recency, item.sourceLabel]
+            .compactMap { $0 }.joined(separator: " · ")
     }
 
     var body: some View {
@@ -970,19 +981,21 @@ private struct DashboardAttentionQueueRow: View {
                 .frame(width: 3, height: 32)
                 .padding(.top, 3)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(item.title)
                     .workFont(.rowLabel)
                     .foregroundStyle(Theme.ink)
                     .lineLimit(2)
                     .help(item.title)
                 if !context.isEmpty {
-                    Text(context).workFont(.caption).foregroundStyle(Theme.muted).lineLimit(1).help(context)
+                    Text(context).workFont(.caption)
+                        .foregroundStyle(copyFeedback == .failed(brief.text) ? Theme.coral : Theme.muted)
+                        .lineLimit(1).help(context)
                 }
                 Text("\(item.reasonLabel): \(item.summary)")
                     .workFont(.caption)
                     .foregroundStyle(tint)
-                    .lineLimit(3)
+                    .lineLimit(2)
                     .help(item.summary)
                 if let next = item.nextStep {
                     Text("Recorded next step: \(next)")
@@ -990,13 +1003,6 @@ private struct DashboardAttentionQueueRow: View {
                         .foregroundStyle(Theme.ink)
                         .lineLimit(2)
                         .help(next)
-                } else {
-                    Text("No next step recorded")
-                        .workFont(.caption)
-                        .foregroundStyle(Theme.muted)
-                }
-                if let source = item.sourceLabel {
-                    Text(source).workFont(.caption).foregroundStyle(Theme.muted)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1005,11 +1011,31 @@ private struct DashboardAttentionQueueRow: View {
             }
             .buttonStyle(QuietButtonStyle())
             .foregroundStyle(Theme.accent)
+            .accessibilityLabel("Open receipt for \(item.title)")
             .accessibilityIdentifier("dashboard.attention.task.\(item.id)")
         }
         .padding(.horizontal, Space.l)
         .padding(.vertical, Space.m)
         .accessibilityElement(children: .contain)
+        .accessibilityValue(feedbackText ?? "")
+        .contextMenu {
+            Button {
+                let token = UUID()
+                copyFeedbackToken = token
+                copyFeedback.record(succeeded: DashboardClipboard.copy(brief.text), text: brief.text)
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2))
+                    guard copyFeedbackToken == token else { return }
+                    copyFeedback.clear()
+                    copyFeedbackToken = nil
+                }
+            } label: {
+                Label(brief.buttonTitle, systemImage: "doc.on.doc")
+            }
+            .accessibilityLabel("\(brief.buttonTitle) for \(item.title)")
+            .accessibilityHint("Copies recorded facts only; it does not resume or rerun an agent")
+        }
+        .help(feedbackText ?? "Right-click to \(brief.buttonTitle.lowercased()).")
     }
 }
 
@@ -1038,6 +1064,7 @@ private struct DashboardUsageSummaryCard: View {
                         .workFont(.captionSemibold)
                         .foregroundStyle(Theme.accent)
                         .buttonStyle(QuietButtonStyle())
+                        .accessibilityLabel("Open usage details")
                         .accessibilityIdentifier("dashboard.usage.open")
                 }
                 Divider().overlay(Theme.hairline)
@@ -1785,9 +1812,10 @@ private struct RecentWorkRow: View {
                         EvidencePip(shape: .hollow, tint: Theme.muted)
                     }
                     Text(item.evidence)
-                        .workFont(.dataSmall)
+                        .workFont(.caption)
                         .foregroundStyle(item.evidenceIsInconsistent ? Theme.amber : Theme.muted)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(width: 92, alignment: .leading)
                 .help(item.evidenceQualifier)
