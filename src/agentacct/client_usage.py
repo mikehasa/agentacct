@@ -1293,6 +1293,13 @@ def _discover_codex_usage_from_home(
                 model_inherited_from_session_id = parent_session_id
 
         evidence_source = usage or observation_metadata
+        # Codex's threads.updated_at and the rollout mtime also advance for
+        # settings changes on idle threads. They are source revisions, not
+        # evidence that the conversation did more work. Prefer work records
+        # already read during the token scan; recent Codex also supplies a
+        # separate recency clock, including a turn accepted before its rollout
+        # records have been flushed.
+        activity_updated_at = _codex_activity_updated_at(row, observation_metadata)
         # The rollout/db file mtime_ns is the high-resolution source watermark
         # that lets two revisions recorded in the same displayed second still be
         # ordered (client_usage.py source_revision_at design note). Compute it
@@ -1331,10 +1338,7 @@ def _discover_codex_usage_from_home(
                         _optional_int(row.get("created_at"))
                         or _optional_int(observation_metadata.get("first_activity_at"))
                     ),
-                    updated_at=(
-                        _optional_int(row.get("updated_at"))
-                        or _optional_int(observation_metadata.get("last_activity_at"))
-                    ),
+                    updated_at=activity_updated_at,
                     source_revision_at=rollout_revision_at,
                     source_revision_basis=source_revision_basis,
                     client_session_kind=session_kind,
@@ -1467,7 +1471,7 @@ def _discover_codex_usage_from_home(
                     "total_tokens",
                 ),
                 started_at=_optional_int(row.get("created_at")),
-                updated_at=_optional_int(row.get("updated_at")),
+                updated_at=activity_updated_at,
                 turn_count=_safe_nonnegative_int(usage.get("turn_count")),
                 client_session_kind=session_kind,
                 # Task-grouping parent, mirroring the observation above: the
@@ -6720,6 +6724,7 @@ def _read_codex_thread_rows(
         optional = [
             "source",
             "thread_source",
+            "recency_at",
         ]
         select_columns = [
             "id",
@@ -6885,6 +6890,53 @@ def _codex_row_session_id(row: dict[str, Any]) -> str:
     if row_id:
         return row_id
     return Path(str(row.get("rollout_path") or "")).stem
+
+
+def _codex_activity_updated_at(
+    row: dict[str, Any], observation: dict[str, Any]
+) -> int | None:
+    activity = _optional_int(observation.get("last_activity_at"))
+    recency = _optional_int(row.get("recency_at"))
+    started = (
+        _optional_int(row.get("created_at"))
+        or _optional_int(observation.get("first_activity_at"))
+    )
+    candidates = [value for value in (activity, recency) if value is not None and value > 0]
+    if candidates:
+        # A replayed parent prefix can predate this thread's own creation.
+        return max(*candidates, started or 0)
+    if observation.get("has_timestamped_records") and not observation.get("has_untimestamped_activity"):
+        # A new thread with only metadata/settings has no later work to report.
+        return started
+    # Older clients/fixtures may expose neither timestamped rollout records
+    # nor the dedicated recency field. Preserve their metadata fallback.
+    return _optional_int(row.get("updated_at"))
+
+
+def _codex_record_is_activity(obj: dict[str, Any]) -> bool:
+    """Recognize work carriers without treating arbitrary metadata as work."""
+    if obj.get("type") in {
+        "response_item", "token_usage_record", "turn_context", "compacted",
+        "inter_agent_communication_metadata",
+    }:
+        return True
+    if obj.get("type") != "event_msg":
+        return False
+    payload = obj.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("type") in {
+        "task_started", "task_complete", "turn_started", "turn_complete",
+        "turn_aborted", "user_message", "agent_message", "agent_reasoning",
+        "token_count", "item_started", "item_completed",
+        "mcp_tool_call_begin", "mcp_tool_call_end",
+        "exec_command_begin", "exec_command_end",
+        "patch_apply_begin", "patch_apply_end",
+    }:
+        return True
+    # Historical token records did not always include payload.type.
+    info = payload.get("info")
+    return isinstance(info, dict) and isinstance(info.get("total_token_usage"), dict)
 
 
 def _select_codex_root_groups(
@@ -8449,6 +8501,8 @@ def _read_codex_rollout_usage_uncached(
     replayed_parent_session_meta = False
     first_activity_at: int | None = None
     last_activity_at: int | None = None
+    has_timestamped_records = False
+    has_untimestamped_activity = False
     # Discovery-side Actions retain only bounded identities and scrubbed commands.
     # Patch bodies are revisited, never retained, after all duplicate call
     # representations have been reconciled.
@@ -8509,12 +8563,15 @@ def _read_codex_rollout_usage_uncached(
                 continue
             saw_valid_object = True
             timestamp = _timestamp_seconds(obj.get("timestamp"))
+            is_activity = _codex_record_is_activity(obj)
+            if is_activity and timestamp is None:
+                has_untimestamped_activity = True
             if timestamp is not None:
-                first_activity_at = min(
-                    first_activity_at or timestamp,
-                    timestamp,
-                )
-                last_activity_at = max(last_activity_at or timestamp, timestamp)
+                has_timestamped_records = True
+                if is_activity or (obj.get("type") == "session_meta" and not session_meta_seen):
+                    first_activity_at = min(first_activity_at or timestamp, timestamp)
+                if is_activity:
+                    last_activity_at = max(last_activity_at or timestamp, timestamp)
             if obj.get("type") == "session_meta" and not session_meta_seen:
                 # Codex records the spawning thread's id verbatim on the
                 # rollout's OWN (first) session_meta line; read it as-is —
@@ -8722,6 +8779,8 @@ def _read_codex_rollout_usage_uncached(
                 "cwd": session_meta_cwd,
                 "first_activity_at": first_activity_at,
                 "last_activity_at": last_activity_at,
+                "has_timestamped_records": has_timestamped_records,
+                "has_untimestamped_activity": has_untimestamped_activity,
                 "observed_models": [model] if model else [],
                 "valid_object_count": int(saw_valid_object),
                 "tool_activity": rollout_tool_activity,
