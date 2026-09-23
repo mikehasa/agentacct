@@ -4,6 +4,12 @@ run-name: Visual reference candidate for ${{ inputs.ref }}
 "on":
   workflow_dispatch:
     inputs:
+      suite:
+        description: Visual suite to render and validate
+        required: true
+        type: choice
+        default: dashboard
+        options: [dashboard, usage]
       ref:
         description: Full commit SHA to render from this repository
         required: true
@@ -29,7 +35,9 @@ jobs:
       - name: Validate requested commit
         env:
           REQUESTED_COMMIT: ${{ inputs.ref }}
+          CANDIDATE_SUITE: ${{ inputs.suite }}
         run: |
+          case "$CANDIDATE_SUITE" in dashboard|usage) ;; *) echo "unsupported suite" >&2; exit 2 ;; esac
           if [[ ! "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
             echo "ref must be a full lowercase 40-character commit SHA" >&2
             exit 2
@@ -97,27 +105,38 @@ jobs:
           echo "renderer_id=$renderer_id" >> "$GITHUB_OUTPUT"
       - name: Run deterministic dashboard render tests
         working-directory: source/apps/agentacct
-        run: swift test --filter DashboardSnapshotHarnessTests
+        env:
+          CANDIDATE_SUITE: ${{ inputs.suite }}
+        run: |
+          if [[ "$CANDIDATE_SUITE" == "usage" ]]; then
+            swift test --filter UsageSnapshotHarnessTests
+          else
+            swift test --filter DashboardSnapshotHarnessTests
+          fi
       - name: Build release renderer
         working-directory: source/apps/agentacct
         run: swift build -c release
       - name: Render dashboard candidate
         working-directory: source/apps/agentacct
+        env:
+          CANDIDATE_SUITE: ${{ inputs.suite }}
         run: |
           candidate_root="$RUNNER_TEMP/dashboard-reference-candidate"
           mkdir -p "$candidate_root/images"
           .build/release/agentacct \
-            --snapshot-dashboard-fixture \
+            "--snapshot-${CANDIDATE_SUITE}-fixture" \
             Tests/agentacctTests/Fixtures/dashboard.json \
             "$candidate_root/images"
       - name: Package candidate manifest
         env:
+          CANDIDATE_SUITE: ${{ inputs.suite }}
           RENDERER_ID: ${{ steps.renderer.outputs.renderer_id }}
           REQUESTED_COMMIT: ${{ needs.preflight.outputs.source_commit }}
         run: |
           : "${ImageOS:?GitHub-hosted runner did not set ImageOS}"
           : "${ImageVersion:?GitHub-hosted runner did not set ImageVersion}"
           trusted/apps/agentacct/Scripts/package-dashboard-reference-candidate \
+            --suite "$CANDIDATE_SUITE" \
             --images "$RUNNER_TEMP/dashboard-reference-candidate/images" \
             --output "$RUNNER_TEMP/dashboard-reference-candidate/manifest.json" \
             --source-commit "$REQUESTED_COMMIT" \
@@ -127,7 +146,7 @@ jobs:
       - name: Upload replica
         uses: actions/upload-artifact@v7
         with:
-          name: dashboard-reference-candidate-${{ inputs.ref }}-${{ matrix.replica }}
+          name: ${{ inputs.suite }}-reference-candidate-${{ inputs.ref }}-${{ matrix.replica }}
           path: ${{ runner.temp }}/dashboard-reference-candidate
           if-no-files-found: error
           retention-days: 1
@@ -141,19 +160,19 @@ jobs:
       - name: Download replica A
         uses: actions/download-artifact@v8
         with:
-          name: dashboard-reference-candidate-${{ inputs.ref }}-a
+          name: ${{ inputs.suite }}-reference-candidate-${{ inputs.ref }}-a
           path: replicas/a
       - name: Download replica B
         uses: actions/download-artifact@v8
         with:
-          name: dashboard-reference-candidate-${{ inputs.ref }}-b
+          name: ${{ inputs.suite }}-reference-candidate-${{ inputs.ref }}-b
           path: replicas/b
       - name: Require byte-identical bundles
         run: diff --recursive --brief --no-dereference replicas/a replicas/b
       - name: Upload verified candidate
         uses: actions/upload-artifact@v7
         with:
-          name: dashboard-reference-candidate-${{ inputs.ref }}
+          name: ${{ inputs.suite }}-reference-candidate-${{ inputs.ref }}
           path: replicas/a
           if-no-files-found: error
           retention-days: 14

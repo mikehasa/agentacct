@@ -25,11 +25,13 @@ struct DashboardSnapshotFixture: Decodable {
     let tasks: ReceiptTasksPayload
     let usage: UsageSummary
     let usage90Days: UsageSummary
+    let usageDailyBreakdown: UsageSummary?
     let work: WorkSnapshotFixture?
 
     enum CodingKeys: String, CodingKey {
         case glance, plan, attention, ingestion, tasks, usage, work
         case usage90Days = "usage_90_days"
+        case usageDailyBreakdown = "usage_daily_breakdown"
         case menuSparseGlance = "menu_sparse_glance"
         case menuDuplicateGlance = "menu_duplicate_glance"
         case ingestionHealthySources = "ingestion_healthy_sources"
@@ -141,6 +143,7 @@ struct WorkSnapshotFixture: Decodable {
 enum SnapshotRecordedUsageState {
     case sevenDays
     case ninetyDays
+    case dayClients
 
     func storeState(for fixture: DashboardSnapshotFixture) -> SnapshotUsageStoreState {
         switch self {
@@ -148,6 +151,8 @@ enum SnapshotRecordedUsageState {
             return SnapshotUsageStoreState(days: 7, summary: fixture.usage)
         case .ninetyDays:
             return SnapshotUsageStoreState(days: 90, summary: fixture.usage90Days)
+        case .dayClients:
+            return SnapshotUsageStoreState(days: 7, summary: fixture.usageDailyBreakdown ?? fixture.usage)
         }
     }
 }

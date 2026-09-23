@@ -173,6 +173,7 @@ struct UsageSummary: Decodable {
     let byPeriod: [PeriodBucket]?
     let totals: UsageBucket?
     let filtersEcho: UsageFiltersEcho?
+    let periodAttribution: UsagePeriodAttribution?
 
     enum CodingKeys: String, CodingKey {
         case byClient = "by_client"
@@ -180,6 +181,17 @@ struct UsageSummary: Decodable {
         case byPeriod = "by_period"
         case totals
         case filtersEcho = "filters_echo"
+        case periodAttribution = "period_attribution"
+    }
+}
+
+struct UsagePeriodAttribution: Decodable {
+    let label: String?
+    let description: String?
+    let exactDailyUsage: Bool?
+    enum CodingKeys: String, CodingKey {
+        case label, description
+        case exactDailyUsage = "exact_daily_usage"
     }
 }
 
@@ -189,55 +201,55 @@ struct UsageFiltersEcho: Decodable {
 
 struct PeriodBucket: Decodable {
     let period: String?
-    let freshTokens: Int?
-    let totalTokensIncludingCached: Int?
-    let estimatedCostUsd: Double?
-    let costComplete: Bool?
-    let costConfidence: String?
     let byClient: [String: PeriodClientSlice]?
+    let byModel: [UsageBucket]?
+    let usage: UsageBucket
 
-    /// "08-05" from "2026-08-05" for axis labels.
-    var shortLabel: String {
-        guard let period, period.count >= 10 else { return period ?? "" }
-        return String(period.dropFirst(5))
-    }
-
-    /// The shared cost grammar ($ reported / ≈$ estimate / ~$ partial / —).
+    var freshTokens: Int? { usage.freshTokens }
+    var totalTokensIncludingCached: Int? { usage.totalTokensIncludingCached }
+    var estimatedCostUsd: Double? { usage.estimatedCostUsd }
+    var costComplete: Bool? { usage.costComplete }
+    var costConfidence: String? { usage.costConfidence }
     var costText: String {
-        if costComplete != true, let cost = estimatedCostUsd {
-            return Fmt.dollars(cost, prefix: "~$")
-        }
-        return Fmt.costDisplay(
-            usd: estimatedCostUsd,
-            complete: costComplete,
-            confidence: costConfidence
-        ) ?? "—"
+        // Before full period buckets, legacy daemons supplied a subtotal only
+        // as estimated_cost_usd. Preserve its partial marker.
+        if usage.costComplete != true, usage.knownAdditiveCostUsd == nil,
+           let subtotal = usage.estimatedCostUsd { return Fmt.dollars(subtotal, prefix: "~$") }
+        return usage.costText
+    }
+    var shortLabel: String {
+        guard let period, period.count >= 10 else { return period ?? "Unknown date" }
+        return String(period.dropFirst(5))
     }
 
     enum CodingKeys: String, CodingKey {
         case period
-        case freshTokens = "fresh_tokens"
-        case totalTokensIncludingCached = "total_tokens_including_cached"
-        case estimatedCostUsd = "estimated_cost_usd"
-        case costComplete = "cost_complete"
-        case costConfidence = "cost_confidence"
         case byClient = "by_client"
+        case byModel = "by_model"
+    }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        period = try container.decodeIfPresent(String.self, forKey: .period)
+        byClient = try container.decodeIfPresent([String: PeriodClientSlice].self, forKey: .byClient)
+        byModel = try container.decodeIfPresent([UsageBucket].self, forKey: .byModel)
+        usage = try UsageBucket(from: decoder)
     }
 }
 
-struct PeriodClientSlice: Decodable {
-    let freshTokens: Int?
-    let totalTokensIncludingCached: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case freshTokens = "fresh_tokens"
-        case totalTokensIncludingCached = "total_tokens_including_cached"
-    }
-}
+/// Old daemons send only tokens here; all new fields remain optional.
+typealias PeriodClientSlice = UsageBucket
 
 struct UsageBucket: Decodable, Identifiable {
     let client: String?
     let model: String?
+    let provider: String?
+    let rows: Int?
+    let inputTokens: Int?
+    let outputTokens: Int?
+    let cacheCreationTokens: Int?
+    let cacheCreationReporting: String?
+    let cacheReadReporting: String?
+    let usageAvailability: String?
     let sessions: Int?
     let freshTokens: Int?
     let totalTokensIncludingCached: Int?
@@ -248,10 +260,16 @@ struct UsageBucket: Decodable, Identifiable {
     let costConfidence: String?
     let costConfidenceLabel: String?
 
-    var id: String { "\(client ?? "?")::\(model ?? "*")" }
+    var id: String { [client ?? "?", provider ?? "?", model ?? "*"].map { "\($0.utf8.count):\($0)" }.joined() }
 
     enum CodingKeys: String, CodingKey {
-        case client, model, sessions
+        case client, model, provider, rows, sessions
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case cacheCreationTokens = "cache_creation_tokens"
+        case cacheCreationReporting = "cache_creation_reporting"
+        case cacheReadReporting = "cache_read_reporting"
+        case usageAvailability = "usage_availability"
         case freshTokens = "fresh_tokens"
         case totalTokensIncludingCached = "total_tokens_including_cached"
         case cacheReadTokens = "cache_read_tokens"

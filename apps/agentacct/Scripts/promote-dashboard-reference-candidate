@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from dashboard_reference_candidate import CandidateError, promote_candidate_bundle
+from dashboard_reference_candidate import CandidateError, select_suite, promote_candidate_bundle
 
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -30,14 +30,16 @@ def parse_arguments() -> argparse.Namespace:
         "--reviewed",
         action="store_true",
         required=True,
-        help="Confirm that all four candidate images were visually reviewed.",
+        help="Confirm that all candidate images were visually reviewed.",
     )
+    parser.add_argument("--suite", choices=("dashboard", "usage"), default="dashboard")
     return parser.parse_args()
 
 
 def main() -> int:
     arguments = parse_arguments()
     try:
+        select_suite(arguments.suite)
         destination, changed = promote_candidate_bundle(
             arguments.candidate,
             arguments.source_commit,
@@ -48,8 +50,9 @@ def main() -> int:
         raise SystemExit(f"promote-dashboard-reference-candidate: {error}") from error
 
     if changed:
+        description = "four reviewed reference images" if arguments.suite == "dashboard" else "reviewed Usage reference images"
         print(
-            f"Promoted four reviewed reference images to {destination}. "
+            f"Promoted {description} to {destination}. "
             "Review the Git diff before committing."
         )
     else:

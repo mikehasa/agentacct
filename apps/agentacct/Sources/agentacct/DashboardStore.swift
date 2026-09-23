@@ -363,7 +363,7 @@ final class DashboardStore {
         async let tasksRequest: ReceiptTasksPayload = readAuthed("/v1/tasks?limit=200")
         async let attentionRequest: V1AttentionPayload = readAuthed("/v1/attention?limit=5")
         async let planRequest: V1PlanPayload = readAuthed("/v1/plan?days=\(days)")
-        async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)")
+        async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)&granularity=daily")
         async let ingestionRefresh: Void = refreshIngestion()
         async let connectionsRefresh: Void = refreshConnections()
         async let versionRefresh: Void = refreshVersion()
@@ -1036,7 +1036,7 @@ final class DashboardStore {
         let generation = usageDaysGeneration
         do {
             async let planRequest: V1PlanPayload = readAuthed("/v1/plan?days=\(days)")
-            async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)")
+            async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)&granularity=daily")
             let (plan, summary) = try await (planRequest, usageRequest)
             guard generation == usageDaysGeneration else { return }
             usageDays = days

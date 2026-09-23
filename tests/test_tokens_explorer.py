@@ -328,6 +328,7 @@ def test_usage_summary_shape_totals_and_periods(tmp_path):
     assert set(payload) == {
         "schema_version",
         "filters_echo",
+        "period_attribution",
         "totals",
         "usage_exclusions",
         "range_context",

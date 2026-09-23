@@ -407,9 +407,11 @@ def build_usage_cube(
     - ``by_model``: one bucket per (client, provider, model), same order.
     - ``by_period``: one bucket per local day (daily) or ISO week labeled by
       its Monday (weekly), ascending, INCLUDING empty periods in range; each
-      carries a ``by_client`` fresh/cache-creation/cache-read mini-split (the
-      chart's stacking input, so JSON parity holds). The "unknown" period
-      (days=None only) sorts last.
+      carries full ``by_client`` buckets keyed by client and ``by_model``
+      buckets keyed by (client, provider, model), so a selected chart period
+      can show its token and cost breakdown without another read. The
+      "unknown" period (days=None only) sorts last. These are row-attribution
+      dates, not reconstructed per-call history for cumulative session rows.
     - ``totals``: the same bucket shape over everything in filter, plus
       ``unknown_time_rows``.
 
@@ -432,6 +434,7 @@ def build_usage_cube(
     by_model: dict[tuple[str, str, str], dict[str, Any]] = {}
     by_period: dict[str, dict[str, Any]] = {}
     period_lanes: dict[str, dict[str, dict[str, Any]]] = {}
+    period_models: dict[str, dict[tuple[str, str, str], dict[str, Any]]] = {}
     dated_days: list[date] = []
 
     for record in kept:
@@ -454,64 +457,14 @@ def build_usage_cube(
             by_period.setdefault(period_key, _new_accumulator()),
         ):
             _accumulate(accumulator, record)
-        lane = period_lanes.setdefault(period_key, {}).setdefault(
-            record_client,
-            {
-                "rows": 0,
-                "additive_rows": 0,
-                "excluded_non_additive_rows": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "fresh_tokens": 0,
-                "cache_creation_tokens": 0,
-                "cache_read_tokens": 0,
-                "total_tokens_including_cached": 0,
-                "cache_creation_reported_rows": 0,
-                "cache_creation_unreported_rows": 0,
-                "cache_creation_unknown_rows": 0,
-                "cache_read_reported_rows": 0,
-                "cache_read_unreported_rows": 0,
-                "cache_read_unknown_rows": 0,
-            },
+        _accumulate(
+            period_lanes.setdefault(period_key, {}).setdefault(record_client, _new_accumulator()),
+            record,
         )
-        lane["rows"] += 1
-        if getattr(record, "usage_additive", True) is not True:
-            lane["excluded_non_additive_rows"] += 1
-            continue
-        lane["additive_rows"] += 1
-        lane["input_tokens"] += _int_field(record, "input_tokens")
-        lane["output_tokens"] += _int_field(record, "output_tokens")
-        lane["fresh_tokens"] += _int_field(record, "input_tokens") + _int_field(record, "output_tokens")
-        lane["cache_creation_tokens"] += _int_field(record, "cache_creation_input_tokens")
-        lane["cache_read_tokens"] += _int_field(record, "cache_read_input_tokens")
-        lane["total_tokens_including_cached"] += _int_field(record, "total_tokens_including_cached")
-        lane[
-            "cache_creation_reported_rows"
-            if getattr(record, "cache_creation_tokens_reported", None) is True
-            else "cache_creation_unreported_rows"
-            if getattr(record, "cache_creation_tokens_reported", None) is False
-            else "cache_creation_unknown_rows"
-        ] += 1
-        lane[
-            "cache_read_reported_rows"
-            if getattr(record, "cache_read_tokens_reported", None) is True
-            else "cache_read_unreported_rows"
-            if getattr(record, "cache_read_tokens_reported", None) is False
-            else "cache_read_unknown_rows"
-        ] += 1
-
-    for lanes in period_lanes.values():
-        for lane in lanes.values():
-            lane["cache_creation_reporting"] = _token_reporting_status(
-                int(lane["cache_creation_reported_rows"]),
-                int(lane["cache_creation_unreported_rows"]),
-                int(lane["cache_creation_unknown_rows"]),
-            )
-            lane["cache_read_reporting"] = _token_reporting_status(
-                int(lane["cache_read_reported_rows"]),
-                int(lane["cache_read_unreported_rows"]),
-                int(lane["cache_read_unknown_rows"]),
-            )
+        _accumulate(
+            period_models.setdefault(period_key, {}).setdefault(model_key, _new_accumulator()),
+            record,
+        )
 
     # Gap fill only when the filter matched at least one row: a fully empty
     # result stays truly empty (the pages render an explicit empty state
@@ -528,14 +481,26 @@ def build_usage_cube(
         {"client": name, **_finalize(accumulator)}
         for name, accumulator in sorted(by_client.items(), key=lambda item: (-total_rank(item[1]), item[0]))
     ]
-    model_entries = [
-        {"client": key[0], "provider": key[1], "model": key[2] or None, **_finalize(accumulator)}
-        for key, accumulator in sorted(by_model.items(), key=lambda item: (-total_rank(item[1]), item[0]))
-    ]
+
+    def model_buckets(accumulators: dict[tuple[str, str, str], dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {"client": key[0], "provider": key[1], "model": key[2] or None, **_finalize(accumulator)}
+            for key, accumulator in sorted(accumulators.items(), key=lambda item: (-total_rank(item[1]), item[0]))
+        ]
+
+    model_entries = model_buckets(by_model)
     dated_keys = sorted(key for key in by_period if key != UNKNOWN_PERIOD)
     period_keys = dated_keys + ([UNKNOWN_PERIOD] if UNKNOWN_PERIOD in by_period else [])
     period_entries = [
-        {"period": key, "by_client": period_lanes.get(key, {}), **_finalize(by_period[key])}
+        {
+            "period": key,
+            "by_client": {
+                client: _finalize(accumulator)
+                for client, accumulator in sorted(period_lanes.get(key, {}).items())
+            },
+            "by_model": model_buckets(period_models.get(key, {})),
+            **_finalize(by_period[key]),
+        }
         for key in period_keys
     ]
 

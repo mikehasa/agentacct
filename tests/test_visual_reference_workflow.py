@@ -120,8 +120,8 @@ def test_visual_reference_workflow_promotes_only_identical_replicas_to_artifact(
     assert verify["needs"] == "render"
     assert verify["runs-on"] == "ubuntu-latest"
     combined = _combined_steps(verify)
-    assert "dashboard-reference-candidate-${{ inputs.ref }}-a" in combined
-    assert "dashboard-reference-candidate-${{ inputs.ref }}-b" in combined
+    assert "${{ inputs.suite }}-reference-candidate-${{ inputs.ref }}-a" in combined
+    assert "${{ inputs.suite }}-reference-candidate-${{ inputs.ref }}-b" in combined
     assert "diff --recursive --brief --no-dereference replicas/a replicas/b" in combined
 
     final_upload = next(
@@ -129,7 +129,18 @@ def test_visual_reference_workflow_promotes_only_identical_replicas_to_artifact(
         for step in verify["steps"]
         if step["name"] == "Upload verified candidate"
     )
-    assert final_upload["with"]["name"] == "dashboard-reference-candidate-${{ inputs.ref }}"
+    assert final_upload["with"]["name"] == "${{ inputs.suite }}-reference-candidate-${{ inputs.ref }}"
     assert final_upload["with"]["path"] == "replicas/a"
     assert final_upload["with"]["retention-days"] == 14
     assert final_upload["with"]["if-no-files-found"] == "error"
+
+
+def test_candidate_suite_is_explicit_and_does_not_choose_its_own_inventory() -> None:
+    workflow = _workflow()
+    suite = workflow["on"]["workflow_dispatch"]["inputs"]["suite"]
+    assert suite == {"description": "Visual suite to render and validate", "required": True,
+                     "type": "choice", "default": "dashboard", "options": ["dashboard", "usage"]}
+    assert 'case "$CANDIDATE_SUITE" in dashboard|usage)' in _combined_steps(workflow["jobs"]["preflight"])
+    render = _combined_steps(workflow["jobs"]["render"])
+    assert 'UsageSnapshotHarnessTests' in render
+    assert '--suite "$CANDIDATE_SUITE"' in render

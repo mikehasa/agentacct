@@ -11,6 +11,10 @@ final class UsageSnapshotHarnessTests: XCTestCase {
     }
 
     private let expectedArtifacts = [
+        ExpectedArtifact(filename: "usage-day-clients-reference-light.png", pixelsWide: 2240, pixelsHigh: 2600),
+        ExpectedArtifact(filename: "usage-day-clients-reference-dark.png", pixelsWide: 2240, pixelsHigh: 2600),
+        ExpectedArtifact(filename: "usage-day-clients-other-day-light.png", pixelsWide: 2240, pixelsHigh: 2600),
+        ExpectedArtifact(filename: "usage-day-clients-other-day-dark.png", pixelsWide: 2240, pixelsHigh: 2600),
         ExpectedArtifact(filename: "usage-all-tokens-minimum-light.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "usage-all-tokens-minimum-dark.png", pixelsWide: 1920, pixelsHigh: 1120),
         ExpectedArtifact(filename: "usage-all-tokens-reference-light.png", pixelsWide: 2240, pixelsHigh: 3080),
