@@ -6,6 +6,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-09-23
+
+Recent activity across agents and projects, daily client/model usage exploration, and persisted Work Receipts that open without waiting for a full rebuild — plus Opus 5.5 pricing, historical cost repair, and accurate Codex session recency.
+
+### Added
+
+- Usage now links chart bars and date rows to a client/model breakdown. Select a date to inspect **Fresh**, **Cache read**, **Cache write**, **Total**, and **Cost**, with separate rows when different clients use the same model. Switch between token and cost charts without losing the selected date. The 90-day native view uses daily buckets. Dates are explicitly labeled **Session totals by activity date**: saved cumulative session totals are attributed to their activity date, rather than split into exact daily consumption for sessions spanning several days. Held usage, unknown cache categories, and partial pricing remain identified. (#315)
+- A persisted **Fresh tokens / All tokens** preference for the Usage token chart and the Today strip under Provider limits. Fresh remains the default; the recorded-use summary and tables show fresh, cache, and total tokens side by side. All tokens adds normalized fresh input, output, cache writes, and cache reads once each; Codex inclusive input and reasoning are not counted twice. Missing totals remain unavailable, and the choice does not affect estimated cost or provider quota windows. (#311, #315)
+- Work's project inventory provides recent activity, session counts, and participating clients before a group is saved. **Search sessions** opens a read-only project-label search; optional saved groups provide folder-based membership and a shared timeline. Group details show client participation, recent sessions, token and cost totals, and tool-call, step, and check counts with their recorded coverage. Shared sessions and partial totals remain disclosed. (#316)
+- Standard Claude Opus 5.5 pricing, including five-minute and one-hour cache writes and cache reads, shared by Claude Code through the existing Anthropic alias. Eligible previously unpriced rows can receive estimates on refresh without changing their recorded tokens. This adds standard pricing; estimates remain API-equivalent usage costs, not subscription invoices. (#310)
+
+### Changed
+
+- The macOS Dashboard now leads with recent recorded activity and a compact overview of session status, task counts, and usage. Each activity row retains its client, project, timestamp, outcome, evidence, and cost context. Historical failed checks and blockers are available in the folded **Recorded issues** section; they no longer determine the default presentation. Copying a brief of recorded facts remains available from a **Recorded issues** row's context menu. (#316)
+- Sessions defaults to **Latest**, sorts explicitly by actual activity time, and supports project-name search as well as task and client search. Work groups, project candidates, and group sessions also show recent activity first. Renaming or saving a group does not move it above genuinely newer activity. The issues filter remains available as **With issues**. (#316)
+- Work Receipts present the recorded outcome, participating sessions, estimated cost, claim coverage, and check results together. The activity timeline comes before detailed steps and checks in both wide and compact layouts. Reported outcomes, observed activity, and checked evidence remain distinct; recorded failed attempts stay visible without implying that the user must intervene. (#316)
+- Native work reads use complete projections persisted in SQLite across tasks, receipts, sessions, issues, and timelines. The app opens the last safe generation immediately, including after a recorder restart, and shows its actual capture time with a preparing/updating state. A single low-priority worker coalesces changes, rests according to measured CPU use, and stops starting builds without recent readership; it retains no history of snapshot blobs. The default sustained CPU budget is approximately 10% of one core, so a busy large store can remain on its previous generation for several minutes. The first build still takes time. Deletions, redactions, identity changes, and supported backup restores revoke old content immediately; existing synchronous APIs and write validation remain available. (#313)
+- Usage puts the recorded-use table before provider limits and exposes complete per-date client/model buckets through the API. Small nonzero costs retain a useful chart scale, and incomplete cost coverage stays labeled instead of appearing fully priced. (#315)
+
+### Fixed
+
+- The initial Dashboard refresh is no longer cancelled by a recorder-synchronization state change during launch. The refresh task now uses the readiness state belonging to its own task identity, so a completed synchronization cannot accidentally start work in the obsolete task and leave the window waiting for the next poll. (#316)
+- Historical sessions could stay unpriced after a model entered the catalog because refresh only reconsidered the recent transcript discovery window. `usage import-local --refresh --estimate-costs` and the equivalent watcher path now also reconsider eligible saved unknown-cost rows for the selected clients, without rereading old transcripts. Already-priced rows and source tokens remain unchanged. Rows with ambiguous usage, missing required counters or cache rates, or prior value redaction stay excluded. JSON and dry-run output report `historical_repriced_events`. GPT-6 Astra already had catalog pricing; its affected older Codex rows needed this refresh repair rather than a new model alias. (#312)
+- Codex can update settings on an idle thread, advancing both database metadata and the rollout file's modification time. These maintenance updates no longer move old sessions to the top of the list or stretch their apparent duration. Activity comes from timestamped work and Codex's dedicated recency clock where available, with compatibility fallbacks for older clients. The next normal import refresh repairs previously saved activity dates across Tasks, Sessions, and Receipts. (#314)
+- Work retains visible refresh-failure notices alongside previously loaded groups or project activity. A failed fetch no longer looks like an empty inventory or silently presents retained data as newly refreshed. Missing activity/evidence measurements stay unknown rather than becoming zero. (#316)
+
 ## [0.11.2] — 2026-09-22
 
 A legibility pass across every pane — each fact stated once, in the reader's words — plus a data-quality correctness fix, faster background projection rebuilds, and Work-tab timeline and layout fixes.
@@ -1321,7 +1347,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.0
 [0.11.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.2
 [0.11.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.1
 [0.11.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.0
