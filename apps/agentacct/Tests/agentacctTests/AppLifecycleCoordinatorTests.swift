@@ -1,7 +1,68 @@
+import AppKit
+import SwiftUI
 import XCTest
 @testable import agentacct
 
 final class AppLifecycleCoordinatorTests: XCTestCase {
+    @MainActor
+    func testWindowStartupDoesNotCancelItsInitialDashboardRefresh() async throws {
+        // Exercise the actual SwiftUI task identity transition, not just the
+        // async refresh-loop helper. The first .task can run after its sibling
+        // changes readiness, even though it still belongs to the old identity.
+        let store = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let previousStore = ProcessInfo.processInfo.environment["AGENTACCT_STORE_DIR"]
+        setenv("AGENTACCT_STORE_DIR", store.path, 1)
+        let previousSnapshotMode = SnapshotMode.enabled
+        SnapshotMode.enabled = false
+        defer {
+            SnapshotMode.enabled = previousSnapshotMode
+            if let previousStore { setenv("AGENTACCT_STORE_DIR", previousStore, 1) }
+            else { unsetenv("AGENTACCT_STORE_DIR") }
+        }
+
+        let setup = SetupModel(preloaded: .idle, log: [])
+        let glance = GlanceState(preloadedPhase: .connecting)
+        let lifecycle = AppLifecycleCoordinator(
+            setup: setup, glance: glance,
+            synchronizeCLI: { .notNeeded }, startPolling: {}
+        )
+        // AppDelegate can finish its process-owned startup before the window's
+        // tasks are scheduled (the common already-installed recorder path).
+        _ = await lifecycle.waitUntilReady()
+        let completed = expectation(description: "first dashboard refresh publishes without waiting for the minute timer")
+        var refreshing = false
+        var starts = 0
+        var skipped = 0
+        var cancellations = 0
+        let root = MainWindow(setup: setup, lifecycle: lifecycle, dashboardRefresh: {
+            // Match DashboardStore's single-flight gate and cancellable HTTP.
+            guard !refreshing else { skipped += 1; return }
+            refreshing = true
+            starts += 1
+            defer { refreshing = false }
+            do { try await Task.sleep(for: .milliseconds(150)) }
+            catch { cancellations += 1; return }
+            completed.fulfill()
+        })
+        .environment(DashboardStore())
+        .environment(glance)
+        .environment(AppSelection())
+        let window = NSWindow(
+            contentRect: NSRect(x: -6000, y: -6000, width: 1180, height: 820),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        let hosting = NSHostingView(rootView: root)
+        hosting.sizingOptions = []
+        window.contentView = hosting
+        window.orderFrontRegardless()
+        defer { window.close() }
+        await fulfillment(of: [completed], timeout: 3)
+        XCTAssertEqual(starts, 1)
+        XCTAssertEqual(skipped, 0, "the replacement task must not skip a cancelled refresh then sleep for a minute")
+        XCTAssertEqual(cancellations, 0, "startup must not cancel the only dashboard request")
+    }
+
     @MainActor
     func testWindowRefreshLoopStartsAfterRecoveryAndKeepsRefreshing() async {
         var refreshes = 0
