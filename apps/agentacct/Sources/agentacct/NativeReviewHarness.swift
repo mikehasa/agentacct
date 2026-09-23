@@ -10,9 +10,14 @@ struct NativeTimelineReviewFrame: Decodable {
 }
 
 enum NativeReviewScreen: String, CaseIterable, Identifiable {
-    case usage, compactUsage, largeDashboard, largeUsage, liveTimeline, largeOffline, largeSources, largeTimeline, largeHealth, largeSetup, compactLargeSetup, largeSetupContent, largeActivation, welcome, review, setupContent, working, pending, failure, recovery, recovered, updateRecovery, activation, timeline, recordDetail, focus, work, compactWork, offline, health, sources
+    case dashboard, compactDashboard, usage, compactUsage, largeDashboard, largeWork, largeUsage, liveTimeline, largeOffline, largeSources, largeTimeline, largeHealth, largeSetup, compactLargeSetup, largeSetupContent, largeActivation, welcome, review, setupContent, working, pending, failure, recovery, recovered, updateRecovery, activation, timeline, recordDetail, focus, work, compactWork, offline, health, sources
     var id: String { rawValue }
-    var usesLargeText: Bool { [.largeDashboard, .largeUsage, .largeOffline, .largeSources, .largeTimeline, .largeHealth, .largeSetup, .compactLargeSetup, .largeSetupContent, .largeActivation].contains(self) }
+    var usesLargeText: Bool { [.largeDashboard, .largeWork, .largeUsage, .largeOffline, .largeSources, .largeTimeline, .largeHealth, .largeSetup, .compactLargeSetup, .largeSetupContent, .largeActivation].contains(self) }
+    var mainPane: MainPane {
+        if [.dashboard, .compactDashboard, .largeDashboard].contains(self) { return .dashboard }
+        if [.usage, .compactUsage, .largeUsage].contains(self) { return .usage }
+        return .work
+    }
     var title: String {
         switch self {
         case .largeOffline: return "Large text saved work"
@@ -60,7 +65,7 @@ struct NativeReviewSurface: View {
         }
         _glance = State(initialValue: GlanceState(preloaded: fixture.glanceSnapshot))
         let initialSelection = AppSelection()
-        initialSelection.pane = .work
+        initialSelection.pane = screen.mainPane
         initialSelection.taskId = fixture.work?.receipt.taskId
         _selection = State(initialValue: initialSelection)
         let phase: SetupModel.Phase
@@ -146,10 +151,10 @@ struct NativeReviewSurface: View {
                             }
                         }
                     }
-                case .work, .compactWork, .usage, .compactUsage:
+                case .dashboard, .compactDashboard, .work, .compactWork, .largeWork, .usage, .compactUsage:
                     MainWindow(canSetUpOverride: true)
                         .onAppear {
-                            selection.pane = (screen == .usage || screen == .compactUsage) ? .usage : .work
+                            selection.pane = screen.mainPane
                             selection.taskId = fixture.work?.receipt.taskId
                         }
                 case .health, .largeHealth:
@@ -363,7 +368,7 @@ enum NativeReviewRunner {
         for screen in NativeReviewScreen.allCases where requestedScenes == nil || requestedScenes!.contains(screen.rawValue) {
             for scheme in [ColorScheme.light, .dark] {
                 SnapshotScheme.override = scheme
-                let compact = screen == .largeOffline || screen == .largeSources || screen == .compactWork || screen == .compactUsage || screen == .compactLargeSetup || screen == .largeActivation
+                let compact = screen == .largeOffline || screen == .largeSources || screen == .compactWork || screen == .compactDashboard || screen == .compactUsage || screen == .compactLargeSetup || screen == .largeActivation
                 let tall = screen == .usage || screen == .recordDetail || screen == .sources || screen == .setupContent || screen == .largeSetupContent
                 let size = CGSize(width: screen == .focus ? 1320 : compact ? 960 : 1120, height: compact ? 640 : tall ? 1500 : 860)
                 let view = NativeReviewSurface(fixture: fixture, screen: screen)
