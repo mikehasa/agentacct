@@ -70,6 +70,9 @@ enum WorkGroup: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// A contextual filter, not a queue of actions assigned to the user.
+    var label: String { self == .attention ? "With issues" : rawValue }
+
     /// Buckets never upgrade a claim: "Verified" holds only the machine-
     /// asserted key; agent claims of done-ness group under their own word
     /// ("Reported"); ambient activity stays "Observed". "Stopped" holds the
@@ -109,7 +112,7 @@ func workReceiptNeedsAttention(decisionKey: String?, checksFailed: Int?) -> Bool
 /// The Work surface's shared sort modes. One `WorkBrowseState` drives both the
 /// receipts table and compact master, so detail round-trips preserve order.
 enum WorkSort: String, CaseIterable, Identifiable {
-    case attention, latest, cost
+    case latest, attention, cost
     var id: String { rawValue }
 
     /// The order's name in the sort menu and on its trigger. Raw values stay
@@ -188,6 +191,7 @@ func visibleWorkReceipts(
             ($0.title ?? "").lowercased().contains(needle)
                 || $0.taskId.lowercased().contains(needle)
                 || ($0.primaryRoot?.client ?? "").lowercased().contains(needle)
+                || ($0.project ?? "").lowercased().contains(needle)
         }
     }
     return sortedReceipts(rows, by: sort)
@@ -271,6 +275,7 @@ struct WorkReceiptRowPresentation {
     let checkRunsAreInconsistent: Bool
     let compactCheckRunsText: String
     let clientText: String
+    let projectText: String?
     let costText: String
     let updatedText: String
     let updatedAccessibilityText: String
@@ -310,6 +315,7 @@ struct WorkReceiptRowPresentation {
         checkRunsAreInconsistent = checkRunsPresentation.isInconsistent
         compactCheckRunsText = checkRunsPresentation.headerText
         clientText = task.primaryRoot?.client ?? "unattributed"
+        projectText = selectedDetail?.dimensions.task.boundary?.project ?? task.project
         if let cost = selectedDetail?.dimensions.cost.estimatedCostUsd {
             costText = receiptCostDisplay(
                 cost,
@@ -342,6 +348,7 @@ struct WorkReceiptRowPresentation {
         parts.append(coverageText)
         parts.append(checkRunsText.replacingOccurrences(of: " · ", with: ", "))
         parts.append(clientText)
+        if let projectText, !projectText.isEmpty { parts.append(projectText) }
         parts.append(costText)
         parts.append(updatedAccessibilityText)
         return parts.joined(separator: ". ")
@@ -421,17 +428,25 @@ struct WorkAttentionEmptyCopy: Equatable {
     }
 }
 
-/// Shared ordering for the receipts table and master — one algorithm, so the
-/// two surfaces can never disagree. `.latest` is the daemon's own order
-/// (last_activity_at desc); `.attention` is a stable partition that keeps that
-/// recency inside each half.
+/// Attention pages arrive ranked by issue type. Latest sorts activity times
+/// explicitly, retaining source order for ties and placing unknown times last.
 func sortedReceipts(_ rows: [ReceiptSummary], by sort: WorkSort) -> [ReceiptSummary] {
     switch sort {
     case .attention:
-        let attention = rows.filter { WorkGroup.forTask($0) == .attention }
-        return attention + rows.filter { WorkGroup.forTask($0) != .attention }
+        let recent = sortedReceipts(rows, by: .latest)
+        let attention = recent.filter { WorkGroup.forTask($0) == .attention }
+        return attention + recent.filter { WorkGroup.forTask($0) != .attention }
     case .latest:
-        return rows  // server order: recency
+        return rows.enumerated().sorted { left, right in
+            let lhs = left.element.lastActivityAt.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            let rhs = right.element.lastActivityAt.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+            switch (lhs, rhs) {
+            case let (.some(lhs), .some(rhs)) where lhs != rhs: return lhs > rhs
+            case (.some, .none): return true
+            case (.none, .some): return false
+            default: return left.offset < right.offset
+            }
+        }.map(\.element)
     case .cost:
         return rows.sorted { ($0.cost.estimatedCostUsd ?? -1) > ($1.cost.estimatedCostUsd ?? -1) }
     }
@@ -495,16 +510,16 @@ struct WorkStatusMenu: View {
         FilterMenu(
             title: "Status",
             systemImage: "line.3.horizontal.decrease",
-            value: group?.rawValue ?? "All statuses",
+            value: group?.label ?? "All statuses",
             isActive: group != nil,
-            help: group.map { "Showing \($0.rawValue.lowercased()) tasks" } ?? "Filter tasks by status",
+            help: group.map { "Showing \($0.label.lowercased()) tasks" } ?? "Filter tasks by status",
             identifier: identifier,
             selection: $group
         ) {
             Text("All statuses").tag(nil as WorkGroup?)
             Divider()
             ForEach(WorkGroup.allCases) { candidate in
-                Text(candidate.rawValue).tag(Optional(candidate))
+                Text(candidate.label).tag(Optional(candidate))
             }
         }
     }
@@ -972,12 +987,7 @@ private struct WorkTablePage: View {
             ScrollBox {
                 VStack(alignment: .leading, spacing: 0) {
                     header
-                    tabs(
-                        groupCounts: presentation.groupCounts,
-                        visibleCount: presentation.visibleTasks.count
-                    )
-                    .padding(.top, Space.xl)
-                    filterRow.padding(.top, Space.m)
+                    filterRow.padding(.top, Space.l)
                     if let projection = browse.group == .attention ? dashboard.attentionProjection : dashboard.receiptListProjection {
                         WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot).padding(.top, Space.m)
                     }
@@ -1070,84 +1080,26 @@ private struct WorkTablePage: View {
                 .workFont(.titlePage).tracking(Type.titlePageTracking)
                 .foregroundStyle(Theme.ink)
                 .accessibilityAddTraits(.isHeader)
+            Text("Agent sessions and their recorded work, grouped into task receipts.")
+                .workFont(.caption).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
         }
-    }
-
-    private func tabs(
-        groupCounts: [WorkGroup: Int],
-        visibleCount: Int
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if dynamicTypeSize.isAccessibilitySize {
-                HStack(spacing: Space.m) {
-                    WorkStatusMenu(group: $browse.group, identifier: "work.table.status")
-                    Text("\(visibleCount) shown")
-                        .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    Spacer(minLength: 0)
-                }
-                .padding(.bottom, Space.s)
-            } else {
-                HStack(spacing: Space.xl) {
-                    let partialOrUnknown = workReceiptCollectionIsPartial(
-                        loaded: dashboard.receiptTasks.count,
-                        total: dashboard.totalReceiptTasks,
-                        truncated: dashboard.receiptTasksTruncated
-                    ) || dashboard.totalReceiptTasks == nil
-                    tabButton(nil, label: partialOrUnknown ? "Loaded" : "All", count: dashboard.receiptTasks.count)
-                    ForEach(WorkGroup.allCases) { candidate in
-                        let count: Int? = candidate == .attention
-                            ? dashboard.attention?.total
-                            : (groupCounts[candidate] ?? 0)
-                        // Attention is complete across the store and can exceed
-                        // Loaded; other lifecycle counts describe that page.
-                        // "Other" appears only for an unmapped decision key.
-                        if candidate != .other || (count ?? 0) > 0 {
-                            tabButton(candidate, label: candidate.rawValue, count: count)
-                        }
-                    }
-                }
-            }
-            Rectangle().fill(Theme.hairline).frame(height: 1)
-        }
-    }
-
-    private func tabButton(_ candidate: WorkGroup?, label: String, count: Int?) -> some View {
-        let active = browse.group == candidate
-        return Button {
-            browse.group = candidate
-        } label: {
-            VStack(spacing: 0) {
-                HStack(spacing: 6) {
-                    Text(label)
-                        .workFont(size: 13, weight: active ? .semibold : .medium, relativeTo: .body)
-                        .foregroundStyle(active ? Theme.accent : Theme.ink)
-                    Text(count.map(String.init) ?? "—")
-                        .workFont(.dataSmall)
-                        .foregroundStyle(candidate == .attention && (count ?? 0) > 0 ? Theme.coral : Theme.muted)
-                }
-                .padding(.bottom, 10)
-                Rectangle()
-                    .fill(active ? Theme.accent : .clear)
-                    .frame(height: 2)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(SurfaceButtonStyle())
-        .accessibilityAddTraits(active ? .isSelected : [])
-        .accessibilityIdentifier("work.tab.\(label.lowercased().replacingOccurrences(of: " ", with: "-"))")
     }
 
     private var filterRow: some View {
-        HStack(spacing: Space.m) {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: Space.m))
+            : AnyLayout(HStackLayout(spacing: Space.m))
+        return layout {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11)).foregroundStyle(Theme.muted)
                 if SnapshotMode.enabled {
                     // ImageRenderer draws a TextField as a yellow placeholder;
                     // a snapshot shows the prompt as plain text instead.
-                    Text("Search tasks").workFont(.caption).foregroundStyle(Theme.muted)
+                    Text("Search tasks or projects").workFont(.caption).foregroundStyle(Theme.muted)
                 } else {
-                    TextField("Search tasks", text: $browse.query)
+                    TextField("Search tasks or projects", text: $browse.query)
                         .textFieldStyle(.plain).workFont(.caption)
                         .focused($searchFocused)
                         .accessibilityFocused($searchAccessibilityFocused)
@@ -1161,6 +1113,8 @@ private struct WorkTablePage: View {
                 RoundedRectangle(cornerRadius: Metrics.radius)
                     .strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW)
             )
+            WorkStatusMenu(group: $browse.group, identifier: "work.table.status")
+                .fixedSize()
             WorkSortMenu(sort: $browse.sort, identifier: "work.table.sort", minHeight: 32)
                 .fixedSize()
             DecisionLegendButton()
@@ -1338,12 +1292,11 @@ private struct WorkTablePage: View {
 
     private var columnHeader: some View {
         HStack(spacing: Space.l) {
-            CapsLabel(text: "Task").frame(maxWidth: .infinity, alignment: .leading)
-            CapsLabel(text: "Claims supported").frame(width: 150, alignment: .leading)
-            CapsLabel(text: "Client").frame(width: 124, alignment: .leading)
-            CapsLabel(text: "Check runs").frame(width: 130, alignment: .trailing)
+            CapsLabel(text: "Task / agent").frame(maxWidth: .infinity, alignment: .leading)
+            CapsLabel(text: "Activity").frame(width: 90, alignment: .leading)
+            CapsLabel(text: "Outcome").frame(width: 124, alignment: .leading)
+            CapsLabel(text: "Evidence").frame(width: 190, alignment: .leading)
             CapsLabel(text: "Est. cost").frame(width: 76, alignment: .trailing)
-            CapsLabel(text: "Updated").frame(width: 72, alignment: .trailing)
         }
         .padding(.horizontal, Space.xl)
         .frame(height: Metrics.rowHeader)
@@ -1400,14 +1353,14 @@ private struct WorkTablePage: View {
         if dashboard.totalReceiptTasks == nil || dashboard.receiptTasksTruncated == true {
             return "No loaded receipts match. The store did not report a complete total, so more receipts may exist."
         }
-        return "Adjust the lifecycle tab or the filter to broaden the result."
+        return "Adjust the status filter or search to broaden the result."
     }
 
 
 }
 
-/// One receipts-table row (52pt): task + decision badge, evidence tier pip and
-/// ratio, client chip, check runs, cost, and recency.
+/// A session-oriented receipt row: task and agent/project context lead,
+/// followed by activity, recorded outcome, evidence, and cost.
 private struct WorkTableRow: View {
     let task: ReceiptSummary
     let focus: FocusState<String?>.Binding
@@ -1428,11 +1381,22 @@ private struct WorkTableRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: Space.l) {
-                HStack(spacing: Space.m) {
+                VStack(alignment: .leading, spacing: Space.xs) {
                     Text(presentation.title)
                         .workFont(.rowLabel).foregroundStyle(Theme.ink)
                         .lineLimit(1).truncationMode(.tail)
                         .help(presentation.title)
+                    Text([presentation.clientText, presentation.projectText].compactMap { $0 }.joined(separator: " · "))
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                        .help([presentation.clientText, presentation.projectText].compactMap { $0 }.joined(separator: " · "))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(presentation.updatedText)
+                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    .frame(width: 90, alignment: .leading)
+                VStack(alignment: .leading, spacing: Space.xs) {
                     DecisionBadge(
                         key: presentation.decisionKey,
                         label: presentation.decisionLabel,
@@ -1447,18 +1411,18 @@ private struct WorkTableRow: View {
                         Chip(text: "↗ handed off", tint: Theme.muted)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: 124, alignment: .leading)
 
-                evidenceCell.frame(width: 150, alignment: .leading)
-                clientCell.frame(width: 124, alignment: .leading)
-                checksCell.frame(width: 130, alignment: .trailing)
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    evidenceCell
+                    Text("Checks: \(presentation.compactCheckRunsText)")
+                        .workFont(.caption).foregroundStyle(presentation.checkRunsAreInconsistent ? Theme.amber : Theme.muted)
+                        .lineLimit(1).help(presentation.checkRunsText)
+                }.frame(width: 190, alignment: .leading)
                 costCell.frame(width: 76, alignment: .trailing)
-                Text(presentation.updatedText)
-                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
-                    .frame(width: 72, alignment: .trailing)
             }
             .padding(.horizontal, Space.xl)
-            .frame(minHeight: Metrics.rowTable)
+            .frame(minHeight: 64)
             .contentShape(Rectangle())
         }
         .buttonStyle(SurfaceButtonStyle(
@@ -1497,15 +1461,6 @@ private struct WorkTableRow: View {
         }
     }
 
-    @ViewBuilder
-    private var clientCell: some View {
-        if presentation.clientText != "unattributed" {
-            ProvenanceChip(text: presentation.clientText)
-        } else {
-            Text("unattributed").workFont(.dataSmall).foregroundStyle(Theme.muted)
-        }
-    }
-
     /// Cost with the ~/≈ prefix grammar; a task with no priced usage is a
     /// named state, never a dash.
     @ViewBuilder
@@ -1519,39 +1474,10 @@ private struct WorkTableRow: View {
         }
     }
 
-    /// The standard table uses the same honest compact presentation as the
-    /// master list, including missing and contradictory tally states.
-    @ViewBuilder
-    private var checksCell: some View {
-        if presentation.checkRunsAreInconsistent {
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(presentation.checkRunsValue)
-                    .workFont(.dataSmall).foregroundStyle(Theme.amber)
-                Text(presentation.checkRunsQualifier)
-                    .workFont(.dataSmall).foregroundStyle(Theme.muted)
-            }
-            .lineLimit(1)
-            .help(presentation.checkRunsText)
-            .frame(maxWidth: .infinity, alignment: .trailing)
-        } else {
-            let text = presentation.compactCheckRunsText
-            Text(text)
-                .workFont(.dataSmall)
-                .foregroundStyle(
-                    text.contains("failed")
-                        ? Theme.coral
-                        : (text.contains("not reported")
-                            ? Theme.amber
-                            : text == "no check runs" ? Theme.muted : Theme.ink)
-                )
-                .lineLimit(2)
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: .infinity, alignment: .trailing)
-        }
-    }
+
 }
 
-/// Accessibility text sizes trade the fixed six-column task table for a
+/// Accessibility text sizes trade the fixed-column task table for a
 /// complete vertical record summary. No fact disappears; labels and values can
 /// wrap without colliding with neighboring columns.
 private struct WorkAccessibleTableRow: View {
@@ -1572,12 +1498,13 @@ private struct WorkAccessibleTableRow: View {
                     compact: true
                 )
                 if let reason = presentation.attentionReason, !reason.isEmpty {
-                    Text(reason).workFont(.caption).foregroundStyle(Theme.coral)
+                    Text(reason).workFont(.caption).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 labelledValue("Claims supported", presentation.coverageText)
                 labelledValue("Check runs", presentation.checkRunsText)
                 labelledValue("Client", presentation.clientText)
+                if let project = presentation.projectText { labelledValue("Project", project) }
                 labelledValue("Estimated cost", presentation.costText)
                 labelledValue("Updated", presentation.updatedText)
                 if presentation.handedOff {
@@ -1813,10 +1740,10 @@ private struct WorkMasterList: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11)).foregroundStyle(Theme.muted)
                 if SnapshotMode.enabled {
-                    Text(browse.query.isEmpty ? "Search tasks" : browse.query)
+                    Text(browse.query.isEmpty ? "Search tasks or projects" : browse.query)
                         .workFont(.caption).foregroundStyle(Theme.muted)
                 } else {
-                    TextField("Search tasks", text: $browse.query)
+                    TextField("Search tasks or projects", text: $browse.query)
                         .textFieldStyle(.plain).workFont(.caption)
                         .accessibilityIdentifier("work.master.search")
                 }
@@ -1926,18 +1853,20 @@ private struct WorkMasterRow: View {
                     .help(presentation.decisionHelp)
                 }
 
-                if let reason = presentation.attentionReason, !reason.isEmpty {
-                    Text(verbatim: reason)
-                        .workFont(.caption).foregroundStyle(Theme.coral)
-                        .lineLimit(2)
-                }
-
                 HStack(spacing: 5) {
-                    Text(presentation.clientText)
+                    Text([presentation.clientText, presentation.projectText].compactMap { $0 }.joined(separator: " · "))
+                        .lineLimit(1)
                     Spacer(minLength: 4)
                     Text(presentation.updatedText)
                 }
                 .workFont(.dataSmall).foregroundStyle(Theme.muted)
+
+                if let reason = presentation.attentionReason, !reason.isEmpty {
+                    Text(verbatim: reason)
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                        .lineLimit(1)
+                        .help(reason)
+                }
             }
             .padding(.horizontal, Space.l)
             .padding(.vertical, Space.m)
@@ -2007,13 +1936,9 @@ struct WorkRecordPage: View {
                     }
                     ReceiptOverview(receipt: receipt)
                         .padding(.top, compactViewport ? Space.s : Space.l)
-                    if let blocker = receipt.axes.decisionStatus.blocker, blocker.text != nil {
-                        BlockerCallout(blocker: blocker, taskId: receipt.taskId)
-                            .padding(.top, Space.m)
-                    }
                     sectionNavigation(proxy: proxy).padding(.top, Space.m)
-                    // Stable section identities preserve timeline inspector and
-                    // step expansion state when Focus timeline reorders them.
+                    // Stable identities retain inspector and step state when
+                    // Focus timeline changes the available viewport.
                     VStack(alignment: .leading, spacing: Space.xl) {
                         ForEach(orderedSections(proxy: proxy)) { section in
                             section.view.id("work.record.\(section.id)")
@@ -2056,9 +1981,9 @@ struct WorkRecordPage: View {
             HStack(spacing: Space.s) { sectionLinks(proxy: proxy) }
             VStack(alignment: .leading, spacing: Space.xs) {
                 HStack(spacing: Space.s) {
+                    sectionLink("Activity", section: "timeline", proxy: proxy)
                     sectionLink("Steps", section: "steps", proxy: proxy)
                     sectionLink("Checks", section: "checks", proxy: proxy)
-                    sectionLink("Activity", section: "timeline", proxy: proxy)
                 }
                 HStack(spacing: Space.s) {
                     if !otherSessionMembers.isEmpty {
@@ -2075,9 +2000,9 @@ struct WorkRecordPage: View {
 
     @ViewBuilder
     private func sectionLinks(proxy: ScrollViewProxy) -> some View {
+        sectionLink("Activity", section: "timeline", proxy: proxy)
         sectionLink("Steps", section: "steps", proxy: proxy)
         sectionLink("Checks", section: "checks", proxy: proxy)
-        sectionLink("Activity", section: "timeline", proxy: proxy)
         if !otherSessionMembers.isEmpty {
             sectionLink("Other sessions", section: "subagents", proxy: proxy)
         }
@@ -2093,9 +2018,8 @@ struct WorkRecordPage: View {
         .accessibilityIdentifier("work.receipt.jump.\(section)")
     }
 
-    /// The activity timeline band, inline (never tabbed). Kept as a function so
-    /// both orderings (steps-first, or timeline-first under "Focus timeline")
-    /// share the one scroll proxy that drives its reveal callbacks.
+    /// The timeline stays inline and mounted; hiding the session list changes
+    /// available space without changing timeline navigation state.
     private func timelineView(proxy: ScrollViewProxy) -> some View {
         WorkTimelineView(receipt: receipt,
             onRevealInspector: { proxy.scrollTo("work.timeline.inspector", anchor: .top) },
@@ -2136,8 +2060,23 @@ struct WorkRecordPage: View {
     }
 
     private var checksSection: some View {
-        RecordChecksCard(evidence: receipt.dimensions.evidence, taskId: receipt.taskId,
-                         initiallyShowsRoutineGroups: false)
+        VStack(alignment: .leading, spacing: Space.m) {
+            RecordChecksCard(evidence: receipt.dimensions.evidence, taskId: receipt.taskId,
+                             initiallyShowsRoutineGroups: false)
+            if let blocker = receipt.axes.decisionStatus.blocker, let text = blocker.text {
+                DisclosureGroup {
+                    BlockerCallout(blocker: blocker, taskId: receipt.taskId)
+                        .padding(.top, Space.s)
+                } label: {
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        Text("Recorded blocker").workFont(.captionSemibold).foregroundStyle(Theme.ink)
+                        Text(verbatim: text).workFont(.caption).foregroundStyle(Theme.muted).lineLimit(2)
+                    }
+                }
+                .workFont(.caption)
+                .accessibilityIdentifier("work.receipt.blocker-context")
+            }
+        }
     }
 
     private var primaryKey: String? {
@@ -2247,25 +2186,20 @@ struct WorkRecordPage: View {
         }
     }
 
-    /// One reorderable section of the record body, carried with a stable id so
-    /// the "Focus timeline" reorder preserves each section's view identity (and
-    /// thus its @State) instead of rebuilding it.
+    /// Stable identities keep the reader's timeline and disclosure state.
     private struct OrderedSection: Identifiable {
         let id: String
         let view: AnyView
     }
 
-    /// Steps → checks → timeline → subagents → supporting, or timeline first under
-    /// "Focus timeline". Same views, same ids, only the order changes.
+    /// Activity leads in both layouts; detailed steps and check evidence follow.
     private func orderedSections(proxy: ScrollViewProxy) -> [OrderedSection] {
         let steps = OrderedSection(id: "steps", view: AnyView(stepsSection))
         let checks = OrderedSection(id: "checks", view: AnyView(checksSection))
         let timeline = OrderedSection(id: "timeline", view: AnyView(timelineView(proxy: proxy)))
         let subagents = OrderedSection(id: "subagents", view: AnyView(subagentsSection))
         let supporting = OrderedSection(id: "supporting", view: AnyView(supportingSections))
-        return timelineFocused
-            ? [timeline, steps, checks, subagents, supporting]
-            : [steps, checks, timeline, subagents, supporting]
+        return [timeline, steps, checks, subagents, supporting]
     }
 
     /// Detailed usage and provenance stay available without dominating the

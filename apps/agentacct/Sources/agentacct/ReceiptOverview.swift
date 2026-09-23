@@ -52,13 +52,14 @@ struct ReceiptOverviewPresentation {
 
 struct ReceiptOverview: View {
     let receipt: Receipt
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         let presentation = ReceiptOverviewPresentation(receipt: receipt)
         Card(padding: Space.l) {
             VStack(alignment: .leading, spacing: Space.m) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Current outcome").workFont(.rowLabel)
+                    Text("Recorded outcome").workFont(.rowLabel)
                         .foregroundStyle(Theme.ink)
                         .accessibilityAddTraits(.isHeader)
                     Spacer(minLength: Space.s)
@@ -70,17 +71,13 @@ struct ReceiptOverview: View {
                     .textSelection(.enabled)
 
                 Rectangle().fill(Theme.hairline).frame(height: 1)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: Space.l, alignment: .leading)],
-                          alignment: .leading, spacing: Space.m) {
-                    metric("Claims supported", value: presentation.coverage.value,
-                           detail: presentation.coverage.qualifier,
-                           tint: presentation.coverage.isInconsistent ? Theme.amber : Theme.ink)
-                        .help("Claim coverage measures recorded evidence for checkable claims. It is separate from the number of check runs.")
-                    metric("Check runs", value: presentation.checks.value,
-                           detail: presentation.checks.qualifier,
-                           tint: presentation.checks.isInconsistent ? Theme.amber : Theme.ink)
-                    metric("Cost", value: presentation.costValue, detail: presentation.costQualifier)
-                    metric("Sessions", value: presentation.sessionsValue, detail: presentation.sessionsQualifier)
+                if dynamicTypeSize.isAccessibilitySize {
+                    metrics(presentation, columns: 1)
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        metrics(presentation, columns: 4).frame(minWidth: 920)
+                        metrics(presentation, columns: 2)
+                    }
                 }
                 if let note = presentation.evidenceNote {
                     Text(note).workFont(.caption).foregroundStyle(Theme.muted)
@@ -89,6 +86,21 @@ struct ReceiptOverview: View {
             }
         }
         .accessibilityIdentifier("work.receipt.overview")
+    }
+
+    private func metrics(_ presentation: ReceiptOverviewPresentation, columns: Int) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), spacing: Space.l, alignment: .leading), count: columns),
+                  alignment: .leading, spacing: Space.m) {
+            metric("Sessions", value: presentation.sessionsValue, detail: presentation.sessionsQualifier)
+            metric("Cost", value: presentation.costValue, detail: presentation.costQualifier)
+            metric("Claims supported", value: presentation.coverage.value,
+                   detail: presentation.coverage.qualifier,
+                   tint: presentation.coverage.isInconsistent ? Theme.amber : Theme.ink)
+                .help("Claim coverage measures recorded evidence for checkable claims. It is separate from the number of check runs.")
+            metric("Check runs", value: presentation.checks.value,
+                   detail: presentation.checks.qualifier,
+                   tint: presentation.checks.isInconsistent ? Theme.amber : Theme.ink)
+        }
     }
 
     private func metric(_ label: String, value: String, detail: String, tint: Color = Theme.ink) -> some View {
