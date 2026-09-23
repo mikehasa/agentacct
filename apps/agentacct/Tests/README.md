@@ -300,31 +300,37 @@ open /tmp/agentacct-dashboard-review
 
 Keep ad-hoc PNGs outside the repository.
 
-## Usage & limits review matrix
+## Usage review matrix
 
-The Usage renderer drives the merged destination with provider windows,
-calibration states, a usage-only client, today's totals, and ranged history
-from the same versioned fixture as Dashboard.
+The Usage renderer puts recorded totals, selectable dates, and client/model
+rows first. Provider limits remain a separate disclosure below the table.
+The original fixture lanes preserve legacy payload compatibility; the additive
+`usage_daily_breakdown` lane separates the same model across Codex and Hermes,
+with reported zero, missing cache creation, partial costs, and different dates.
 
-| Artifact | Viewport | Pixel size |
+Every configuration renders in light and dark appearances (24 PNGs total):
+
+| Artifact prefix | Viewport | Coverage |
 | --- | --- | --- |
-| `usage-chart-peak-selected-light.png` | 1120 × 1120 pt, light; the peak bar selected, so the tooltip carries the value and no peak label prints | 2240 × 2240 px |
-| `usage-chart-peak-selected-dark.png` | same state, dark | 2240 × 2240 px |
-| `usage-chart-peak-elsewhere-light.png` | 1120 × 1120 pt, light; another bar selected, so the tooltip and the peak label both show | 2240 × 2240 px |
-| `usage-chart-peak-elsewhere-dark.png` | same state, dark | 2240 × 2240 px |
-| `usage-minimum-light.png` | 960 × 560 pt minimum window, light; full navigation and first complete capacity row | 1920 × 1120 px |
-| `usage-minimum-dark.png` | 960 × 560 pt minimum window, dark; same hierarchy | 1920 × 1120 px |
-| `usage-reference-light.png` | 1120 × 900 pt standard window, light; complete capacity ledger plus history entry | 2240 × 1800 px |
-| `usage-reference-dark.png` | 1120 × 900 pt standard window, dark; same hierarchy | 2240 × 1800 px |
-| `usage-disconnected-reference-light.png` | 1120 × 900 pt, light; capacity unavailable while retained usage includes By client | 2240 × 1800 px |
-| `usage-disconnected-reference-dark.png` | 1120 × 900 pt, dark; same independent-lane fallback | 2240 × 1800 px |
-| `usage-about-expanded-light.png` | 1120 × 2400 pt, light; the whole page with "About these numbers" open (This range basis, cost grammar, windows, plan share) | 2240 × 4800 px |
-| `usage-about-expanded-dark.png` | 1120 × 2400 pt, dark; same state | 2240 × 4800 px |
+| `usage-minimum` | 960 × 560 pt | Minimum window and bounded date table |
+| `usage-reference` | 1120 × 900 pt | Recorded totals and legacy date buckets |
+| `usage-weekly-reference` | 1120 × 1120 pt | Explicit legacy weekly bucket labels |
+| `usage-chart-peak-selected` | 1120 × 1120 pt | Peak date selected |
+| `usage-chart-peak-elsewhere` | 1120 × 1120 pt | Another date selected |
+| `usage-disconnected-reference` | 1120 × 900 pt | Retained recorded usage without live capacity |
+| `usage-about-expanded` | 1120 × 2400 pt | Expanded cost and plan explanation |
+| `usage-all-tokens-minimum` | 960 × 560 pt | All-token counting at minimum size |
+| `usage-all-tokens-reference` | 1120 × 1540 pt | All-token totals and date selection |
+| `usage-all-tokens-weekly` | 1120 × 1540 pt | All-token counting in legacy weekly buckets |
+| `usage-day-clients-reference` | 1120 × 1300 pt | Selected date with Codex/Hermes model separation |
+| `usage-day-clients-other-day` | 1120 × 1300 pt | Different date and different client/model rows |
 
-`UsageCapacityTests` separately covers row union/order, duplicate windows,
-stale visibility, unnamed identity isolation, threshold copy, elapsed reset
-timestamps, nil-versus-zero accessibility, safe malformed window spans, exact
-daily plan detail, large client sets, and the four-tab contract.
+PNG dimensions are twice the point dimensions. `UsageDailyBreakdownTests`
+checks selection, identity, absent versus zero categories, held usage, partial
+cost compatibility, and small-value chart scales. `UsageCapacityTests` retains
+coverage for provider windows and plan details. Real native windows verify the
+scrollable date table; noninteractive image renders paint the same bounded row
+window directly because ImageRenderer does not paint native scroll contents.
 
 For an ad-hoc Usage render that does not compare or update references:
 
@@ -760,6 +766,5 @@ weekly copy and accessibility. The synthetic fixture reconciles every client,
 model, period and client-series total in both modes. The Usage matrix includes
 `all-tokens-minimum`, `all-tokens-reference` and `all-tokens-weekly` in both
 appearances. These snapshots inject their own counting basis, so saved user
-preferences cannot change the reference render. The all-token configurations
-also show the token chart, while the original configurations retain the cost
-chart.
+preferences cannot change the reference render. All configurations show the token chart; native interaction checks exercise
+Cost/Tokens switching while preserving the selected date.
