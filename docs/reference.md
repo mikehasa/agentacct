@@ -178,6 +178,32 @@ curl http://127.0.0.1:8765/ingestion/health
 curl http://127.0.0.1:8765/events/summary
 ```
 
+`GET /usage/summary?days=7&granularity=daily` returns saved usage grouped by
+client, model and local calendar date. `days` accepts `7`, `30`, `90`, or `all`;
+`granularity` accepts `daily`, `weekly`, or `auto` (daily for 7/30, weekly for
+90/all). A selected `by_period[]` entry contains `by_client`, a dictionary keyed
+by client, and `by_model`, a list keyed by `(client, provider, model)`. Both carry
+the full bucket fields used by the top-level totals: input, output, fresh,
+cache-creation, cache-read and total tokens, session counts, cost and reporting
+coverage. The same model used through Hermes and Codex remains separate.
+
+`fresh_tokens = input_tokens + output_tokens`;
+`total_tokens_including_cached` adds normalized cache reads and writes once.
+Cache reporting fields distinguish a reported zero from unknown/not-reported
+counters. A null cost means unavailable, not free; inspect `cost_complete`,
+`priced_rows`, `unpriced_rows`, `usage_availability` and `cost_confidence_label`
+before presenting an estimate as a complete total. `known_additive_cost_usd`
+retains the priced subset when unproven cumulative rows are held from totals.
+
+`period_attribution` explicitly reports `basis: saved_session_row`,
+`timezone: daemon_local` and `exact_daily_usage: false`. Existing import rows
+contain session/model totals. They belong to the Hermes session-start date or,
+for other clients, their latest saved activity date (with the canonical timestamp
+fallbacks). A multi-day session is not divided into fictional daily amounts.
+Weekly periods use their Monday; unknown timestamps appear only in the all-time
+`unknown` bucket and are counted separately in bounded ranges. Empty periods
+have empty client/model breakdowns, rather than unknown-model zero rows.
+
 `/events/summary?limit=N` keeps its recent-event aggregates bounded, but join-health counters and coverage ratios are computed over every matching event in the store. Machine consumers must inspect `result_scope.partial` and the bridge's `detail_scope.partial`: `links`, `attributions`, and `unlinked_contexts` may be capped even when the canonical full-store ratios are complete. A degraded response includes stable `degraded_reasons` instead of treating one successful join as healthy.
 
 Evidence v2 is additive and enabled by default. It shadows event-ledger writes; it does not rename any public `agentacct_*` MCP tool. The authoritative event ledger is `events.sqlite3` by default; an adopted `events.jsonl` store remains available as a transition backup, and `AGENTACCT_EVENT_LOG_AUTHORITATIVE=0` explicitly selects the legacy flat-ledger mode. Inspect or replay Evidence v2 with:

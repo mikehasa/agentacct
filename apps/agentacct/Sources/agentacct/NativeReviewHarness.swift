@@ -10,7 +10,7 @@ struct NativeTimelineReviewFrame: Decodable {
 }
 
 enum NativeReviewScreen: String, CaseIterable, Identifiable {
-    case largeDashboard, largeUsage, liveTimeline, largeOffline, largeSources, largeTimeline, largeHealth, largeSetup, compactLargeSetup, largeSetupContent, largeActivation, welcome, review, setupContent, working, pending, failure, recovery, recovered, updateRecovery, activation, timeline, recordDetail, focus, work, compactWork, offline, health, sources
+    case usage, compactUsage, largeDashboard, largeUsage, liveTimeline, largeOffline, largeSources, largeTimeline, largeHealth, largeSetup, compactLargeSetup, largeSetupContent, largeActivation, welcome, review, setupContent, working, pending, failure, recovery, recovered, updateRecovery, activation, timeline, recordDetail, focus, work, compactWork, offline, health, sources
     var id: String { rawValue }
     var usesLargeText: Bool { [.largeDashboard, .largeUsage, .largeOffline, .largeSources, .largeTimeline, .largeHealth, .largeSetup, .compactLargeSetup, .largeSetupContent, .largeActivation].contains(self) }
     var title: String {
@@ -146,10 +146,10 @@ struct NativeReviewSurface: View {
                             }
                         }
                     }
-                case .work, .compactWork:
+                case .work, .compactWork, .usage, .compactUsage:
                     MainWindow(canSetUpOverride: true)
                         .onAppear {
-                            selection.pane = .work
+                            selection.pane = (screen == .usage || screen == .compactUsage) ? .usage : .work
                             selection.taskId = fixture.work?.receipt.taskId
                         }
                 case .health, .largeHealth:
@@ -363,8 +363,8 @@ enum NativeReviewRunner {
         for screen in NativeReviewScreen.allCases where requestedScenes == nil || requestedScenes!.contains(screen.rawValue) {
             for scheme in [ColorScheme.light, .dark] {
                 SnapshotScheme.override = scheme
-                let compact = screen == .largeOffline || screen == .largeSources || screen == .compactWork || screen == .compactLargeSetup || screen == .largeActivation
-                let tall = screen == .recordDetail || screen == .sources || screen == .setupContent || screen == .largeSetupContent
+                let compact = screen == .largeOffline || screen == .largeSources || screen == .compactWork || screen == .compactUsage || screen == .compactLargeSetup || screen == .largeActivation
+                let tall = screen == .usage || screen == .recordDetail || screen == .sources || screen == .setupContent || screen == .largeSetupContent
                 let size = CGSize(width: screen == .focus ? 1320 : compact ? 960 : 1120, height: compact ? 640 : tall ? 1500 : 860)
                 let view = NativeReviewSurface(fixture: fixture, screen: screen)
                     .frame(width: size.width, height: size.height)

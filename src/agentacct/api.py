@@ -4479,7 +4479,10 @@ def create_local_api_app(
         same trusted-import intake every dashboard surface shares, so
         diagnostic events and shadowed legacy rows never enter, and no live
         scan runs. JSON parity with the /tokens explorer (the chart's
-        per-period platform split rides in by_period[].by_client).
+        per-period platform split rides in by_period[].by_client, with
+        full token/cost coverage and model lanes in by_period[].by_model).
+        ``period_attribution`` discloses that cumulative saved session rows
+        are assigned to one local date, not split into per-call daily usage.
 
         ``client``/``days``/``granularity`` are whitelisted → 422 on unknown
         values. ``model`` is echoed and validated against models present in
@@ -4562,6 +4565,17 @@ def create_local_api_app(
                 "granularity_requested": granularity,
                 "model_matches_saved_rows": model == "all" or model in models_in_records(
                     [*records, *usage_view.excluded_saved_records]
+                ),
+            },
+            "period_attribution": {
+                "basis": "saved_session_row",
+                "timezone": "daemon_local",
+                "exact_daily_usage": False,
+                "label": "Session totals by activity date",
+                "description": (
+                    "Session totals are assigned to their saved activity date "
+                    "(Hermes: session start; other clients: latest saved activity). "
+                    "Multi-day sessions are not split into exact daily usage."
                 ),
             },
             "totals": cube["totals"],

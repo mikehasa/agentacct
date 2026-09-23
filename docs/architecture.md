@@ -173,6 +173,26 @@ This is deliberately separate from subjective value judgment.
 
 The cost ledger records local estimates, exact token usage when a provider returns it, and provider-reported dollar costs when available.
 
+### Usage period breakdowns
+
+The shared usage cube aggregates the same trusted saved rows into full-range
+and per-period client/model buckets. The native Usage chart selects a period
+already in the response; its table does not reread client logs. Every level
+retains cache-reporting status, pricing coverage and held-row exclusions.
+The model identity includes client and provider, so an identical model label
+used through different clients does not collapse into one row.
+
+Dates currently attribute whole saved session/model totals: Hermes uses session
+start, and other clients use the latest saved activity, in the daemon's local
+timezone. The API exposes this limitation as `period_attribution`; these totals
+are not an exact account of work performed during each day. Achieving that
+requires importers to retain numeric day/model slices *after* Claude replay
+deduplication and Codex lineage/delta normalization, followed by historical
+reimport. Such slices should stay attached to their source row so session and
+evidence identity remain stable. Hermes's imported session counters have no
+per-call timing; that source must retain an explicit unsplit fallback unless
+additional evidence becomes available. No interpolation is performed.
+
 ### Local API
 
 The local API is for scripts, native shells, and local integrations.

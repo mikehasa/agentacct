@@ -9,7 +9,6 @@ protocol UsageTokenValues {
 
 extension UsageBucket: UsageTokenValues {}
 extension PeriodBucket: UsageTokenValues {}
-extension PeriodClientSlice: UsageTokenValues {}
 extension UsageTotals: UsageTokenValues {}
 
 enum UsageTokenBasis: String, CaseIterable, Identifiable {
@@ -20,7 +19,7 @@ enum UsageTokenBasis: String, CaseIterable, Identifiable {
     var label: String { self == .fresh ? "Fresh tokens" : "All tokens" }
     var qualifier: String { self == .fresh ? "excludes cache · client-reported" : "includes cache · client-reported" }
 
-    static let explanation = "Fresh tokens count non-cached input + output. All tokens also include recorded cache creation and cache reads, once each. Reasoning already included in output is not added again. Counts measure token traffic, including repeated context, not unique text. Only client-reported categories are included; unreported usage is not inferred. This choice updates tokens throughout this page; cost and provider limits stay the same."
+    static let explanation = "Fresh tokens count non-cached input + output. All tokens also include recorded cache creation and cache reads, once each. Reasoning already included in output is not added again. Counts measure token traffic, including repeated context, not unique text. Only client-reported categories are included; unreported usage is not inferred. This choice changes the chart. Tables always show fresh tokens, cache and total side by side; cost and provider limits stay the same."
 
     func value(_ usage: (any UsageTokenValues)?) -> Int? {
         // Do not turn an absent all-token field into a fresh count or a zero.

@@ -1,8 +1,7 @@
 import SwiftUI
 
-// One decision surface: provider-reported capacity first, independently ranged
-// recorded usage second. The two lanes share client rows but never a denominator,
-// freshness claim, error state, or range control.
+// Recorded token traffic is the primary surface. Provider quota windows stay
+// separate, below the date/client/model ledger.
 struct UsagePane: View {
     @Environment(DashboardStore.self) var dashboard
     @Environment(GlanceState.self) var glance
@@ -14,13 +13,24 @@ struct UsagePane: View {
 
     @State private var showStale = false
     @State private var showAbout = false
+    @State private var showCapacity = false
 
     var body: some View {
         ScrollBox {
             VStack(alignment: .leading, spacing: 0) {
                 header
-                capacitySection.padding(.top, Space.xl)
-                recordedUsageSection.padding(.top, Space.xl)
+                recordedUsageSection.padding(.top, Space.l)
+                DisclosureGroup(isExpanded: $showCapacity) {
+                    capacitySection.padding(.top, Space.m)
+                } label: {
+                    HStack {
+                        Text("Provider limits").workFont(.rowLabel).foregroundStyle(Theme.ink)
+                        Spacer()
+                        Text("Live capacity · separate provider windows").workFont(.caption).foregroundStyle(Theme.muted)
+                    }
+                }
+                .accessibilityIdentifier("usage.capacity.disclosure")
+                .padding(.top, Space.xl)
                 aboutSection.padding(.top, Space.xl)
             }
             .padding(Space.gutter)
@@ -34,23 +44,11 @@ struct UsagePane: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: Space.m) {
-            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
-                Text("Usage & limits")
-                    .workFont(.titlePage).tracking(Type.titlePageTracking)
-                    .foregroundStyle(Theme.ink)
-                ContextHelp(title: "About usage and limits", message: "Provider-reported capacity and locally recorded usage have separate time windows. Changing the recorded usage range updates client totals, history and attribution; it does not change provider quota windows or today's summary.", identifier: "usage.range-help")
-            }
-            HStack(spacing: Space.m) {
-                Text("Recorded usage range").workFont(.caption).foregroundStyle(Theme.muted)
-                usageRangeControl
-            }
-            // Notices occupy the top-right corner, so keep the page-wide
-            // token choice on the leading edge even when capacity is offline.
-            HStack(spacing: Space.s) {
-                UsageTokenBasisControl(selection: Binding(get: { tokenBasis }, set: { savedTokenBasis = $0 }))
-                ContextHelp(title: "How tokens are counted", message: UsageTokenBasis.explanation, identifier: "usage.tokens.help")
-            }
+        HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+            Text("Usage").workFont(.titlePage).tracking(Type.titlePageTracking).foregroundStyle(Theme.ink)
+            Text("Recorded tokens and cost").workFont(.caption).foregroundStyle(Theme.muted)
+            Spacer()
+            usageRangeControl
         }
     }
 
@@ -201,56 +199,19 @@ struct UsagePane: View {
     @ViewBuilder
     private var recordedUsageSection: some View {
         VStack(alignment: .leading, spacing: Space.m) {
-            VStack(alignment: .leading, spacing: Space.s) {
-                HStack(alignment: .firstTextBaseline, spacing: Space.s) {
-                    Text("Recorded usage")
-                        .workFont(.titleSection).tracking(Type.titleSectionTracking)
-                        .foregroundStyle(Theme.ink)
-                    ContextHelp(title: "About recorded cost", message: "Cost is usage reporting, not a provider invoice or balance due. Verify charges with your provider. Cost basis and completeness are shown beside each total.", identifier: "usage.cost-help")
-                }
-            }
-
             if let error = dashboard.errorText {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .workFont(.caption).foregroundStyle(Theme.coral)
             }
-
             if let usage = dashboard.usage {
-                summaryStrip(usage)
-                if let periods = usage.byPeriod, periods.count > 1 {
-                    UsagePeriodChart(
-                        periods: periods,
-                        presentation: UsagePeriodPresentation(usage: usage)
-                    )
-                }
-                if !capacityIsConnected {
-                    UsageBreakdownTable(
-                        title: "By client",
-                        nameHeader: "Client",
-                        days: dashboard.usageDays,
-                        rows: usage.byClient.map { ($0.client ?? "Unattributed client", $0) }
-                    )
-                }
-                UsageBreakdownTable(
-                    title: "By model",
-                    nameHeader: "Model",
-                    days: dashboard.usageDays,
-                    rows: usage.byModel.map { ($0.model ?? "Unattributed model", $0) }
-                )
+                UsageRecordedExplorer(usage: usage, days: dashboard.usageDays,
+                    tokenBasis: Binding(get: { tokenBasis }, set: { savedTokenBasis = $0 }))
             } else {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Recorded usage not loaded").workFont(.rowLabel).foregroundStyle(Theme.ink)
-                    Text("Capacity may still be available above while the usage summary loads.")
-                        .workFont(.caption).foregroundStyle(Theme.muted)
-                }
-                .padding(.vertical, Space.s)
+                Text("Recorded usage not loaded").workFont(.rowLabel).foregroundStyle(Theme.ink)
+                Text("The local recorder is loading token and cost records.")
+                    .workFont(.caption).foregroundStyle(Theme.muted)
             }
         }
-    }
-
-    private var capacityIsConnected: Bool {
-        if case .connected = glance.phase { return true }
-        return false
     }
 
     @ViewBuilder
@@ -269,46 +230,10 @@ struct UsagePane: View {
                 Text("90d").tag(90)
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .frame(width: 190)
             .accessibilityIdentifier("usage.history.range")
         }
-    }
-
-    private func summaryStrip(_ usage: UsageSummary) -> some View {
-        let totals = usage.totals
-        let activity = UsagePeriodPresentation(usage: usage)
-
-        return StripRow(cells: [
-            StripRow.Cell(
-                id: "tokens",
-                label: tokenBasis.label,
-                value: tokenBasis.value(totals).map(UsageTotals.compact),
-                qualifier: tokenBasis.qualifier,
-                absent: "not reported"
-            ),
-            StripRow.Cell(
-                id: "sessions",
-                label: "Sessions",
-                value: totals?.sessions.map(String.init),
-                qualifier: nil,
-                absent: "not reported"
-            ),
-            StripRow.Cell(
-                id: "cost",
-                label: "Cost",
-                value: totals.flatMap { $0.costText == "—" ? nil : $0.costText },
-                qualifier: totals?.costComplete == false ? "Partial subtotal · \(Fmt.costConfidenceLabel(totals?.costConfidence) ?? "basis not reported")"
-                    : (Fmt.costConfidenceLabel(totals?.costConfidence) ?? "Estimate · basis not reported"),
-                absent: "no priced usage"
-            ),
-            StripRow.Cell(
-                id: "periods",
-                label: activity.label,
-                value: activity.value,
-                qualifier: "with recorded usage",
-                absent: activity.absent
-            ),
-        ])
     }
 
     /// The basis facts for the loaded range. They used to trail the page as

@@ -26,6 +26,10 @@ struct UsageSnapshotConfiguration {
     }
 
     static let reviewConfigurations: [Self] = [
+        Self(chartSelection: 2, viewport: "day-clients-reference", width: 1120, height: 1300, colorScheme: .light, capacityState: .connected, recordedUsageState: .dayClients),
+        Self(chartSelection: 2, viewport: "day-clients-reference", width: 1120, height: 1300, colorScheme: .dark, capacityState: .connected, recordedUsageState: .dayClients),
+        Self(chartSelection: 0, viewport: "day-clients-other-day", width: 1120, height: 1300, colorScheme: .light, capacityState: .connected, recordedUsageState: .dayClients),
+        Self(chartSelection: 0, viewport: "day-clients-other-day", width: 1120, height: 1300, colorScheme: .dark, capacityState: .connected, recordedUsageState: .dayClients),
         Self(viewport: "all-tokens-minimum", width: 960, height: 560, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays, tokenBasis: .all),
         Self(viewport: "all-tokens-minimum", width: 960, height: 560, colorScheme: .dark, capacityState: .connected, recordedUsageState: .sevenDays, tokenBasis: .all),
         Self(viewport: "all-tokens-reference", width: 1120, height: 1540, colorScheme: .light, capacityState: .connected, recordedUsageState: .sevenDays, tokenBasis: .all),
