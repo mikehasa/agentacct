@@ -45,13 +45,15 @@ agent 自己说的“做完了”算 **Reported**（自述完成）。**Verified
 
 ![Dashboard 总览展示近期会话状态、已记录任务数、七天用量和按最新活动排序的任务表；历史问题折叠在列表下方。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-dashboard.png)
 
-Dashboard 展示各个项目最新记录的工作，以及客户端、活动时间、结果、证据和费用。历史失败检查与阻塞仍然可以在 **Recorded issues** 中查看，但不会决定默认排序，也不会被当作你必须处理的待办。任务行的右键菜单可以复制基于已有记录的摘要。
+Dashboard 展示各个项目最新记录的工作，以及客户端、活动时间、结果、证据和费用。历史失败检查与阻塞仍然可以在 **Recorded issues** 中查看，但不会决定默认排序，也不会被当作你必须处理的待办。右键点击 **Recorded issues** 中的一行，可以复制基于已有记录的摘要。
 
 ## 看懂工作背后的用量
 
-![Usage 展示每日图表，以及所选日期按客户端和模型拆分的用量，包含新增输入、输出、缓存 token 和估算费用。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-usage.png)
+![Usage 展示每日图表、Fresh、Cache、Total 和 Cost 列，以及所选日期按客户端和模型拆分的用量，分别列出缓存读取与写入。日期表示按活动日期归属的会话总量。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-usage.png)
 
-点击图表中的一天，就能按客户端和模型查看用量，例如区分 Codex 和 Hermes 使用同一模型的记录。可以切换 **Fresh** 与 **All tokens**，在每日表格里展开输入、输出和缓存明细。同一页面也能查看供应商上报的额度窗口和重置时间。token 来自客户端记录，费用是带 `≈` 标记的价目表估算，不是账单。
+选择日期，就能比较客户端和模型的用量，例如区分 Codex 和 Hermes 使用同一模型的记录。token 图表会记住你的 **Fresh** 或 **All tokens** 选择。表格始终并列展示新增、缓存和总 token；客户端与模型明细还会区分缓存读取与写入。将鼠标移到 **Fresh** 数值上，可以查看输入和输出计数。
+
+日期表示**按活动日期归属的会话总量**；跨天会话不会拆成精确的每日消耗。同一页面也能查看供应商上报的额度窗口和重置时间。token 来自客户端记录，费用是带 `≈` 标记的价目表估算，不是账单。
 
 ## 终端里也能用
 

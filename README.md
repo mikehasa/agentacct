@@ -45,13 +45,15 @@ Point a work group at a project folder to see which agents worked there and what
 
 ![Dashboard overview with recent session status, recorded task count, seven-day usage, and a latest-activity table. Recorded issues are folded below the activity list.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
 
-The Dashboard shows the latest recorded work across your projects, with its client, activity time, outcome, evidence, and cost. Historical failed checks and blockers remain available in **Recorded issues**. They do not decide the default order or become a list of things you must fix. A row's context menu can copy a brief from recorded facts.
+The Dashboard shows the latest recorded work across your projects, with its client, activity time, outcome, evidence, and cost. Historical failed checks and blockers remain available in **Recorded issues**. They do not decide the default order or become a list of things you must fix. Right-click a **Recorded issues** row to copy a brief from recorded facts.
 
 ## Understand the usage behind the work
 
-![Usage with a daily chart and selected-day breakdown by client and model, including fresh input, output, cached tokens, and estimated cost.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
+![Usage with a daily chart, Fresh, Cache, Total, and Cost columns, and a selected-date breakdown by client and model with separate cache reads and writes. Dates represent session totals by activity date.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
 
-Click a day in the chart to see its usage by client and model—for example, the same model used through Codex and Hermes. Switch between **Fresh** and **All tokens**, and inspect input, output, and cache components in the daily table. Provider-reported quota windows and reset times are available on the same page. Tokens come from client records; costs are pricing-table estimates marked `≈`, never an invoice.
+Select a date to compare clients and models—for example, the same model through Codex and Hermes. The token chart remembers your **Fresh** or **All tokens** choice. Tables show fresh, cache, and total tokens side by side; the client/model breakdown separates cache reads and writes. Hover a **Fresh** value for input and output counts.
+
+Dates show **session totals by activity date**; sessions spanning several days are not split into exact daily consumption. Provider-reported quota windows and reset times are available on the same page. Tokens come from client records; costs are pricing-table estimates marked `≈`, never an invoice.
 
 ## Also in the terminal
 
