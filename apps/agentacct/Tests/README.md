@@ -93,17 +93,26 @@ The reference update is therefore the reviewer-facing before/after artifact.
 
 ## Request an authoritative candidate remotely
 
-Usage redesigns use the same two-replica workflow with the explicit
-`suite=usage` input. Pass `--suite usage` to the package, validate and promote
-tools (their historical filenames retain `dashboard`). The default remains
-Dashboard. Each suite has its own fixed image inventory and dimensions;
-promoting Usage preserves the other suites byte-for-byte.
+Dashboard, Usage, Work (Sessions and receipts), and Sources use the same
+two-replica workflow. Select `suite=dashboard`, `usage`, `work`, or `sources`,
+and pass the matching `--suite` to the package, validate and promote tools
+(their historical filenames retain `dashboard`). The default remains Dashboard.
+The trusted inventories contain 12 Dashboard, 24 Usage, 84 Work, and 4 Sources
+images, with exact pixel dimensions. Promoting one suite preserves all others
+byte-for-byte. Work includes the session table, receipt states, accessibility
+sizes, steps, actions, checks and component galleries.
 
 ```bash
-gh workflow run visual-reference-candidates.yml -f ref="$source_commit" -f suite=usage
-# Download usage-reference-candidate-$source_commit, inspect every image,
-# then validate/promote with --suite usage and the exact source/renderer ids.
+gh workflow run visual-reference-candidates.yml -f ref="$source_commit" -f suite=work
+# Download work-reference-candidate-$source_commit, inspect every image,
+# then validate/promote with --suite work and the exact source/renderer ids.
 ```
+
+When changing workflow support on a branch, dispatch that branch with
+`--ref <branch>` after pushing it; the workflow's own commit supplies the trusted
+inventory. The independent `-f ref` input remains the exact source commit to
+render. A shared sidebar change can affect Dashboard, Usage, Work and Sources;
+request and review each affected suite separately.
 
 Developer machines are not authoritative renderers. To generate a candidate
 without using or reconfiguring a developer's Mac, push the source commit to
@@ -126,8 +135,8 @@ gh run download <run-id> \
   --dir /tmp/agentacct-dashboard-reference-candidate
 ```
 
-The artifact contains `manifest.json` and an `images` directory with the four
-dashboard PNGs. The manifest binds the bundle to the source commit, canonical
+The artifact contains `manifest.json` and an `images` directory with the complete selected
+suite of PNGs. The manifest binds the bundle to the source commit, canonical
 renderer, hosted-runner image, exact dimensions, and SHA-256 of every image.
 
 Validate the downloaded bundle against the commit you requested and the
@@ -164,10 +173,12 @@ git diff --stat -- Tests/agentacctTests/ReferenceImages
 ```
 
 Promotion repeats the full validation, requires an explicit review
-confirmation, and stages all four Dashboard files alongside byte-preserved,
+confirmation, and stages the complete selected suite alongside byte-preserved,
 validated PNGs owned by other visual suites before atomically replacing the
 shared renderer directory. It rejects symlinks, non-PNG entries, and partial
-Dashboard sets, and restores the original directory if the replacement fails.
+selected-suite sets, and restores the original directory if the replacement fails.
+The complete older four-image Dashboard and 20-image Usage destination sets
+can be upgraded; a candidate always requires the full current inventory.
 An already identical candidate is a no-op. The command never renders locally,
 stages Git changes, commits, pushes, or approves the visual change; review the
 resulting PNG diff before committing it.
@@ -177,7 +188,7 @@ workflow's own commit as trusted tooling, checks out the requested source into
 a separate directory without persisted credentials, and fails before rendering
 unless the host matches the exact canonical renderer. A cheap Linux preflight
 rejects malformed or unreachable commits before macOS capacity is allocated.
-Two fresh macOS runners then run the deterministic dashboard tests, build the
+Two fresh macOS runners then run the deterministic tests for the selected suite, build the
 release renderer, and package independent candidates. A separate Linux job
 publishes the 14-day verified artifact only when the two complete bundles are
 byte-identical.

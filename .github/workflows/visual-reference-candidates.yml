@@ -9,7 +9,7 @@ run-name: Visual reference candidate for ${{ inputs.ref }}
         required: true
         type: choice
         default: dashboard
-        options: [dashboard, usage]
+        options: [dashboard, usage, work, sources]
       ref:
         description: Full commit SHA to render from this repository
         required: true
@@ -37,7 +37,7 @@ jobs:
           REQUESTED_COMMIT: ${{ inputs.ref }}
           CANDIDATE_SUITE: ${{ inputs.suite }}
         run: |
-          case "$CANDIDATE_SUITE" in dashboard|usage) ;; *) echo "unsupported suite" >&2; exit 2 ;; esac
+          case "$CANDIDATE_SUITE" in dashboard|usage|work|sources) ;; *) echo "unsupported suite" >&2; exit 2 ;; esac
           if [[ ! "$REQUESTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
             echo "ref must be a full lowercase 40-character commit SHA" >&2
             exit 2
@@ -103,20 +103,22 @@ jobs:
         run: |
           renderer_id="$(trusted/apps/agentacct/Scripts/visual-snapshots check-environment)"
           echo "renderer_id=$renderer_id" >> "$GITHUB_OUTPUT"
-      - name: Run deterministic dashboard render tests
+      - name: Run deterministic suite render tests
         working-directory: source/apps/agentacct
         env:
           CANDIDATE_SUITE: ${{ inputs.suite }}
         run: |
-          if [[ "$CANDIDATE_SUITE" == "usage" ]]; then
-            swift test --filter UsageSnapshotHarnessTests
-          else
-            swift test --filter DashboardSnapshotHarnessTests
-          fi
+          case "$CANDIDATE_SUITE" in
+            dashboard) swift test --filter DashboardSnapshotHarnessTests ;;
+            usage) swift test --filter UsageSnapshotHarnessTests ;;
+            work) swift test --filter WorkSnapshotHarnessTests ;;
+            sources) swift test --filter SourcesSnapshotHarnessTests ;;
+            *) echo "unsupported suite" >&2; exit 2 ;;
+          esac
       - name: Build release renderer
         working-directory: source/apps/agentacct
         run: swift build -c release
-      - name: Render dashboard candidate
+      - name: Render suite candidate
         working-directory: source/apps/agentacct
         env:
           CANDIDATE_SUITE: ${{ inputs.suite }}

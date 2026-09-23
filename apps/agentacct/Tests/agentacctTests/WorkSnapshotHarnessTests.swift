@@ -228,53 +228,13 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             try? FileManager.default.removeItem(at: secondDirectory)
         }
 
-        let workRendered: [URL]
-        let sessionStepsRendered: [URL]
-        let actionRendered: [URL]
-        let checkRendered: [URL]
-        let componentRendered: [URL]
-        do {
-            workRendered = try WorkSnapshotRenderer.render(
-                fixture: fixture,
-                outputDirectory: firstDirectory
-            )
-        } catch {
-            XCTFail("First full-page Work render failed: \(error)")
-            throw error
-        }
-        do {
-            sessionStepsRendered = try SessionStepsSnapshotRenderer.render(
-                fixture: fixture,
-                outputDirectory: firstDirectory
-            )
-        } catch {
-            XCTFail("First focused Session and steps render failed: \(error)")
-            throw error
-        }
-        do {
-            actionRendered = try ReceiptActionSnapshotRenderer.render(
-                outputDirectory: firstDirectory
-            )
-        } catch {
-            XCTFail("First focused Action render failed: \(error)")
-            throw error
-        }
-        do {
-            checkRendered = try ReceiptCheckSnapshotRenderer.render(
-                outputDirectory: firstDirectory
-            )
-        } catch {
-            XCTFail("First focused Checks render failed: \(error)")
-            throw error
-        }
-        do {
-            componentRendered = try WorkComponentSnapshotRenderer.render(
-                outputDirectory: firstDirectory
-            )
-        } catch {
-            XCTFail("First component gallery render failed: \(error)")
-            throw error
-        }
+        // Exercise the exact composer used by --snapshot-work-fixture. The
+        // second pass below intentionally calls each renderer independently,
+        // so omitting one from the CLI cannot silently pass this matrix test.
+        let rendered = try SnapshotRunner.renderWorkFixture(
+            fixture: fixture,
+            outputDirectory: firstDirectory
+        )
         do {
             _ = try WorkSnapshotRenderer.render(
                 fixture: fixture,
@@ -317,7 +277,6 @@ final class WorkSnapshotHarnessTests: XCTestCase {
             XCTFail("Second component gallery render failed: \(error)")
             throw error
         }
-        let rendered = workRendered + sessionStepsRendered + actionRendered + checkRendered + componentRendered
 
         XCTAssertEqual(rendered.map(\.lastPathComponent), expectedArtifacts.map(\.filename))
         for artifact in expectedArtifacts {

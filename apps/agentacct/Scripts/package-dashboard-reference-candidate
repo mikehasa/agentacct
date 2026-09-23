@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and describe a dashboard reference-image candidate bundle."""
+"""Validate and describe a visual reference-image candidate bundle."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from dashboard_reference_candidate import CandidateError, select_suite, build_ma
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate dashboard PNGs and write a deterministic candidate manifest."
+        description="Validate visual-suite PNGs and write a deterministic candidate manifest."
     )
     parser.add_argument("--images", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
@@ -19,7 +19,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--renderer-id", required=True)
     parser.add_argument("--runner-image", required=True)
     parser.add_argument("--runner-image-version", required=True)
-    parser.add_argument("--suite", choices=("dashboard", "usage"), default="dashboard")
+    parser.add_argument("--suite", choices=("dashboard", "usage", "work", "sources"), default="dashboard")
     return parser.parse_args()
 
 

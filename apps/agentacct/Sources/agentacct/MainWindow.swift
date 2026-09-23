@@ -28,15 +28,18 @@ struct MainWindow: View {
     /// with the recorder. Live windows leave this nil and use SetupModel.
     var canSetUpOverride: Bool?
     private let lifecycle: AppLifecycleCoordinator?
+    private let dashboardRefresh: (() async -> Void)?
 
     init(
         setup: SetupModel? = nil,
         lifecycle: AppLifecycleCoordinator? = nil,
-        canSetUpOverride: Bool? = nil
+        canSetUpOverride: Bool? = nil,
+        dashboardRefresh: (() async -> Void)? = nil
     ) {
         _setup = StateObject(wrappedValue: setup ?? SetupModel())
         self.lifecycle = lifecycle
         self.canSetUpOverride = canSetUpOverride
+        self.dashboardRefresh = dashboardRefresh
     }
 
     private var canSetUp: Bool {
@@ -297,7 +300,10 @@ struct MainWindow: View {
                 await dashboard.refreshProjectedCollections()
             }
         }
-        .task(id: recorderSynchronizationFinished) {
+        // Capture the readiness value belonging to this task identity. An old
+        // id=false task may start after synchronization changes State to true;
+        // reading that newer State would begin a refresh SwiftUI then cancels.
+        .task(id: recorderSynchronizationFinished) { [recorderSynchronizationFinished] in
             // The window is a live instrument: refresh while it stays open
             // and restart this loop after a successful synchronization retry.
             await refreshLocalDataWhileReady(
@@ -305,7 +311,10 @@ struct MainWindow: View {
                 snapshotMode: SnapshotMode.enabled
             ) {
                 await refreshDashboardAndSelectedWork(
-                    dashboardRefresh: { await dashboard.refresh() },
+                    dashboardRefresh: {
+                        if let dashboardRefresh { await dashboardRefresh() }
+                        else { await dashboard.refresh() }
+                    },
                     selectedTaskId: { selection.taskId },
                     receiptRefresh: { await dashboard.fetchReceipt(taskId: $0) }
                 )
@@ -829,7 +838,7 @@ extension MainPane {
         switch self {
         case .dashboard: return selected ? "square.grid.2x2.fill" : "square.grid.2x2"
         case .worksets: return selected ? "folder.fill" : "folder"
-        case .work: return "checklist"
+        case .work: return "list.bullet.rectangle"
         case .usage: return "chart.bar.xaxis"
         case .sources: return "point.3.connected.trianglepath.dotted"
         }

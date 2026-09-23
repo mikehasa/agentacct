@@ -2,15 +2,15 @@ import AppKit
 import Foundation
 import SwiftUI
 
-// The dashboard is a shift brief: what deserves attention now, what recorded
-// evidence supports that claim, and where the operator can inspect it. Recent
-// work, active sessions, plan headroom, and source health remain supporting
-// context rather than four equally weighted destinations.
+// The dashboard starts with observed agent activity: recent tasks, their
+// recorded status, and the evidence behind them. Historical issues, provider
+// capacity and source health are context, not a claim that a human must act.
 
 struct DashboardWorkItem: Identifiable {
     let id: String
     let title: String
     let client: String
+    let project: String?
     let lastActivityAt: Double?
     let outcome: String
     let outcomeKey: String
@@ -30,6 +30,7 @@ struct DashboardWorkItem: Identifiable {
             title = task.taskId
         }
         client = task.primaryRoot?.client ?? "Unknown agent"
+        project = task.project
         lastActivityAt = task.lastActivityAt
         outcomeKey = task.decisionStatus.key
         if let label = task.decisionStatus.label, !label.isEmpty {
@@ -737,14 +738,9 @@ struct DashboardPane: View {
     @Environment(DashboardStore.self) var dashboard
     @Environment(GlanceState.self) var glance
     @Environment(AppSelection.self) var selection
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var presentedError: String? {
-        dashboard.errorText ?? dashboard.receiptListError
-    }
-
     private var recentWork: [DashboardWorkItem] {
-        dashboard.receiptTasks.prefix(3).map(DashboardWorkItem.init)
+        guard dashboard.receiptListProjection?.available != false else { return [] }
+        return DashboardRecentActivity.items(dashboard.receiptTasks)
     }
 
     private var liveLimits: [LimitEntry] {
@@ -791,101 +787,203 @@ struct DashboardPane: View {
     var body: some View {
         ScrollBox {
             VStack(alignment: .leading, spacing: Space.l) {
-                DashboardShiftBriefHeader(
-                    payload: dashboard.attention,
-                    error: dashboard.attentionError
-                )
-
-                if let projection = dashboard.attentionProjection {
-                    WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot)
+                HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                    Text("Overview")
+                        .workFont(.titlePage)
+                        .tracking(Type.titlePageTracking)
+                        .foregroundStyle(Theme.ink)
+                    Text("What your agents have been working on")
+                        .workFont(.caption)
+                        .foregroundStyle(Theme.muted)
+                    Spacer()
+                    Button("All work") { selection.open(.work) }
+                        .buttonStyle(QuietButtonStyle())
+                        .foregroundStyle(Theme.accent)
                 }
+                .accessibilityIdentifier("dashboard.overview.header")
 
-                splitRow {
-                    DashboardAttentionBriefCard(
-                        payload: dashboard.attention,
-                        error: dashboard.attentionError
-                    ) { destination in
-                        selection.open(destination)
-                    }
-                } right: {
-                    DashboardSignalRail(
-                        sessions: recentSessions,
-                        planRows: planRows,
-                        availability: glanceAvailability,
-                        usagePulse: DashboardUsagePulse(
-                            periods: dashboard.usage?.byPeriod,
-                            isLoaded: dashboard.usage != nil,
-                            rangeDays: dashboard.usageDays,
-                            error: dashboard.errorText
-                        ),
-                        ingestion: dashboard.ingestion,
-                        ingestionError: dashboard.ingestionError
-                    ) { destination in
-                        selection.open(destination)
-                    }
-                }
-
-                if let projection = dashboard.receiptListProjection,
-                   projection != dashboard.attentionProjection {
-                    WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot)
-                }
+                DashboardActivitySummary(
+                    sessions: recentSessions,
+                    availability: glanceAvailability,
+                    activityUpdated: glance.lastUpdated,
+                    taskCount: dashboard.totalReceiptTasks,
+                    taskProjection: dashboard.receiptListProjection,
+                    usage: dashboard.usage,
+                    usageDays: dashboard.usageDays,
+                    usageUpdated: dashboard.usageLastUpdated,
+                    usageError: dashboard.errorText
+                ) { selection.open($0) }
 
                 RecentWorkCard(
                     items: recentWork,
-                    totalCount: dashboard.totalReceiptTasks ?? dashboard.receiptTasks.count
-                ) { destination in
-                    selection.open(destination)
-                }
+                    totalCount: dashboard.totalReceiptTasks,
+                    loading: dashboard.isLoadingReceipts || dashboard.totalReceiptTasks == nil,
+                    error: dashboard.receiptListError,
+                    projection: dashboard.receiptListProjection,
+                    offline: dashboard.isOfflineSnapshot
+                ) { selection.open($0) }
 
-                if let usage = dashboard.usage,
-                   let periods = usage.byPeriod,
-                   periods.count > 1
-                {
-                    DashboardUsageChart(
-                        periods: periods,
-                        rangeDays: dashboard.usageDays,
-                        periodPresentation: UsagePeriodPresentation(usage: usage)
-                    )
-                }
+                DashboardRecordedIssues(
+                    payload: dashboard.attention,
+                    error: dashboard.attentionError,
+                    projection: dashboard.attentionProjection,
+                    offline: dashboard.isOfflineSnapshot
+                ) { selection.open($0) }
+
+                DashboardContextLinks(
+                    planRows: planRows,
+                    availability: glanceAvailability,
+                    ingestion: dashboard.ingestion,
+                    ingestionError: dashboard.ingestionError
+                ) { selection.open($0) }
+
             }
             .padding(Space.gutter)
+            .frame(maxWidth: 1236, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .overlay(alignment: .bottom) {
-            if let error = presentedError {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .workFont(.caption)
-                    .foregroundStyle(Theme.coral)
-                    .padding(Space.s)
-                    .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius, style: .continuous))
-                    .padding(.bottom, 10)
-                    .id(error)
-                    .transition(.opacity)
-            }
-        }
-        .animation(
-            reduceMotion ? Motion.reducedCrossfade : Motion.phaseCrossfade,
-            value: presentedError
-        )
     }
 
-    private func splitRow<Left: View, Right: View>(
-        @ViewBuilder left: () -> Left,
-        @ViewBuilder right: () -> Right
-    ) -> some View {
+
+}
+
+private struct DashboardActivitySummary: View {
+    let sessions: [RecentSession]
+    let availability: DashboardSignalAvailability
+    let activityUpdated: Date?
+    let taskCount: Int?
+    let taskProjection: WorkProjectionMetadata?
+    let usage: UsageSummary?
+    let usageDays: Int
+    let usageUpdated: Date?
+    let usageError: String?
+    let open: (DashboardDestination) -> Void
+
+    private var taskValue: String {
+        guard taskProjection?.available != false else { return "Preparing" }
+        return taskCount.flatMap { $0 >= 0 ? $0.formatted() : nil }
+            ?? (taskProjection?.needsRefresh == true ? "Preparing" : "Not reported")
+    }
+
+    var body: some View {
         ViewThatFits(in: .horizontal) {
-            DashboardSplitLayout(leftFraction: 7 / 12, spacing: Space.l) {
-                left()
-                right()
-            }
-            .frame(minWidth: 820)
+            HStack(alignment: .top, spacing: Space.m) { metrics }
+                .frame(minWidth: 740)
+            VStack(alignment: .leading, spacing: Space.m) { metrics }
+        }
+        .accessibilityIdentifier("dashboard.activity-summary")
+    }
 
-            VStack(spacing: Space.l) {
-                left()
-                right()
+    @ViewBuilder private var metrics: some View {
+        let activity = DashboardSessionActivity(sessions: sessions, availability: availability)
+        let tokens = UsageTokenColumn.total.metric(usage?.totals)
+        let costDetail = usage?.totals.map {
+            $0.costText == "—" ? "Cost not reported" : "\($0.costText) recorded cost"
+        } ?? "Loading recorded usage"
+        Group {
+            DashboardActivityMetric(
+                label: "Recent sessions", value: activity.value, detail: activity.scope,
+                help: DashboardActiveWorkSignal(sessions: sessions, availability: availability).detail
+                    + (activityUpdated.map { " · Updated \(dashboardFreshnessText($0))" } ?? ""),
+                destination: "Open recorded work"
+            ) { open(.work) }
+            DashboardActivityMetric(
+                label: "Recorded tasks", value: taskValue,
+                detail: taskProjection?.needsRefresh == true ? taskProjection?.statusText ?? "Snapshot status unavailable" : "Across your recorded projects",
+                help: taskProjection?.asOfText ?? "Task count reported by the recorder; activity rows below show only the latest tasks.",
+                destination: "Open all recorded tasks"
+            ) { open(.work) }
+            DashboardActivityMetric(
+                label: usageDays == 0 ? "All recorded usage" : "Usage · last \(usageDays) days",
+                value: tokens.value == nil ? "Not reported" : "\(tokens.text) tokens",
+                detail: usageError ?? (tokens.partial ? "Recorded subtotal · token coverage incomplete · \(costDetail)" : costDetail),
+                help: tokens.exactText
+                    + (usageUpdated.map { " · Updated \(dashboardFreshnessText($0))" } ?? "")
+                    + (tokens.partial ? " · Token coverage is incomplete" : ""),
+                destination: "Open usage details",
+                warning: usageError != nil
+            ) { open(.limits) }
+        }
+    }
+}
+
+private struct DashboardActivityMetric: View {
+    let label: String
+    let value: String
+    let detail: String
+    let help: String
+    let destination: String
+    var warning = false
+    let open: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            Card(padding: Space.m) {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    HStack {
+                        Text(label).workFont(.captionSemibold).foregroundStyle(Theme.muted)
+                        Spacer(minLength: Space.s)
+                        Image(systemName: "arrow.up.right").workFont(.caption).foregroundStyle(Theme.accent)
+                    }
+                    Text(value).workFont(.titleCard).foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(detail).workFont(.caption)
+                        .foregroundStyle(warning ? Theme.amber : Theme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, minHeight: 88, alignment: .topLeading)
             }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(DashboardRowButtonStyle())
+        .help(help)
+        .accessibilityLabel("\(label): \(value). \(detail)")
+        .accessibilityHint(destination)
+    }
+}
+
+private struct DashboardContextLinks: View {
+    let planRows: [DashboardAgentPlanRow]
+    let availability: DashboardSignalAvailability
+    let ingestion: V1IngestionSnapshot?
+    let ingestionError: String?
+    let open: (DashboardDestination) -> Void
+
+    private var capacityText: String {
+        switch availability {
+        case .loading: return "Checking provider capacity"
+        case .unavailable: return "Provider capacity unavailable"
+        case .connected:
+            if let row = planRows.filter({ $0.usedPercent != nil })
+                .max(by: { ($0.usedPercent ?? 0) < ($1.usedPercent ?? 0) }) {
+                return row.decisionTitle
+            }
+            return "Provider capacity not reported"
         }
     }
 
+    var body: some View {
+        let source = DashboardIngestionPresentation(snapshot: ingestion, error: ingestionError)
+        HStack(alignment: .top, spacing: Space.l) {
+            Button { open(.sources) } label: {
+                Label("Sources · \(source.title)", systemImage: source.tone == .warning ? "exclamationmark.triangle" : "externaldrive")
+                    .workFont(.caption)
+                    .foregroundStyle(source.tone == .warning ? Theme.amber : Theme.muted)
+            }
+            .buttonStyle(QuietButtonStyle())
+            .help(source.detail)
+            .accessibilityLabel("Sources: \(source.title). \(source.detail)")
+            .accessibilityIdentifier("dashboard.signal.sources")
+            Spacer(minLength: Space.s)
+            Button { open(.limits) } label: {
+                Label(capacityText, systemImage: "gauge.with.dots.needle.50percent")
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+            }
+            .buttonStyle(QuietButtonStyle())
+            .accessibilityLabel("Provider capacity: \(capacityText). Open usage and limits")
+        }
+        .accessibilityIdentifier("dashboard.context-links")
+    }
 }
 
 private struct DashboardSplitLayout: Layout {
@@ -930,6 +1028,218 @@ private struct DashboardSplitLayout: Layout {
             at: CGPoint(x: bounds.minX + leftWidth + spacing, y: bounds.minY),
             proposal: .init(width: rightWidth, height: bounds.height)
         )
+    }
+}
+
+private struct DashboardRecordedIssues: View {
+    let payload: V1AttentionPayload?
+    let error: String?
+    let projection: WorkProjectionMetadata?
+    let offline: Bool
+    let open: (DashboardDestination) -> Void
+    @State private var expanded = false
+
+    private var queue: DashboardAttentionQueue {
+        DashboardAttentionQueue(payload: payload, error: error, projection: projection)
+    }
+
+    var body: some View {
+        Card(padding: Space.m) {
+            VStack(alignment: .leading, spacing: Space.s) {
+                HStack(alignment: .firstTextBaseline, spacing: Space.m) {
+                    DisclosureGroup(isExpanded: $expanded) {
+                        EmptyView()
+                    } label: {
+                        HStack(spacing: Space.s) {
+                            Text("Recorded issues").workFont(.rowLabel).foregroundStyle(Theme.ink)
+                            if let total = queue.total {
+                                Text(String(total)).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                            }
+                            Text("Failed checks, failed steps, and blockers")
+                                .workFont(.caption).foregroundStyle(Theme.muted)
+                        }
+                    }
+                    .accessibilityIdentifier("dashboard.recorded-issues.disclosure")
+                    Spacer(minLength: Space.s)
+                    Button("View all") { open(.reviewQueue) }
+                        .workFont(.captionSemibold)
+                        .foregroundStyle(Theme.accent)
+                        .buttonStyle(QuietButtonStyle())
+                        .accessibilityLabel("View all recorded issues")
+                        .accessibilityIdentifier("dashboard.shift-brief.view-queue")
+                }
+                // State remains visible even while historical rows are folded.
+                if let projection, projection.needsRefresh || offline {
+                    WorkProjectionNotice(projection: projection, isOffline: offline)
+                }
+                if let error { DashboardScopeWarning(message: error) }
+                if queue.state != .items && queue.state != .empty {
+                    Text(queue.detail).workFont(.caption).foregroundStyle(Theme.muted)
+                }
+                if expanded {
+                    Text(queue.detail).workFont(.caption).foregroundStyle(Theme.muted)
+                    if let projection, projection.isCurrent && !offline {
+                        WorkProjectionNotice(projection: projection)
+                    }
+                    ForEach(queue.items) { item in
+                        Divider().overlay(Theme.hairline)
+                        DashboardAttentionQueueRow(item: item) { open(.attentionTask(item.id)) }
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("dashboard.recorded-issues")
+    }
+}
+
+private struct DashboardAttentionQueueRow: View {
+    let item: DashboardAttentionItem
+    let open: () -> Void
+    @State private var copyFeedback = DashboardCopyFeedback.idle
+    @State private var copyFeedbackToken: UUID?
+
+    private var tint: Color { item.reasonKind == "blocker" ? Theme.amber : Theme.coral }
+    private var brief: DashboardActionBrief { DashboardActionBrief(focus: item) }
+    private var feedbackText: String? {
+        switch copyFeedback {
+        case .idle: return nil
+        case .copied: return brief.copiedAccessibilityLabel
+        case .failed: return brief.failedAccessibilityLabel
+        }
+    }
+    private var context: String {
+        [feedbackText, item.project, item.client, item.recency, item.sourceLabel]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Space.m) {
+            RoundedRectangle(cornerRadius: 1)
+                .fill(tint)
+                .frame(width: 3, height: 32)
+                .padding(.top, 3)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.title)
+                    .workFont(.rowLabel)
+                    .foregroundStyle(Theme.ink)
+                    .lineLimit(2)
+                    .help(item.title)
+                if !context.isEmpty {
+                    Text(context).workFont(.caption)
+                        .foregroundStyle(copyFeedback == .failed(brief.text) ? Theme.coral : Theme.muted)
+                        .lineLimit(1).help(context)
+                }
+                Text("\(item.reasonLabel): \(item.summary)")
+                    .workFont(.caption)
+                    .foregroundStyle(tint)
+                    .lineLimit(2)
+                    .help(item.summary)
+                if let next = item.nextStep {
+                    Text("Recorded next step: \(next)")
+                        .workFont(.caption)
+                        .foregroundStyle(Theme.ink)
+                        .lineLimit(2)
+                        .help(next)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button(action: open) {
+                Text("Open receipt").workFont(.captionSemibold)
+            }
+            .buttonStyle(QuietButtonStyle())
+            .foregroundStyle(Theme.accent)
+            .accessibilityLabel("Open receipt for \(item.title)")
+            .accessibilityIdentifier("dashboard.attention.task.\(item.id)")
+        }
+        .padding(.horizontal, Space.l)
+        .padding(.vertical, Space.m)
+        .accessibilityElement(children: .contain)
+        .accessibilityValue(feedbackText ?? "")
+        .contextMenu {
+            Button {
+                let token = UUID()
+                copyFeedbackToken = token
+                copyFeedback.record(succeeded: DashboardClipboard.copy(brief.text), text: brief.text)
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(2))
+                    guard copyFeedbackToken == token else { return }
+                    copyFeedback.clear()
+                    copyFeedbackToken = nil
+                }
+            } label: {
+                Label(brief.buttonTitle, systemImage: "doc.on.doc")
+            }
+            .buttonStyle(QuietButtonStyle())
+            .accessibilityLabel("\(brief.buttonTitle) for \(item.title)")
+            .accessibilityHint("Copies recorded facts only; it does not resume or rerun an agent")
+        }
+        .help(feedbackText ?? "Right-click to \(brief.buttonTitle.lowercased()).")
+    }
+}
+
+private struct DashboardScopeWarning: View {
+    let message: String
+    var body: some View {
+        Label(message, systemImage: "exclamationmark.triangle")
+            .workFont(.caption)
+            .foregroundStyle(Theme.amber)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct DashboardUsageSummaryCard: View {
+    let usage: UsageSummary?
+    let days: Int
+    let updated: Date?
+    let error: String?
+    let open: () -> Void
+
+    var body: some View {
+        Card(padding: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                DashboardCardHeader("Usage") {
+                    Button("Details", action: open)
+                        .workFont(.captionSemibold)
+                        .foregroundStyle(Theme.accent)
+                        .buttonStyle(QuietButtonStyle())
+                        .accessibilityLabel("Open usage details")
+                        .accessibilityIdentifier("dashboard.usage.open")
+                }
+                Divider().overlay(Theme.hairline)
+                VStack(alignment: .leading, spacing: Space.m) {
+                    Text(days == 0 ? "All recorded history" : "Last \(days) days")
+                        .workFont(.caption).foregroundStyle(Theme.muted)
+                    if let error { DashboardScopeWarning(message: error) }
+                    if let usage {
+                        let metric = UsageTokenColumn.total.metric(usage.totals)
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Total tokens").workFont(.caption).foregroundStyle(Theme.muted)
+                            Spacer(minLength: Space.s)
+                            Text(metric.value == nil ? "Not reported" : metric.text)
+                                .workFont(.dataSmallSemibold).foregroundStyle(Theme.ink)
+                                .help(metric.exactText)
+                        }
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Recorded cost").workFont(.caption).foregroundStyle(Theme.muted)
+                            Spacer(minLength: Space.s)
+                            let cost = usage.totals?.costText ?? "—"
+                            Text(cost == "—" ? "Unpriced" : cost)
+                                .workFont(.dataSmallSemibold).foregroundStyle(Theme.ink)
+                        }
+                        if metric.partial {
+                            Text("* Recorded subtotal; token coverage is incomplete.")
+                                .workFont(.caption).foregroundStyle(Theme.muted)
+                        }
+                        Text(updated.map { "Updated \(dashboardFreshnessText($0))" } ?? "Update time unavailable")
+                            .workFont(.caption).foregroundStyle(Theme.muted)
+                    } else if error == nil {
+                        Text("Loading recorded usage…").workFont(.caption).foregroundStyle(Theme.muted)
+                    }
+                }
+                .padding(Space.l)
+            }
+        }
     }
 }
 
@@ -1108,7 +1418,7 @@ private struct DashboardAttentionBriefCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
-                .accessibilityHint("Opens this task in Work")
+                .accessibilityHint("Opens this task in Sessions")
                 .accessibilityIdentifier("dashboard.shift-brief.review-evidence")
 
                 Button {
@@ -1330,7 +1640,6 @@ private struct DashboardSignalRail: View {
     let sessions: [RecentSession]
     let planRows: [DashboardAgentPlanRow]
     let availability: DashboardSignalAvailability
-    let usagePulse: DashboardUsagePulse
     let ingestion: V1IngestionSnapshot?
     let ingestionError: String?
     let open: (DashboardDestination) -> Void
@@ -1353,9 +1662,9 @@ private struct DashboardSignalRail: View {
     }
 
     var body: some View {
-        Card(padding: 0, fillsHeight: true) {
+        Card(padding: 0) {
             VStack(spacing: 0) {
-                DashboardCardHeader("Right now")
+                DashboardCardHeader("At a glance")
                 Divider().overlay(Theme.hairline)
                 DashboardSignalRow(
                     eyebrow: "Working now",
@@ -1376,15 +1685,7 @@ private struct DashboardSignalRail: View {
                 )
                 Divider().overlay(Theme.hairline).padding(.leading, Space.l)
                 DashboardSignalRow(
-                    eyebrow: "Usage change",
-                    title: usagePulse.title,
-                    detail: usagePulse.detail,
-                    tint: usagePulse.state == .ready ? Theme.accent : Theme.muted,
-                    action: { open(.limits) }
-                )
-                Divider().overlay(Theme.hairline).padding(.leading, Space.l)
-                DashboardSignalRow(
-                    eyebrow: "Evidence trust",
+                    eyebrow: "Sources",
                     title: ingestionTitle,
                     detail: ingestionDetail,
                     tint: ingestionTint,
@@ -1465,19 +1766,17 @@ private struct DashboardSignalRow: View {
                     .frame(width: 3, height: 30)
                     .padding(.top, 2)
                 VStack(alignment: .leading, spacing: 4) {
-                    // Four rows, four labels: sentence case reads as a label
-                    // without competing with the page's one caps eyebrow.
+                    // Supporting context uses quieter labels than task rows.
                     Text(eyebrow)
                         .workFont(.captionSemibold)
                         .foregroundStyle(Theme.muted)
                     Text(title)
                         .workFont(.rowLabel)
                         .foregroundStyle(Theme.ink)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(detail)
                         .workFont(.caption)
                         .foregroundStyle(Theme.muted)
-                        .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: Space.s)
@@ -1541,13 +1840,17 @@ private extension DashboardCardHeader where Action == EmptyView {
 
 private struct RecentWorkCard: View {
     let items: [DashboardWorkItem]
-    let totalCount: Int
+    let totalCount: Int?
+    let loading: Bool
+    let error: String?
+    let projection: WorkProjectionMetadata?
+    let offline: Bool
     let open: (DashboardDestination) -> Void
 
     var body: some View {
-        Card(padding: 0, fillsHeight: true) {
-            VStack(spacing: 0) {
-                DashboardCardHeader("Recent work", count: totalCount) {
+        Card(padding: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                DashboardCardHeader("Recent activity") {
                     Button { open(.work) } label: {
                         Text("View all").workFont(.captionSemibold)
                     }
@@ -1557,13 +1860,28 @@ private struct RecentWorkCard: View {
                 }
                 Divider().overlay(Theme.hairline)
 
+                VStack(alignment: .leading, spacing: Space.s) {
+                    if let projection { WorkProjectionNotice(projection: projection, isOffline: offline) }
+                    if let error { DashboardScopeWarning(message: error) }
+                    if !items.isEmpty {
+                        Text("Latest task activity · " + DashboardRecentWorkScope.text(visible: items.count, total: totalCount))
+                            .workFont(.caption).foregroundStyle(Theme.muted)
+                    }
+                }
+                .padding(.horizontal, Space.l)
+                .padding(.vertical, Space.s)
+
                 if items.isEmpty {
                     DashboardEmptyState(
                         icon: "checklist",
-                        title: "No recorded work yet",
-                        message: "Set up recording to see task outcomes and evidence here."
+                        title: projection?.needsRefresh == true ? "Preparing recorded work"
+                            : error != nil ? "Recent work unavailable"
+                            : loading ? "Loading recorded work…" : "No recorded work yet",
+                        message: error != nil ? "The last refresh did not return a usable work list."
+                            : projection?.needsRefresh == true || loading ? "Tasks will appear when their receipt snapshot is ready."
+                            : "Set up recording to see task outcomes and evidence here."
                     )
-                    .frame(minHeight: 222)
+                    .padding(.vertical, Space.l)
                 } else {
                     workColumnLabels
                     Divider().overlay(Theme.hairline)
@@ -1581,8 +1899,8 @@ private struct RecentWorkCard: View {
     private var workColumnLabels: some View {
         HStack(spacing: 12) {
             Text("Task").frame(maxWidth: .infinity, alignment: .leading)
-            Text("Outcome").frame(width: 116, alignment: .leading)
-            Text("Evidence").frame(width: 118, alignment: .leading)
+            Text("Outcome").frame(width: 112, alignment: .leading)
+            Text("Evidence").frame(width: 92, alignment: .leading)
             Text("Cost").frame(width: 68, alignment: .trailing)
             Color.clear.frame(width: 10, height: 1)
         }
@@ -1605,17 +1923,19 @@ private struct RecentWorkRow: View {
                         .workFont(.rowLabel)
                         .foregroundStyle(Theme.ink)
                         .lineLimit(2)
-                    Text([item.client, item.recency].compactMap { $0 }.joined(separator: " · "))
+                        .help(item.title)
+                    Text([item.project, item.client, item.recency].compactMap { $0 }.joined(separator: " · "))
                         .workFont(.caption)
                         .foregroundStyle(Theme.muted)
                         .lineLimit(1)
+                        .help([item.project, item.client, item.recency].compactMap { $0 }.joined(separator: " · "))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
                 // Decision axis: a pip-less tinted badge (a filled dot here
                 // read as the independently-checked evidence pip).
                 DecisionBadge(key: item.outcomeKey, label: item.outcome, compact: true)
-                    .frame(width: 116, alignment: .leading)
+                    .frame(width: 112, alignment: .leading)
 
                 // Evidence axis: the strongest tier's pip shape + the ratio.
                 HStack(spacing: 6) {
@@ -1631,11 +1951,12 @@ private struct RecentWorkRow: View {
                         EvidencePip(shape: .hollow, tint: Theme.muted)
                     }
                     Text(item.evidence)
-                        .workFont(.dataSmall)
+                        .workFont(.caption)
                         .foregroundStyle(item.evidenceIsInconsistent ? Theme.amber : Theme.muted)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(width: 118, alignment: .leading)
+                .frame(width: 92, alignment: .leading)
                 .help(item.evidenceQualifier)
 
                 Text(item.cost == "—" ? "unpriced" : item.cost)
@@ -1653,7 +1974,7 @@ private struct RecentWorkRow: View {
         .accessibilityLabel(
             "\(item.title), \(item.outcome), \(item.evidence), \(item.cost)"
         )
-        .accessibilityHint("Opens this task in Work")
+        .accessibilityHint("Opens this task in Sessions")
         .accessibilityIdentifier("dashboard.recent-work.task.\(item.id)")
     }
 }

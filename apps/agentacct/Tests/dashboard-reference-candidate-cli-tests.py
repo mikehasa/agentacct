@@ -18,10 +18,13 @@ REFERENCE_ROOT = TESTS_DIR / "agentacctTests" / "ReferenceImages"
 SOURCE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 RENDERER_ID = "macos-test-build-xcode-test-build-arm64-2x"
 EXPECTED_DIMENSIONS = {
-    "dashboard-minimum-dark.png": (1920, 1120),
-    "dashboard-minimum-light.png": (1920, 1120),
-    "dashboard-reference-dark.png": (2240, 1600),
-    "dashboard-reference-light.png": (2240, 1600),
+    f"dashboard-{viewport}-{appearance}.png": (width * 2, height * 2)
+    for viewport, width, height in (
+        ("minimum", 960, 560), ("reference", 1120, 800),
+        ("weekly-reference", 1120, 900), ("trust-unavailable", 1120, 800),
+        ("all-clear", 1120, 800), ("next-step", 1120, 800),
+    )
+    for appearance in ("light", "dark")
 }
 
 
@@ -80,7 +83,7 @@ def main() -> None:
         images = temporary_root / "images"
         images.mkdir()
         # Renderer directories are shared by every visual suite. Exercise the
-        # Dashboard packager with its four inputs, not unrelated Menu or Work PNGs.
+        # Dashboard packager with its complete matrix, not unrelated Menu or Work PNGs.
         for filename in EXPECTED_DIMENSIONS:
             shutil.copy(reference_directories[0] / filename, images / filename)
         output = temporary_root / "manifest.json"

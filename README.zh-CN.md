@@ -9,9 +9,9 @@
 
 **agentacct 帮你搞清楚一件事：你的 agent 到底干了什么。**
 
-很多时候，你的 coding agent 号称完成了一个任务，可你并不知道它具体做了什么、花了多少钱、哪些结果是真正验证过的。agentacct 把这些整理成每个任务一张 Work Receipt（工作收据），数据来自 Claude Code、Codex、OpenCode、Hermes 等 agent 本来就写在你电脑上的会话日志。不需要注册账号，不上传云端，所有数据都留在本机。
+看清不同项目、不同客户端里的 coding agents 最近做了什么：活动、工具调用、记录的步骤、检查、token 和估算费用。打开任务，就能沿着 Work Receipt（工作收据）的时间线，从一次尝试看到后来的结果。数据来自 Claude Code、Codex、OpenCode、Hermes 等客户端的本地会话日志。不需要注册账号，不上传云端，所有数据都留在本机。
 
-![Sessions 视图：左侧是任务列表，每一行都有自己的判定（Verified、In Progress、Reported、Observed）；右侧打开的是"给登录接口加一个令牌桶限流"这张收据，判定为 Verified，顶部两条汇总条显示 5 个步骤（4 个自检、1 个仅声明）和 5 次检查（全部通过），中间是带编号的步骤列表，最新一步展开后能看到 agent 上报的检查、退出码和改动的文件，最下方是活动时间线，检查卡片从 12 个失败一路走到 12、12、38 个通过。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-work-receipt.png)
+![Sessions 与 Work Receipt：按最新活动排序的任务列表，旁边是记录的结果、会话数、估算费用、声明支持情况、检查结果和活动时间线。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-work-receipt.png)
 
 <sub>截图里是合成的演示数据；装好之后你看到的是自己机器上的真实数据。</sub>
 
@@ -29,37 +29,37 @@ agentacct tui       # 终端版界面
 
 各个 agent 的具体配置、项目级安装（`--scope project`），以及用 `uv` 或 `venv` 安装的方式，见 [INSTALL.md](INSTALL.md)（英文）。
 
-## "做完了"，谁说的算？
+## 沿着活动，看清发生了什么
 
-上面这张收据依次回答三个问题：任务完成了吗？这是谁说的？证据现在还有效吗？
+Sessions 默认按最近活动排序，可以按任务或项目搜索，也可以手动切换其他排序。每张收据汇总参与的会话、记录的结果、估算费用、声明与检查；活动时间线放在前面，步骤和完整检查详情可以一键跳转。
 
-agent 自己说的"做完了"只算 **Reported**（自述完成）。只有当所有现行检查都通过、而且是在最后一次记录的改动之后跑的，任务才会标为 **Verified**（已验证）。没有任何检查的步骤只是 **claimed**（一句声明）；每一项检查都注明它的证据等级：是 agent 自己上报的，是 hook 观测到的退出码，还是 CI 的结果。拿上面这张收据来说，第 1 到 4 步都有 agent 上报的检查，第 5 步只是一句声明，收据就如实这么写。
-
-步骤下方的时间线把那次失败的运行原样留着：第一次测试 12 个用例失败，后来几次分别通过了 12、12 和 38 个。失败不会被平均掉，所以你能清楚看到证据是在哪个时刻追上代码的，以及有没有追上。
+agent 自己说的“做完了”算 **Reported**（自述完成）。**Verified**（已验证）需要当前检查全部通过，并且检查发生在最后一次记录的改动之后。声明和检查分开显示，失败尝试会和后来的结果一起保留。记录到失败不等于需要你亲自介入。
 
 ## 一整天的工作，不管用的是哪个 agent
 
-![Work 标签页：一个叫 "billing-svc" 的分组，8 个会话、4 个 agent、前后约 9 小时（费用 ≈$72.71，是各张收据相加的结果），全部排在 09:05 到 18:20 的同一条时间轴上。两段较长的 Claude Code 运行撑起了上午和下午；更短的 Codex 和 Hermes 运行嵌在它们中间；OpenCode 的运行跨在边缘；最后一条需要处理的运行带着红点。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-work.png)
+![Work 分组展示参与的客户端、最近会话、token 合计和估算费用，并可进入项目的共享活动详情。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-work.png)
 
-在 Work 标签页里把一个 work group 指向某个项目目录，这个目录下跑过的所有会话都会出现在同一条时间轴上，不管是哪个 agent 跑的。每个会话保留自己的收据和证据；分组显示的合计只是 8 张收据的简单相加，不是对整个工作的综合评判。
+把 work group 指向项目目录，就能看到哪些 agents 在这里工作、最近做了什么。打开分组可以看会话详情和共享时间线。每个会话保留自己的证据；合计来自参与的会话，数据不完整或跨目录重复计入时会明确标注。
 
-## 一天从最需要你处理的事开始
+## 从最近活动开始
 
-![Dashboard：Needs review 区块置顶了"修复不稳定的支付测试"（billing-svc，claude-code，1 个失败 7 个通过，记录的原因是 Failed check，来源是 MCP record），配有 Review evidence 和 Copy review brief 两个按钮；右侧的 Right now 栏显示 Working now、Capacity、Usage change 和 Evidence trust；下方是 Recent work 表格和最近七天的用量图。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-dashboard.png)
+![Dashboard 总览展示近期会话状态、已记录任务数、七天用量和按最新活动排序的任务表；历史问题折叠在列表下方。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-dashboard.png)
 
-Needs review 区块只挑出最需要人介入的那一个任务，告诉你记录在案的原因，以及这个判断的依据从哪来：这里是"修复不稳定的支付测试"的一次失败检查，通过 MCP 记录下来的。**Copy review brief** 只复制记录在案的事实，不会重新执行任何东西。
+Dashboard 展示各个项目最新记录的工作，以及客户端、活动时间、结果、证据和费用。历史失败检查与阻塞仍然可以在 **Recorded issues** 中查看，但不会决定默认排序，也不会被当作你必须处理的待办。右键点击 **Recorded issues** 中的一行，可以复制基于已有记录的摘要。
 
-## 在 agent 撞上额度上限之前，先看清余量
+## 看懂工作背后的用量
 
-![Usage & limits：按客户端显示供应商的额度窗口（codex 的 5 小时窗口已用 12%、每周额度已用 63%，带重置时间；claude-code 分别是 34% 和 59%；opencode 和 hermes 没有供应商额度信息），旁边是每个客户端最近七天的实际用量，全部标注为 pricing estimate。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-usage.png)
+![Usage 展示每日图表、Fresh、Cache、Total 和 Cost 列，以及所选日期按客户端和模型拆分的用量，分别列出缓存读取与写入。日期表示按活动日期归属的会话总量。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-usage.png)
 
-各家供应商上报的额度窗口，和每个 agent 实际的用量并排显示。token 数来自客户端自己的记录，费用是按价目表估算的，带 `≈` 标记，从来不是账单。
+选择日期，就能比较客户端和模型的用量，例如区分 Codex 和 Hermes 使用同一模型的记录。token 图表会记住你的 **Fresh** 或 **All tokens** 选择。表格始终并列展示新增、缓存和总 token；客户端与模型明细还会区分缓存读取与写入。将鼠标移到 **Fresh** 数值上，可以查看输入和输出计数。
+
+日期表示**按活动日期归属的会话总量**；跨天会话不会拆成精确的每日消耗。同一页面也能查看供应商上报的额度窗口和重置时间。token 来自客户端记录，费用是带 `≈` 标记的价目表估算，不是账单。
 
 ## 终端里也能用
 
 ![agentacct tui：Needs review 区块置顶一个被阻塞的 claude-code 任务，带记录的原因、下一步和 MCP record 来源；Right now 栏显示 Working now、Capacity、Usage change 和 Evidence trust；Recent work 表格列出结果、证据和估算费用；底部是用量历史的迷你图。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
 
-`agentacct tui` 在终端里显示同样的 Needs review 区块、收据和额度；按 `?` 查看快捷键。终端版暂时没有按目录分组的标签页。
+`agentacct tui` 在终端里提供收据、用量、额度和独立的 review 总览，也支持按目录分组的 Work 时间线。按 `?` 查看快捷键。
 
 ## 宁可留白，也不瞎猜
 

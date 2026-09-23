@@ -531,6 +531,31 @@ final class DashboardInteractionTests: XCTestCase {
     }
 
     @MainActor
+    func testSessionsLandingResetsAnEarlierAttentionSortToLatest() {
+        let selection = AppSelection()
+        XCTAssertEqual(selection.workSort, .latest)
+        selection.workSort = .attention
+        selection.workGroup = .attention
+        selection.open(.work)
+        XCTAssertEqual(selection.workSort, .latest)
+        XCTAssertNil(selection.workGroup)
+        XCTAssertNil(selection.taskId)
+    }
+
+    @MainActor
+    func testIssueDeepLinkKeepsChronologyAndCostIsStillAnExplicitChoice() {
+        let selection = AppSelection()
+        selection.workSort = .attention
+        selection.workGroup = .attention
+        selection.open(.attentionTask("with-failed-attempt"))
+        XCTAssertEqual(selection.workSort, .latest)
+        XCTAssertNil(selection.workGroup)
+        selection.workSort = .cost
+        selection.open(.task("another-task"))
+        XCTAssertEqual(selection.workSort, .cost)
+    }
+
+    @MainActor
     func testReviewQueueDestinationSelectsTheBoundedAttentionQueue() {
         let selection = AppSelection()
         selection.workSort = .latest
@@ -542,11 +567,11 @@ final class DashboardInteractionTests: XCTestCase {
         XCTAssertNil(selection.taskId)
         XCTAssertNil(selection.sessionId)
         XCTAssertEqual(selection.workGroup, .attention)
-        XCTAssertEqual(selection.workSort, .attention)
+        XCTAssertEqual(selection.workSort, .latest)
     }
 
     @MainActor
-    func testTaskDestinationCarriesItsQueueOriginExplicitly() {
+    func testTaskDestinationDoesNotTurnAnIssueIntoTheDefaultQueue() {
         let selection = AppSelection()
         selection.workGroup = .attention
 
@@ -555,7 +580,7 @@ final class DashboardInteractionTests: XCTestCase {
 
         selection.open(.attentionTask("review-task"))
         XCTAssertEqual(selection.taskId, "review-task")
-        XCTAssertEqual(selection.workGroup, .attention, "Review-item back navigation should return to the queue")
+        XCTAssertNil(selection.workGroup, "An issue deep link should open its context without imposing a queue")
     }
 
     func testAttentionRequestGenerationRejectsAStaleResponse() {
@@ -1420,7 +1445,7 @@ final class DashboardInteractionTests: XCTestCase {
             selection.workBrowse.group,
             "A recent-task destination must clear a stale attention-queue origin"
         )
-        XCTAssertEqual(selection.workBrowse.sort, .cost)
+        XCTAssertEqual(selection.workBrowse.sort, .latest, "The Sessions landing page always starts with Latest")
         XCTAssertEqual(selection.workBrowse.pendingFocusRestorationTaskId, "task-1")
     }
 
@@ -1654,8 +1679,8 @@ final class DashboardInteractionTests: XCTestCase {
     func testSortMenuReadsSentenceCaseWhileRawValuesStayStable() {
         // The menu and its trigger show these words; raw values remain the
         // identifiers the rest of the app keys on.
-        XCTAssertEqual(WorkSort.allCases.map(\.label), ["Attention first", "Latest", "Highest cost"])
-        XCTAssertEqual(WorkSort.allCases.map(\.rawValue), ["attention", "latest", "cost"])
+        XCTAssertEqual(WorkSort.allCases.map(\.label), ["Latest", "Attention first", "Highest cost"])
+        XCTAssertEqual(WorkSort.allCases.map(\.rawValue), ["latest", "attention", "cost"])
     }
 
     func testFailedChecksPutReportedReceiptInAttentionGroupAndSort() throws {

@@ -220,6 +220,8 @@ final class DashboardStore {
         receiptListProjection = fixture.tasks.projection
         receiptProjection = fixture.work?.receipt.projection
         ingestion = ingestionOverride ?? fixture.ingestion?.ingestion
+        worksets = fixture.worksets?.worksets ?? []
+        worksetCandidates = fixture.worksetCandidates?.candidates ?? []
         switch workState {
         case .populated, .projectionUpdating:
             receiptTasks = fixture.tasks.tasks
@@ -1095,28 +1097,25 @@ final class AppSelection {
             taskId = nil
             sessionId = nil
             workGroup = nil
+            workSort = .latest
             pane = .work
         case .reviewQueue:
             taskId = nil
             sessionId = nil
             workGroup = .attention
-            workSort = .attention
+            workSort = .latest
             pane = .work
-        case .task(let id):
+        case .task(let id), .attentionTask(let id):
             taskId = id
             sessionId = nil
             workGroup = nil
-            pane = .work
-        case .attentionTask(let id):
-            taskId = id
-            sessionId = nil
-            workGroup = .attention
-            workSort = .attention
+            if workSort == .attention { workSort = .latest }
             pane = .work
         case .session(let id):
             taskId = nil
             sessionId = id
             workGroup = nil
+            if workSort == .attention { workSort = .latest }
             pane = .work
         case .limits:
             taskId = nil

@@ -48,7 +48,7 @@ def test_visual_reference_workflow_uses_two_fresh_canonical_renderers() -> None:
     steps = render["steps"]
     step_names = [step["name"] for step in steps]
     assert step_names.index("Check canonical renderer") < step_names.index(
-        "Run deterministic dashboard render tests"
+        "Run deterministic suite render tests"
     )
     combined = _combined_steps(render)
     assert "visual-snapshots check-environment" in combined
@@ -139,8 +139,9 @@ def test_candidate_suite_is_explicit_and_does_not_choose_its_own_inventory() -> 
     workflow = _workflow()
     suite = workflow["on"]["workflow_dispatch"]["inputs"]["suite"]
     assert suite == {"description": "Visual suite to render and validate", "required": True,
-                     "type": "choice", "default": "dashboard", "options": ["dashboard", "usage"]}
-    assert 'case "$CANDIDATE_SUITE" in dashboard|usage)' in _combined_steps(workflow["jobs"]["preflight"])
+                     "type": "choice", "default": "dashboard", "options": ["dashboard", "usage", "work", "sources"]}
+    assert 'case "$CANDIDATE_SUITE" in dashboard|usage|work|sources)' in _combined_steps(workflow["jobs"]["preflight"])
     render = _combined_steps(workflow["jobs"]["render"])
-    assert 'UsageSnapshotHarnessTests' in render
+    for suite_name in ('Dashboard', 'Usage', 'Work', 'Sources'):
+        assert f'{suite_name}SnapshotHarnessTests' in render
     assert '--suite "$CANDIDATE_SUITE"' in render

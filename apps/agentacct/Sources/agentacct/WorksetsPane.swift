@@ -12,6 +12,7 @@ import SwiftUI
 
 struct WorksetsPane: View {
     @Environment(DashboardStore.self) private var dashboard
+    @Environment(AppSelection.self) private var selection
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     @State private var isCreating = false
@@ -24,6 +25,7 @@ struct WorksetsPane: View {
     @State private var pendingWorksetId = ""
     // The group whose detail (zoomable timeline) is open, if any.
     @State private var openWorksetId: String?
+    @State private var showsAllProjects = false
 
     private var stacksRows: Bool { dynamicTypeSize.isAccessibilitySize }
 
@@ -51,11 +53,11 @@ struct WorksetsPane: View {
                 Text("Work")
                     .workFont(.titlePage).tracking(Type.titlePageTracking)
                     .foregroundStyle(Theme.ink)
-                Text("Group a folder's sessions across every agent you run")
+                Text("Recent project activity, across the agents doing the work")
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             Spacer(minLength: Space.m)
-            if openWorksetId == nil && (!dashboard.worksets.isEmpty || isCreating) {
+            if openWorksetId == nil {
                 Button {
                     beginCreating()
                 } label: {
@@ -72,11 +74,30 @@ struct WorksetsPane: View {
     private var content: some View {
         if dashboard.isOfflineSnapshot {
             offlineNotice
-        } else if let error = dashboard.worksetsError, dashboard.worksets.isEmpty {
-            unavailableNotice(error)
         } else if let id = openWorksetId, let card = dashboard.worksets.first(where: { $0.worksetId == id }) {
+            if let error = dashboard.worksetsError {
+                unavailableNotice(error).padding(.bottom, Space.l)
+            }
             WorksetDetailView(workset: card, onBack: { openWorksetId = nil })
         } else {
+            if let error = dashboard.worksetsError {
+                unavailableNotice(error).padding(.bottom, Space.l)
+            }
+            if let error = dashboard.worksetCandidatesError {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(dashboard.worksetCandidates.isEmpty ? "Project activity unavailable" : "Project activity hasn't refreshed")
+                        .workFont(.rowLabel).foregroundStyle(Theme.ink)
+                    if !dashboard.worksetCandidates.isEmpty {
+                        Text("Showing previously loaded folders.").workFont(.caption).foregroundStyle(Theme.muted)
+                    }
+                    Text(error).workFont(.caption).foregroundStyle(Theme.muted)
+                }
+                .padding(Space.cardPad)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+                .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
+                .padding(.bottom, Space.l)
+            }
             if isCreating {
                 WorksetCreateForm(
                     candidates: dashboard.worksetCandidates,
@@ -92,13 +113,75 @@ struct WorksetsPane: View {
             }
             if dashboard.worksets.isEmpty && dashboard.isLoadingWorksets && !isCreating {
                 loadingState
-            } else if dashboard.worksets.isEmpty && !isCreating {
+            } else if dashboard.worksets.isEmpty && dashboard.worksetCandidates.isEmpty && !isCreating
+                        && dashboard.worksetsError == nil && dashboard.worksetCandidatesError == nil {
                 emptyState
             } else {
                 VStack(alignment: .leading, spacing: Space.xl) {
-                    ForEach(dashboard.worksets) { workset in
-                        WorksetCardView(workset: workset, onOpen: { openWorksetId = workset.worksetId })
+                    if !dashboard.worksets.isEmpty {
+                        WorksetDetailSectionHeader(title: "Work groups", trailing: "Latest activity first")
+                        ForEach(WorksetPresentation.recentGroups(dashboard.worksets)) { workset in
+                            WorksetCardView(workset: workset, onOpen: { openWorksetId = workset.worksetId })
+                        }
                     }
+                    projectActivity
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var projectActivity: some View {
+        let candidates = WorksetPresentation.recentProjects(dashboard.worksetCandidates.filter { !$0.alreadyGrouped })
+        if !candidates.isEmpty {
+            VStack(alignment: .leading, spacing: Space.m) {
+                WorksetDetailSectionHeader(title: dashboard.worksets.isEmpty ? "Project activity" : "More project activity", trailing: "\(candidates.count) folders · latest first")
+                Text("Folders where your agents have worked. Search by name, or save a group for an exact folder timeline.")
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+                VStack(spacing: 0) {
+                    ForEach(Array((showsAllProjects ? candidates : Array(candidates.prefix(8))).enumerated()), id: \.element.id) { index, candidate in
+                        if index > 0 { Divider().overlay(Theme.hairline) }
+                        HStack(spacing: Space.m) {
+                            Image(systemName: "folder").foregroundStyle(Theme.muted)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(candidate.label).workFont(.rowLabel).foregroundStyle(Theme.ink)
+                                Text(candidate.sources.map(WorksetFormat.sourceLabel).joined(separator: " · "))
+                                    .workFont(.caption).foregroundStyle(Theme.muted)
+                            }
+                            Spacer(minLength: Space.s)
+                            VStack(alignment: .trailing, spacing: 5) {
+                                Text(Fmt.count(candidate.sessionCount, "session")).workFont(.dataSmall).foregroundStyle(Theme.ink)
+                                Text(WorksetPresentation.activityLabel(candidate.lastActivityAt)).workFont(.caption).foregroundStyle(Theme.muted)
+                            }
+                            VStack(alignment: .trailing, spacing: 4) {
+                                Button("Search sessions") {
+                                    selection.open(.work)
+                                    selection.workBrowse.query = candidate.label
+                                }
+                                .buttonStyle(QuietButtonStyle(horizontalPadding: 6)).foregroundStyle(Theme.accent)
+                                .help("Search recorded sessions for \(candidate.label)")
+                                .accessibilityLabel("Search sessions for \(candidate.label)")
+                                .accessibilityIdentifier("worksets.project-search.\(candidate.label)")
+                                Button("Group sessions") {
+                                    beginCreating()
+                                    selectedCandidate = candidate.projectIdentity
+                                    newName = candidate.label
+                                }
+                                .buttonStyle(QuietButtonStyle(horizontalPadding: 6)).foregroundStyle(Theme.muted)
+                                .accessibilityLabel("Group sessions for \(candidate.label)")
+                                .accessibilityIdentifier("worksets.project.\(candidate.label)")
+                                .disabled(dashboard.isOfflineSnapshot)
+                            }
+                        }
+                        .padding(Space.m)
+                        .contentShape(Rectangle())
+                    }
+                }
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+                .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
+                if candidates.count > 8 {
+                    Button(showsAllProjects ? "Show fewer projects" : "Show all \(candidates.count) projects") { showsAllProjects.toggle() }
+                        .buttonStyle(QuietButtonStyle()).foregroundStyle(Theme.accent)
                 }
             }
         }
@@ -119,9 +202,9 @@ struct WorksetsPane: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: Space.m) {
-            Text("Point Work at a folder")
+            Text("See a project's work in one place")
                 .workFont(.titleCard).foregroundStyle(Theme.ink)
-            Text("Pick a project folder and agentacct gathers every session that ran there — across all your agents — onto one timeline. It never changes a session's own receipt; the group is your view of the work.")
+            Text("As your agents work in project folders, their activity appears here. Save a work group to see who contributed, explore recent sessions, and compare their usage on a shared timeline.")
                 .workFont(.body).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
             Button {
@@ -156,7 +239,11 @@ struct WorksetsPane: View {
 
     private func unavailableNotice(_ error: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Work groups unavailable").workFont(.rowLabel).foregroundStyle(Theme.ink)
+            Text(dashboard.worksets.isEmpty ? "Work groups unavailable" : "Work groups haven't refreshed")
+                .workFont(.rowLabel).foregroundStyle(Theme.ink)
+            if !dashboard.worksets.isEmpty {
+                Text("Showing previously loaded sessions and totals.").workFont(.caption).foregroundStyle(Theme.muted)
+            }
             Text(error).workFont(.caption).foregroundStyle(Theme.muted)
         }
         .padding(Space.cardPad)
@@ -349,13 +436,20 @@ private struct WorksetCardView: View {
                 deleteConfirm
             }
             WorksetSummaryRow(summary: workset.summary)
-            WorksetTimeline(
-                lanes: workset.sessions,
-                sources: workset.summary.sources,
-                sessionsTotal: workset.sessionsTotal ?? workset.summary.sessionCount,
-                truncated: workset.sessionsTruncated ?? false
-            )
-            WorksetHonestyNote(summary: workset.summary)
+            WorksetParticipationRow(sources: workset.summary.sources)
+            WorksetDetailSectionHeader(title: "Recent sessions", trailing: WorksetPresentation.activityLabel(workset.summary.lastActivityAt))
+            WorksetSessionsList(lanes: Array(WorksetPresentation.recentSessions(workset.sessions).prefix(3)),
+                                sessionsTotal: workset.sessionsTotal ?? workset.summary.sessionCount,
+                                showsHiddenNote: false)
+            Button(action: onOpen) {
+                Label("Explore all \(workset.sessionsTotal ?? workset.summary.sessionCount) sessions & activity", systemImage: "arrow.right")
+            }
+            .buttonStyle(QuietButtonStyle(horizontalPadding: 0)).foregroundStyle(Theme.accent)
+            .accessibilityIdentifier("worksets.explore")
+            if (workset.summary.sharedSessions ?? 0) > 0 {
+                Text("\(workset.summary.sharedSessions ?? 0) sessions also worked in other folders; group totals can overlap.")
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+            }
             if let actionError {
                 Text(actionError).workFont(.caption).foregroundStyle(Theme.coral)
             }
@@ -390,7 +484,6 @@ private struct WorksetCardView: View {
                 .buttonStyle(QuietButtonStyle(horizontalPadding: 4, verticalPadding: 2))
                 .accessibilityIdentifier("worksets.open")
                 .help("Open this work group")
-                WorksetChip(text: "grouped by folder")
                 Spacer()
                 if !dashboard.isOfflineSnapshot {
                     Button { beginRename() } label: { Text("Rename") }
@@ -1094,17 +1187,14 @@ private struct WorksetDetailView: View {
             }
 
             WorksetKPIRow(card: workset)
-            OutcomeBar(
-                title: "Sessions",
-                total: "\(sessionsTotal) total",
-                segments: WorksetOutcome.sessionSegments(workset.sessions)
-            )
+            WorksetParticipationRow(sources: workset.summary.sources)
+            WorksetEvidenceSummary(card: workset)
 
             // The sessions list leads the detail so the group is more than a
             // timeline: each row is one session's own honest state and drills in.
             WorksetDetailSectionHeader(
-                title: "Sessions",
-                trailing: "\(sessionsTotal) session\(sessionsTotal == 1 ? "" : "s") · \(workset.summary.sources.count) source\(workset.summary.sources.count == 1 ? "" : "s")"
+                title: "Recent sessions",
+                trailing: "Latest activity first · \(sessionsTotal) total"
             )
             WorksetSessionsList(
                 lanes: workset.sessions,
@@ -1112,7 +1202,7 @@ private struct WorksetDetailView: View {
             )
 
             WorksetDetailSectionHeader(
-                title: "Activity",
+                title: "Activity over time",
                 trailing: activityTrailing
             )
             WorksetTimeline(
@@ -1162,21 +1252,31 @@ private struct WorksetDetailSectionHeader: View {
 private struct WorksetSessionsList: View {
     let lanes: [WorksetLane]
     let sessionsTotal: Int
+    var showsHiddenNote = true
     @Environment(AppSelection.self) private var appSelection
+    @State private var showsAllLoaded = false
 
     private var hiddenCount: Int { max(0, sessionsTotal - lanes.count) }
+    private var ordered: [WorksetLane] { WorksetPresentation.recentSessions(lanes) }
+    private var visible: [WorksetLane] { showsAllLoaded ? ordered : Array(ordered.prefix(12)) }
 
     var body: some View {
         VStack(spacing: 0) {
-            ForEach(Array(lanes.enumerated()), id: \.element.id) { index, lane in
+            ForEach(Array(visible.enumerated()), id: \.element.id) { index, lane in
                 if index > 0 { Divider().overlay(Theme.hairline) }
                 WorksetSessionRow(lane: lane) {
                     if let key = lane.sessionKey, !key.isEmpty { appSelection.open(.session(key)) }
                 }
             }
-            if hiddenCount > 0 {
+            if lanes.count > 12 {
+                Button(showsAllLoaded ? "Show latest 12 sessions" : "Show all \(lanes.count) loaded sessions") { showsAllLoaded.toggle() }
+                    .buttonStyle(QuietButtonStyle()).foregroundStyle(Theme.accent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, Space.s)
+            }
+            if showsHiddenNote && hiddenCount > 0 {
                 Divider().overlay(Theme.hairline)
-                Text("\(hiddenCount) more session\(hiddenCount == 1 ? "" : "s") in this group — open a narrower time range to see them")
+                Text("Loaded \(lanes.count) of \(sessionsTotal) sessions for this group. The overview totals include all members.")
                     .workFont(.caption).foregroundStyle(Theme.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, Space.s)
@@ -1208,9 +1308,6 @@ private struct WorksetSessionRow: View {
                             .workFont(.rowLabel).foregroundStyle(Theme.ink)
                             .lineLimit(2)
                             .layoutPriority(1)
-                        if lane.status == "blocked" {
-                            Chip(text: "blocked", tint: Theme.coral)
-                        }
                         if isSubagent, let kind = lane.sessionKind {
                             Chip(text: kind, tint: Theme.muted)
                         }
@@ -1221,16 +1318,21 @@ private struct WorksetSessionRow: View {
                     HStack(spacing: Space.s) {
                         Text(WorksetFormat.sourceLabel(lane.client ?? "unknown"))
                             .workFont(.caption).foregroundStyle(Theme.muted)
-                        laneOutcome
+                        Text("· \(WorksetPresentation.activityLabel(lane.lastActivityAt))")
+                            .workFont(.caption).foregroundStyle(Theme.muted)
+                        if let status = lane.status, !status.isEmpty {
+                            Text("· \(status.replacingOccurrences(of: "_", with: " "))")
+                                .workFont(.caption).foregroundStyle(Theme.muted)
+                        }
                     }
+                    laneOutcome
                 }
 
                 Spacer(minLength: Space.s)
 
                 VStack(alignment: .trailing, spacing: 4) {
-                    if let cost = WorksetFormat.laneCost(lane) {
-                        Text(cost).workFont(.dataSmall).foregroundStyle(Theme.ink)
-                    }
+                    Text(WorksetFormat.laneCost(lane) ?? "Cost not recorded")
+                        .workFont(.dataSmall).foregroundStyle(lane.estimatedCostUsd == nil ? Theme.muted : Theme.ink)
                     HStack(spacing: Space.s) {
                         if let tokens = lane.totalTokens, tokens > 0 {
                             Text("\(UsageTotals.compact(tokens)) tok")
@@ -1262,15 +1364,18 @@ private struct WorksetSessionRow: View {
     /// green, matching the workset honesty note.
     @ViewBuilder private var laneOutcome: some View {
         HStack(spacing: 6) {
+            if let calls = lane.toolCalls {
+                Text(Fmt.count(calls, "tool call")).workFont(.dataSmall).foregroundStyle(Theme.muted)
+            }
             if let steps = lane.steps, steps > 0 {
-                Text("· \(steps) step\(steps == 1 ? "" : "s")")
+                Text(Fmt.count(steps, "recorded step"))
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
             if let failed = lane.checksFailed, failed > 0 {
-                Text("· \(failed) failed")
+                Text("\(failed) failed checks")
                     .workFont(.dataSmallSemibold).foregroundStyle(Theme.coral)
             } else if let checks = lane.checks, checks > 0 {
-                Text("· \(checks) check\(checks == 1 ? "" : "s")")
+                Text(Fmt.count(checks, "check"))
                     .workFont(.dataSmall).foregroundStyle(Theme.muted)
             }
         }
@@ -1278,6 +1383,7 @@ private struct WorksetSessionRow: View {
 
     private var accessibilityLabel: String {
         var parts = [lane.displayTitle, WorksetFormat.sourceLabel(lane.client ?? "unknown")]
+        parts.append(WorksetPresentation.activityLabel(lane.lastActivityAt))
         if isSubagent, let kind = lane.sessionKind { parts.append("\(kind) subagent") }
         if let shared = lane.sharedFoldersLabel { parts.append("also ran in \(shared)") }
         if let status = lane.status { parts.append(status) }
@@ -1297,30 +1403,66 @@ private struct WorksetSessionRow: View {
 /// are a sum of independent receipts, so the Checks tile flags failures but the
 /// composition (which sessions are blocked / done) lives in the outcome bar and
 /// the per-session list, never in a single combined verdict.
+private struct WorksetParticipationRow: View {
+    let sources: [WorksetSource]
+
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: Space.s)], alignment: .leading, spacing: Space.s) {
+            ForEach(sources.sorted { $0.sessionCount == $1.sessionCount ? $0.client < $1.client : $0.sessionCount > $1.sessionCount }) { source in
+                HStack(spacing: Space.s) {
+                    RoundedRectangle(cornerRadius: 2).fill(Theme.sourceColor(source.client)).frame(width: 4, height: 24)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(WorksetFormat.sourceLabel(source.client)).workFont(.captionSemibold).foregroundStyle(Theme.ink)
+                        Text(Fmt.count(source.sessionCount, "session")).workFont(.dataSmall).foregroundStyle(Theme.muted)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(Space.s)
+                .background(Theme.chrome, in: RoundedRectangle(cornerRadius: Metrics.radius))
+            }
+        }
+        .accessibilityLabel("Client participation")
+    }
+}
+
+private struct WorksetEvidenceSummary: View {
+    let card: WorksetCard
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            WorksetDetailSectionHeader(title: "Recorded activity", trailing: "Across \(card.sessions.count) loaded sessions")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: Space.m)], alignment: .leading, spacing: Space.s) {
+                metric("Tool calls", key: \.toolCalls)
+                metric("Recorded steps", key: \.steps)
+                metric("Checks", key: \.checks)
+                metric("Failed checks", key: \.checksFailed)
+            }
+        }
+    }
+
+    private func metric(_ label: String, key: KeyPath<WorksetLane, Int?>) -> some View {
+        let observed = WorksetPresentation.observedCount(card.sessions, key: key)
+        return VStack(alignment: .leading, spacing: 3) {
+            Text(label).workFont(.caption).foregroundStyle(Theme.muted)
+            Text(observed.value.map { $0.formatted() } ?? "—").workFont(.rowLabel).foregroundStyle(Theme.ink)
+            Text(observed.coverageLabel).workFont(.caption).foregroundStyle(Theme.muted)
+        }
+    }
+}
+
 private struct WorksetKPIRow: View {
     let card: WorksetCard
 
-    private var lanes: [WorksetLane] { card.sessions }
-    private var stepsSum: Int { lanes.reduce(0) { $0 + ($1.steps ?? 0) } }
-    private var checksSum: Int { lanes.reduce(0) { $0 + ($1.checks ?? 0) } }
-    private var failedSum: Int { lanes.reduce(0) { $0 + ($1.checksFailed ?? 0) } }
-    private var toolCallsSum: Int { lanes.reduce(0) { $0 + ($1.toolCalls ?? 0) } }
-
     var body: some View {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: Space.s)], spacing: Space.s) {
-            PanelTile(label: "Steps", value: "\(stepsSum)")
-            PanelTile(label: "Checks", value: "\(checksSum)",
-                      detail: failedSum > 0 ? "\(failedSum) failed" : nil,
-                      accent: failedSum > 0 ? Theme.coral : Theme.ink)
-            PanelTile(label: "Tool calls", value: toolCallsSum > 0 ? "\(toolCallsSum)" : "—")
+            PanelTile(label: "Sessions", value: "\(card.summary.sessionCount)")
+            PanelTile(label: "Clients", value: "\(card.summary.sources.count)")
+            PanelTile(label: "All tokens", value: card.summary.totalTokens.map { UsageTotals.compact($0) } ?? "—")
             PanelTile(label: card.summary.costComplete == true ? "Cost, sum" : "Cost, partial",
                       value: worksetCostLabel(card.summary) ?? "not priced")
-            PanelTile(label: "Tokens",
-                      value: card.summary.totalTokens.map { UsageTotals.compact($0) } ?? "—")
-            PanelTile(label: "Span",
-                      value: WorksetFormat.span(from: card.summary.firstActivityAt, to: card.summary.lastActivityAt))
         }
     }
+
 }
 
 enum WorksetOutcome {
@@ -1353,14 +1495,10 @@ private struct WorksetSummaryRow: View {
     let summary: WorksetSummary
 
     var body: some View {
-        HStack(alignment: .top, spacing: Space.xl) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: Space.l)], alignment: .leading, spacing: Space.m) {
             metric("sessions", "\(summary.sessionCount)")
-            metric("sources", "\(summary.sources.count)")
-            metric("span", WorksetFormat.span(from: summary.firstActivityAt, to: summary.lastActivityAt))
-            if let cost = worksetCostLabel(summary) {
-                metric(summary.costComplete == true ? "cost, sum of receipts" : "cost, partial sum", cost)
-            }
-            Spacer()
+            metric("all tokens", summary.totalTokens.map { UsageTotals.compact($0) } ?? "—")
+            metric(summary.costComplete == true ? "cost, sum" : "cost, partial", worksetCostLabel(summary) ?? "not priced")
         }
     }
 
@@ -1383,7 +1521,7 @@ private struct WorksetHonestyNote: View {
             if let shared = summary.sharedSessions, shared > 0 {
                 note("\(shared) session\(shared == 1 ? "" : "s") here also ran in other folders and \(shared == 1 ? "is" : "are") counted in those groups too — one run can appear in more than one Work group.")
             }
-            note("Grouped because you pointed this at a folder. Each session keeps its own receipt and evidence; the total is a sum of \(summary.sessionCount) session\(summary.sessionCount == 1 ? "" : "s"), not a combined verdict.")
+            note("Sessions are grouped by their recorded folder. Costs and tokens sum the individual sessions; evidence remains attached to each session.")
         }
     }
 
@@ -1407,6 +1545,50 @@ private struct WorksetChip: View {
             .padding(.horizontal, Space.s)
             .padding(.vertical, 2)
             .background(Theme.tintAccent, in: Capsule())
+    }
+}
+
+enum WorksetPresentation {
+    /// Recency belongs to activity, never the time a group was renamed/saved.
+    static func recentGroups(_ cards: [WorksetCard]) -> [WorksetCard] {
+        cards.sorted { recentFirst($0.summary.lastActivityAt, $1.summary.lastActivityAt, lhsID: $0.id, rhsID: $1.id) }
+    }
+
+    static func recentProjects(_ projects: [WorksetCandidate]) -> [WorksetCandidate] {
+        projects.sorted { recentFirst($0.lastActivityAt, $1.lastActivityAt, lhsID: $0.id, rhsID: $1.id) }
+    }
+
+    static func recentSessions(_ lanes: [WorksetLane]) -> [WorksetLane] {
+        lanes.sorted { recentFirst($0.lastActivityAt, $1.lastActivityAt, lhsID: $0.id, rhsID: $1.id) }
+    }
+
+    private static func recentFirst(_ lhs: Double?, _ rhs: Double?, lhsID: String, rhsID: String) -> Bool {
+        let left = lhs.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? -.infinity
+        let right = rhs.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? -.infinity
+        return left == right ? lhsID < rhsID : left > right
+    }
+
+    static func activityLabel(_ timestamp: Double?) -> String {
+        guard let timestamp, timestamp.isFinite, timestamp > 0 else { return "Activity time not recorded" }
+        return agoText(timestamp) ?? WorksetFormat.axisLabel(timestamp, span: 0)
+    }
+
+    struct ObservedCount {
+        let value: Int?
+        let reported: Int
+        let total: Int
+
+        var coverageLabel: String {
+            if reported == 0 { return "Not recorded" }
+            return reported == total ? "Across loaded sessions" : "Reported in \(reported) of \(total) sessions"
+        }
+    }
+
+    /// A missing counter is unknown, not zero. Partial evidence is a labeled
+    /// sum of only the sessions that supplied this particular measurement.
+    static func observedCount(_ lanes: [WorksetLane], key: KeyPath<WorksetLane, Int?>) -> ObservedCount {
+        let values = lanes.compactMap { $0[keyPath: key] }.filter { $0 >= 0 }
+        return ObservedCount(value: values.isEmpty ? nil : values.reduce(0, +), reported: values.count, total: lanes.count)
     }
 }
 

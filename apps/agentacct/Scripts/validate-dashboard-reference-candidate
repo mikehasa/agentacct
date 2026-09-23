@@ -11,12 +11,12 @@ from dashboard_reference_candidate import CandidateError, select_suite, validate
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Validate a downloaded dashboard reference candidate without changing files."
+        description="Validate a downloaded visual reference candidate without changing files."
     )
     parser.add_argument("--candidate", required=True, type=Path)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--renderer-id", required=True)
-    parser.add_argument("--suite", choices=("dashboard", "usage"), default="dashboard")
+    parser.add_argument("--suite", choices=("dashboard", "usage", "work", "sources"), default="dashboard")
     return parser.parse_args()
 
 
