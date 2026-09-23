@@ -70,7 +70,7 @@ struct ReceiptOverview: View {
                     .textSelection(.enabled)
 
                 Rectangle().fill(Theme.hairline).frame(height: 1)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: Space.l, alignment: .leading)],
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: Space.l, alignment: .leading)],
                           alignment: .leading, spacing: Space.m) {
                     metric("Claims supported", value: presentation.coverage.value,
                            detail: presentation.coverage.qualifier,
