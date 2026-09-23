@@ -347,4 +347,54 @@ final class WorksetsPresentationTests: XCTestCase {
         XCTAssertEqual(WorksetFormat.duration(3 * 3600), "3.0h")
         XCTAssertEqual(WorksetFormat.duration(12 * 3600), "12h")
     }
+
+    // MARK: observability overview
+
+    func testRecentSessionsPreferActivityOverStatusAndKeepUnknownLast() {
+        let rows = [
+            lane(#"{"session_key":"blocked","status":"blocked","last_activity_at":100}"#),
+            lane(#"{"session_key":"unknown","status":"active"}"#),
+            lane(#"{"session_key":"recent","status":"completed","last_activity_at":300}"#),
+            lane(#"{"session_key":"middle","last_activity_at":200}"#),
+        ]
+        XCTAssertEqual(WorksetPresentation.recentSessions(rows).map(\.id), ["recent", "middle", "blocked", "unknown"])
+    }
+
+    func testRecentGroupsIgnoreRenameClockAndUseRecordedActivity() {
+        func card(_ id: String, activity: Int, updated: Int) -> WorksetCard {
+            let json = #"{"workset_id":"\#(id)","name":"\#(id)","project_identity":"/\#(id)","revision":1,"updated_at":\#(updated),"summary":{"session_count":1,"sources":[],"last_activity_at":\#(activity)},"sessions":[]}"#
+            return try! JSONDecoder().decode(WorksetCard.self, from: Data(json.utf8))
+        }
+        let renamedOld = card("old", activity: 100, updated: 900)
+        let recent = card("recent", activity: 300, updated: 400)
+        XCTAssertEqual(WorksetPresentation.recentGroups([renamedOld, recent]).map(\.id), ["recent", "old"])
+    }
+
+    func testProjectActivitySortingDoesNotPreferLargestProject() {
+        let json = #"[{"project_identity":"/old","label":"Old","session_count":40,"sources":[],"last_activity_at":100},{"project_identity":"/new","label":"New","session_count":2,"sources":[],"last_activity_at":300}]"#
+        let candidates = try! JSONDecoder().decode([WorksetCandidate].self, from: Data(json.utf8))
+        XCTAssertEqual(WorksetPresentation.recentProjects(candidates).map(\.id), ["/new", "/old"])
+    }
+
+    func testEvidenceSummaryDistinguishesMissingFromMeasuredZero() {
+        let unknown = lane(#"{"session_key":"unknown"}"#)
+        let zero = lane(#"{"session_key":"zero","checks":0}"#)
+        let missing = WorksetPresentation.observedCount([unknown], key: \.checks)
+        XCTAssertNil(missing.value)
+        XCTAssertEqual(missing.coverageLabel, "Not recorded")
+        let measured = WorksetPresentation.observedCount([zero], key: \.checks)
+        XCTAssertEqual(measured.value, 0)
+        XCTAssertEqual(measured.reported, 1)
+        XCTAssertEqual(measured.coverageLabel, "Across loaded sessions")
+    }
+
+    func testPartialEvidenceCountsDiscloseTheMeasuredSubset() {
+        let rows = [lane(#"{"session_key":"a","tool_calls":6}"#), lane(#"{"session_key":"b"}"#), lane(#"{"session_key":"c","tool_calls":3}"#)]
+        let result = WorksetPresentation.observedCount(rows, key: \.toolCalls)
+        XCTAssertEqual(result.value, 9)
+        XCTAssertEqual(result.reported, 2)
+        XCTAssertEqual(result.total, 3)
+        XCTAssertEqual(result.coverageLabel, "Reported in 2 of 3 sessions")
+    }
+
 }
