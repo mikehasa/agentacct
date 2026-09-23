@@ -88,7 +88,7 @@ ZH_CN = {
     "Plan & write the tests": "梳理改动并补测试",
     "Scoped the change and the tests to add.": "确定了改动范围和要补的测试。",
     "Started, then hit a blocker on staging.": "开始后在 staging 环境卡住了。",
-    "staging DB credentials unavailable": "拿不到 staging 数据库的凭证",
+    "staging DB credentials unavailable": "演示环境尚未配置 staging 数据库访问凭证，无法执行这一步。",
     "1 failed, 7 passed": "1 个失败，7 个通过",
     # the week's backdrop
     "Migrate the event log to SQLite": "把事件日志迁移到 SQLite",
@@ -169,14 +169,13 @@ EXPANDED_STEPS = "1,0"
 # Crops out of the raw renders: dst -> (raw render, (left, top, right, bottom)).
 # Regions are device pixels; None means the render's own edge.
 CROPS = {
-    # Hero: the task list, then the open receipt — title + verdict, the Steps /
-    # Checks outcome bars, the numbered step spine (one step expanded), and the
-    # activity timeline card — from the wide Sessions render.
-    "app-work-receipt.png": (WIDE_SRC, (0, 130, None, 2760)),
+    # Hero: the task list, recorded outcome, and complete activity timeline.
+    # Stop before Steps so the image ends at a full card boundary.
+    "app-work-receipt.png": (WIDE_SRC, (0, 130, None, 2240)),
     # The Work tab: the nav bar, the page title, and the first (workday) card.
-    "app-work.png": ("window-work-light.png", (0, 0, None, 1122)),
-    # Usage: the page title and the per-client Current capacity table only.
-    "app-usage.png": ("window-usage-light.png", (0, 0, None, 1640)),
+    "app-work.png": ("window-work-light.png", (0, 0, None, 1510)),
+    # Usage: recorded totals, daily history, and the selected client/model rows.
+    "app-usage.png": ("window-usage-light.png", (0, 0, None, None)),
 }
 
 sys.path.insert(0, str(REPO_ROOT / "src"))
@@ -205,14 +204,17 @@ def _usage(svc, *, client, model, session, title, tokens, at, cost, project, cac
     ev = ClientUsageEvent(
         client=client, client_session_id=session,
         source_path=Path(f"/demo/{client}/{session}.jsonl"), title=_t(title), cwd=f"/demo/{project}",
-        model=model, input_tokens=tokens, output_tokens=0, cached_input_tokens=0,
+        # ClientUsageEvent already uses fresh input for every client, including
+        # Codex. Keep its combined cached counter consistent with the detail:
+        # Usage totals add this counter, not Codex's raw total_tokens metadata.
+        model=model, input_tokens=tokens, output_tokens=0, cached_input_tokens=cache_read,
         cache_creation_input_tokens=0, cache_read_input_tokens=cache_read,
         cache_creation_tokens_reported=True, cache_read_tokens_reported=True,
         reasoning_output_tokens=0, provider_name=client,
         started_at=int(started_at if started_at is not None else at), updated_at=int(at),
         turn_count=1, usage_row_lane=f"model:{model}", source_namespace_fingerprint=f"sha256:{client}",
         input_tokens_reported=True, output_tokens_reported=True, reasoning_output_tokens_reported=True,
-        total_tokens=tokens, total_tokens_reported=True,
+        total_tokens=tokens + cache_read, total_tokens_reported=True,
     ).to_sentinel_event()
     ev["estimated_cost_usd"] = cost
     ev["cost_confidence"] = "estimated_from_tokens"
@@ -224,6 +226,15 @@ def _usage(svc, *, client, model, session, title, tokens, at, cost, project, cac
 
 def _section(svc, *, session, title, section_id, status, at, client="claude-code", project="acme-web",
              kind="implementation", summary="", blocker=None, files=None):
+    # Demo records use the same narrative validation as real recording. Keep
+    # short English and translated summaries explicit about their synthetic
+    # origin instead of weakening the production rules for screenshot seeds.
+    rendered_summary = _t(summary)
+    if status in {"completed", "handed_off"} and len(rendered_summary) < 40:
+        note = ("演示记录：用于展示步骤、相关文件和检查之间的关联，不对应真实工作区中的操作。"
+                if LOCALE == "zh-CN" else
+                "Synthetic demo record showing how steps, files, and checks connect.")
+        rendered_summary = f"{rendered_summary} {note}"
     svc.record_event({
         "event_id": f"evt_section_{session}_{section_id}_{status}",
         "created_at": float(at), "source": client, "event_type": f"section_{status}", "run_id": None,
@@ -233,7 +244,7 @@ def _section(svc, *, session, title, section_id, status, at, client="claude-code
             "client_context_keys_authored": ["client_session_id", "client_transcript_id"],
             "demo_occurred_at": float(at),
             "project_dir": f"/demo/{project}", "section_id": section_id, "section_status": status,
-            "section_title": _t(title), "summary": _t(summary), "kind": kind,
+            "section_title": _t(title), "summary": rendered_summary, "kind": kind,
             "files": files if files is not None else ["src/app/module.py"], "blocker": _t(blocker), "next_step": None,
         },
     })
@@ -709,6 +720,37 @@ def _daemon_env():
     return env
 
 
+
+def _ready_snapshot(discovery, daemon, path):
+    """Wait for current synthetic evidence; never publish a pending screenshot."""
+    import json
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    for _ in range(120):
+        request = Request(
+            f"http://127.0.0.1:{discovery['port']}{path}",
+            headers={"Authorization": f"Bearer {discovery['token']}",
+                     "X-Agentacct-Read-Mode": "snapshot"},
+        )
+        try:
+            with urlopen(request, timeout=10) as response:
+                payload = json.load(response)
+                projection = payload.get("projection", {})
+                if response.status == 200 and projection.get("state") == "current":
+                    return payload
+                if projection.get("state") == "error":
+                    sys.exit(f"synthetic snapshot failed for {path}: {projection.get('error')}")
+        except HTTPError:
+            raise
+        except URLError:
+            # Discovery may precede the listening socket by a brief interval.
+            if daemon.poll() is not None:
+                sys.exit("demo daemon exited before its receipts were ready")
+        time.sleep(0.5)
+    sys.exit(f"synthetic snapshot did not become current: {path}")
+
+
 def main():
     shutil.rmtree(FAKE_HOME, ignore_errors=True)
     STORE.mkdir(parents=True, exist_ok=True)
@@ -735,7 +777,38 @@ def main():
             time.sleep(0.5)
         else:
             sys.exit("demo daemon never wrote its discovery file")
-        time.sleep(1.0)  # let the first /v1 projection warm
+        # Each first-requested receipt/session may schedule another generation.
+        # Warm the exact detail the renderer will read, not just the task list.
+        import json
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+        discovery = json.loads(disc.read_text())
+        _ready_snapshot(discovery, daemon, "/v1/tasks?limit=200")
+        # The renderer also reads legacy projections. Their first evidence
+        # recovery can invalidate a just-built snapshot, so prime them before
+        # waiting for the final receipt generation.
+        for path in ("/v1/version", "/v1/glance", "/v1/plan?days=7",
+                     "/usage/summary?days=7&granularity=daily", "/v1/ingestion",
+                     "/v1/connections", "/v1/worksets"):
+            request = Request(f"http://127.0.0.1:{discovery['port']}{path}",
+                              headers={"Authorization": f"Bearer {discovery['token']}"})
+            with urlopen(request, timeout=30) as response:
+                response.read()
+        tasks = _ready_snapshot(discovery, daemon, "/v1/tasks?limit=200")["tasks"]
+        wanted = os.environ.get("AGENTACCT_SNAPSHOT_TASK")
+        flagship = next((row for row in tasks if wanted and
+                         (row["task_id"] == wanted or row["task_id"].startswith(wanted))),
+                        tasks[0] if tasks else None)
+        if flagship is None:
+            sys.exit("synthetic store has no work receipt to render")
+        task_id = flagship["task_id"]
+        receipt = _ready_snapshot(discovery, daemon, "/v1/receipt?" + urlencode({"task": task_id}))
+        for group in receipt.get("sessions", []):
+            for member in group.get("members", []):
+                if member.get("role") == "root":
+                    query = urlencode({"client": member["client"],
+                                       "session_id": member["client_session_id"]})
+                    _ready_snapshot(discovery, daemon, "/v1/session?" + query)
 
         shutil.rmtree(SHOTS_TMP, ignore_errors=True)
         SHOTS_TMP.mkdir(parents=True, exist_ok=True)
@@ -744,7 +817,8 @@ def main():
         # is the only thing that points it at the demo store.
         app_env = {**os.environ, "AGENTACCT_STORE_DIR": str(STORE),
                    "AGENTACCT_SNAPSHOT_WIDE_HEIGHT": str(WIDE_HEIGHT),
-                   "AGENTACCT_SNAPSHOT_EXPANDED_STEPS": EXPANDED_STEPS}
+                   "AGENTACCT_SNAPSHOT_EXPANDED_STEPS": EXPANDED_STEPS,
+                   "AGENTACCT_SNAPSHOT_TASK": task_id}
         r = subprocess.run([str(APP_BIN), "--snapshot", str(SHOTS_TMP)], env=app_env,
                            capture_output=True, text=True, timeout=180)
         if r.returncode != 0:
@@ -771,8 +845,8 @@ def main():
         shutil.copyfile(src, OUT / dst_name)
         curated.append(dst_name)
 
-    # Crop the receipt hero, the timeline, the Work card, and the Usage capacity
-    # table out of their raw renders (see CROPS). Cropping the region, then
+    # Crop the receipt overview/timeline and one complete Work card; keep the
+    # full Usage view (see CROPS). Cropping the region, then
     # framing, makes each read like its own window in the docs.
     for dst_name, (src_name, (left, top, right, bottom)) in CROPS.items():
         src = SHOTS_TMP / src_name
@@ -780,8 +854,11 @@ def main():
             print(f"  WARNING: missing {src_name} (for {dst_name})")
             continue
         raw = Image.open(src)
-        box = (left, top, raw.width if right is None else right,
-               raw.height if bottom is None else bottom)
+        box = (max(0, left), max(0, top),
+               min(raw.width, raw.width if right is None else right),
+               min(raw.height, raw.height if bottom is None else bottom))
+        if box[0] >= box[2] or box[1] >= box[3]:
+            raise ValueError(f"crop for {dst_name} falls outside {src_name}")
         raw.crop(box).save(OUT / dst_name)
         curated.append(dst_name)
     print(f"curated -> {OUT}: {', '.join(curated)}")
