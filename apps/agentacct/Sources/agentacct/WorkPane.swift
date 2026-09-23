@@ -1417,7 +1417,8 @@ private struct WorkTableRow: View {
                     evidenceCell
                     Text("Checks: \(presentation.compactCheckRunsText)")
                         .workFont(.caption).foregroundStyle(presentation.checkRunsAreInconsistent ? Theme.amber : Theme.muted)
-                        .lineLimit(1).help(presentation.checkRunsText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(presentation.checkRunsText)
                 }.frame(width: 190, alignment: .leading)
                 costCell.frame(width: 76, alignment: .trailing)
             }
