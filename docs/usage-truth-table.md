@@ -154,12 +154,17 @@ remain unpriced until a trusted catalog entry exists.
 
 **Stored-row stability vs. the unknown→priced transition.** Once a stored row
 is priced, later catalog price drift never rewrites it. The ONE exception is
-the unknown→priced transition: on a `--refresh --estimate-costs` scan, a
-re-observed row whose stored
-`cost_confidence` is `unknown` and whose `(provider, model)` NOW resolves in
-the catalog is replaced with a priced row — `pricing_source` provenance
-stamped, event id reissued once — after which it is priced and stable like any
-other row. `client_reported` costs are never overwritten.
+the unknown→priced transition: a `--refresh --estimate-costs` scan also fills
+missing estimates for previously imported usage from the selected client(s),
+including history outside `--limit-sessions`. Historical rows use their stored
+token counts and source provenance; no old transcript is reread. A trusted,
+additive row with unknown cost and complete catalog rates for its recorded
+cache buckets receives an estimate and `pricing_source` provenance, with its
+event id reissued once. Already priced and `client_reported` costs remain
+unchanged. Unknown models, explicitly unreported input/output counters, missing
+cache rates, held usage, ambiguous source identities, and previously
+value-redacted rows remain untouched. `--dry-run` previews these repairs, and
+`historical_repriced_events` reports the part outside the discovery window.
 
 ## Practical interpretation
 

@@ -62,6 +62,7 @@ from .client_usage import (
     SUPPORTED_CLIENTS,
     apply_pricing_estimate_to_event,
     bind_discovered_usage_source_namespaces,
+    build_stored_unknown_cost_reprice_batch,
     build_usage_import_diagnostics,
     build_usage_import_write_batches,
     classify_usage_write_conflict_candidates,
@@ -8612,7 +8613,8 @@ def _local_usage_import_payload(
                 write=not dry_run,
             )
         )
-        plan = plan_local_usage_import(candidates, service.list_all_events())
+        stored_usage_events = service.list_all_events()
+        plan = plan_local_usage_import(candidates, stored_usage_events)
         # issue #53: sessions whose usage DID parse but were withheld from import
         # as incomplete (a selected transcript could not be fully read this scan).
         # Captured here — before any later plan reassignment — so the CLI can fail
@@ -8648,6 +8650,23 @@ def _local_usage_import_payload(
             not in bound_namespace_adoption_identities
         ]
         write_batches = build_usage_import_write_batches(import_candidates, plan)
+        historical_reprices: list[dict[str, Any]] = []
+        if refresh and pricing_enabled:
+            # Discovery stays bounded to recent sessions, but a newly available
+            # catalog must also repair older imported unknown-cost rows. Their
+            # trusted token/provenance facts are already in the ledger; rescanning
+            # their transcripts is unnecessary. Keep every observed base with
+            # its existing discovery/conflict path, even if usage was withheld.
+            observed_bases = {
+                (item.client, normalized_local_usage_session_id(item.client, item.client_session_id))
+                for item in [*scanned_candidates, *discovery.session_observations]
+            }
+            historical_batch = build_stored_unknown_cost_reprice_batch(
+                stored_usage_events, client=client, excluded_bases=observed_bases,
+            )
+            historical_reprices = historical_batch[0]
+            if historical_reprices:
+                write_batches.append(historical_batch)
         events = [
             event
             for batch_events, _predicate, _guard, _dedup_key in write_batches
@@ -8709,6 +8728,11 @@ def _local_usage_import_payload(
             for candidate in repriced_candidates
             if candidate.usage_row_identity in recorded_identities
         )
+        historical_repriced_count = sum(
+            recognized_local_usage_row_identity(event) in recorded_identities
+            for event in historical_reprices
+        )
+        actual_repriced_count += historical_repriced_count
         actual_migration_candidates = [
             candidate
             for candidate in plan.migration_candidates
@@ -8902,13 +8926,14 @@ def _local_usage_import_payload(
                 )
             },
             "source_diagnostics": import_diagnostics,
-            "importable_sessions": len(import_candidates),
+            "importable_sessions": len(import_candidates) + len(historical_reprices),
             "withheld_incomplete_sessions": withheld_incomplete_session_count,
             "imported_events": len(recorded),
             "refreshed_events": (
                 refreshed_candidate_count if dry_run and refresh else actual_refresh_count if refresh else 0
             ),
-            "repriced_events": len(repriced_candidates) if dry_run else actual_repriced_count,
+            "repriced_events": len(repriced_candidates) + len(historical_reprices) if dry_run else actual_repriced_count,
+            "historical_repriced_events": len(historical_reprices) if dry_run else historical_repriced_count,
             "pricing_auto_refresh": pricing_auto_refresh,
             "evidence_refreshable_usage": evidence_usage_reconcile,
             # Client-log evidenced links over ALL scanned sessions (install-
@@ -9189,7 +9214,7 @@ def usage_import_local(
     limit_sessions: Annotated[int, typer.Option(help="Recent sessions to inspect per client.")] = 20,
     dry_run: Annotated[bool, typer.Option(help="Preview importable usage without writing agentacct events.")] = False,
     estimate_costs: Annotated[bool, typer.Option(help="Estimate equivalent cost from local token counts using agentacct's pricing table when the model is known. Not provider billing.")] = False,
-    refresh: Annotated[bool, typer.Option("--refresh", help="Also update already-imported sessions: replace each re-observed row whose totals CHANGED with fresh totals. Pricing estimates are recomputed only with --estimate-costs. Unchanged rows are left untouched. Default: each session is imported once at first observation and never updated.")] = False,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Also update already-imported sessions: replace each re-observed row whose totals CHANGED with fresh totals. With --estimate-costs, also price stored unknown-cost history outside the scan limit. Already-priced unchanged rows are left untouched. Default: each session is imported once at first observation and never updated.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Import local usage or observation-only session facts from client stores.
@@ -9260,7 +9285,7 @@ def usage_watch(
     limit_sessions: Annotated[int, typer.Option(help="Recent sessions to inspect per client per scan.")] = 20,
     estimate_costs: Annotated[bool, typer.Option("--estimate-costs/--no-estimate-costs", help="Estimate equivalent cost from known model pricing rows on every scan. Not provider billing. --no-estimate-costs skips the per-scan pricing recompute.")] = False,
     skip_unchanged: Annotated[bool, typer.Option("--skip-unchanged/--no-skip-unchanged", help="Skip the heavy parse when no source file changed since the last scan (mtime+count fingerprint), recording a zero-parse 'unchanged' scan so freshness still advances. Default on. A full scan is forced periodically regardless.")] = True,
-    refresh: Annotated[bool, typer.Option("--refresh", help="Also update already-imported sessions on every scan: replace each re-observed row whose totals CHANGED with fresh totals. Pricing estimates are recomputed only with --estimate-costs. Unchanged rows are left untouched, so idle sessions never churn the ledger. Default: each session is imported once at first observation and never updated.")] = False,
+    refresh: Annotated[bool, typer.Option("--refresh", help="Also update already-imported sessions on every scan: replace each re-observed row whose totals CHANGED with fresh totals. With --estimate-costs, also price stored unknown-cost history outside the scan limit. Already-priced unchanged rows are left untouched, so idle sessions never churn the ledger. Default: each session is imported once at first observation and never updated.")] = False,
     once: Annotated[bool, typer.Option(help="Run one scan and exit. Useful for cron, launchd, and smoke tests.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit one JSON payload per scan.")] = False,
 ) -> None:
