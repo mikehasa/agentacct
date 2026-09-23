@@ -208,7 +208,7 @@ class CandidateIntakeTests(unittest.TestCase):
         result = validate(self.candidate)
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("(4 images)", result.stdout)
+        self.assertIn("(12 images)", result.stdout)
 
     def test_wrong_source_or_renderer_is_rejected(self) -> None:
         wrong_source = validate(self.candidate, source_commit=OTHER_COMMIT)
@@ -334,7 +334,7 @@ class CandidateIntakeTests(unittest.TestCase):
 
         result = promote(changed, references_root)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Promoted four reviewed reference images", result.stdout)
+        self.assertIn("Promoted reviewed Dashboard reference images", result.stdout)
         after = directory_bytes(destination)
         self.assertEqual(
             {filename: after[filename] for filename in dashboard_names},
@@ -447,7 +447,7 @@ class CandidateIntakeTests(unittest.TestCase):
         (partial_destination / "dashboard-minimum-dark.png").unlink()
         self.assert_failed(
             promote(self.candidate, partial_root),
-            "Dashboard inventory mismatch",
+            "suite inventory mismatch",
         )
 
         malformed_root, malformed_destination = self.references(

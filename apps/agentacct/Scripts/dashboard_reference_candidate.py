@@ -14,14 +14,20 @@ import zlib
 
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-EXPECTED_IMAGES = {
-    "dashboard-minimum-dark.png": (1920, 1120),
-    "dashboard-minimum-light.png": (1920, 1120),
-    "dashboard-reference-dark.png": (2240, 1600),
-    "dashboard-reference-light.png": (2240, 1600),
-}
 # Explicit inventories keep a candidate from choosing its own promotion scope.
-DASHBOARD_IMAGES = EXPECTED_IMAGES
+DASHBOARD_IMAGES = dict(sorted({
+    f"dashboard-{viewport}-{appearance}.png": (width * 2, height * 2)
+    for viewport, width, height in (
+        ("minimum", 960, 560),
+        ("reference", 1120, 800),
+        ("weekly-reference", 1120, 900),
+        ("trust-unavailable", 1120, 800),
+        ("all-clear", 1120, 800),
+        ("next-step", 1120, 800),
+    )
+    for appearance in ("light", "dark")
+}.items()))
+EXPECTED_IMAGES = DASHBOARD_IMAGES
 USAGE_IMAGES = {
     f"usage-{viewport}-{appearance}.png": (width * 2, height * 2)
     for viewport, width, height in (
@@ -40,12 +46,77 @@ USAGE_IMAGES = {
     )
     for appearance in ("light", "dark")
 }
-SUITE_IMAGES = {"dashboard": DASHBOARD_IMAGES, "usage": USAGE_IMAGES}
+WORK_IMAGES = {
+    f"work-{state}-{viewport}-{appearance}.png": (width * 2, height * 2)
+    for state in ("table", "receipt")
+    for viewport, width, height in (
+        ("minimum", 960, 560),
+        ("reference", 1120, 800),
+        ("accessibility", 1120, 800),
+        ("accessibility-maximum", 1120, 1000),
+    )
+    for appearance in ("light", "dark")
+}
+WORK_IMAGES.update({
+    f"work-{state}-reference-{appearance}.png": (2240, 1600)
+    for state in (
+        "list-loading", "empty", "list-error", "receipt-loading",
+        "receipt-error", "receipt-stale", "attention-receipt",
+    )
+    for appearance in ("light", "dark")
+})
+WORK_IMAGES.update({
+    f"work-{component}-{appearance}.png": (width * 2, height * 2)
+    for component, width, height in (
+        ("session-steps-hierarchy", 760, 1050),
+        ("session-steps-dense-checks", 760, 1200),
+        ("session-steps-expanded-current", 760, 2500),
+        ("session-steps-expanded-history", 760, 1450),
+        ("session-steps-load-failure", 760, 240),
+        ("session-steps-retrying", 760, 240),
+        ("session-steps-compact-checks", 360, 1680),
+        ("session-steps-rtl-stress", 760, 1250),
+        ("session-steps-compact-accessibility", 360, 5400),
+        ("session-steps-rtl-accessibility", 360, 5400),
+        ("session-steps-redacted-checks", 760, 700),
+        ("actions-exact-regular", 760, 540),
+        ("actions-exact-compact", 360, 640),
+        ("actions-semantic-gallery", 760, 1600),
+        ("actions-semantic-edge-cases", 760, 2060),
+        ("actions-layout-stress", 920, 760),
+        ("actions-dynamic-type-stress", 920, 1350),
+        ("checks-overview", 760, 680),
+        ("checks-all-passed", 760, 460),
+        ("checks-expanded", 760, 1140),
+        ("checks-compact", 360, 720),
+        ("checks-compact-accessibility", 360, 600),
+        ("checks-accessibility-rtl", 760, 1400),
+        ("components-decision-badges", 760, 760),
+        ("components-provenance-chips", 760, 420),
+        ("components-outcome-cards", 960, 480),
+        ("components-filter-menus", 760, 210),
+    )
+    for appearance in ("light", "dark")
+})
+SOURCES_IMAGES = {
+    f"sources-{lane}-reference-{appearance}.png": (2240, height * 2)
+    for lane, height in (("healthy", 900), ("degraded", 1300))
+    for appearance in ("light", "dark")
+}
+SUITE_IMAGES = {
+    "dashboard": DASHBOARD_IMAGES, "usage": USAGE_IMAGES,
+    "work": WORK_IMAGES, "sources": SOURCES_IMAGES,
+}
 # A reviewed suite can grow. Accept only the complete prior inventory at the
 # destination; candidates and the staged replacement still require all images.
 PREVIOUS_USAGE_IMAGES = set(USAGE_IMAGES) - {
     f"usage-day-clients-{variant}-{appearance}.png"
     for variant in ("reference", "other-day")
+    for appearance in ("light", "dark")
+}
+PREVIOUS_DASHBOARD_IMAGES = {
+    f"dashboard-{viewport}-{appearance}.png"
+    for viewport in ("minimum", "reference")
     for appearance in ("light", "dark")
 }
 
@@ -230,14 +301,16 @@ def _reference_files(directory: Path) -> dict[str, Path]:
         files[path.name] = path
 
     expected_names = set(EXPECTED_IMAGES)
-    present_dashboard_names = set(files) & expected_names
+    present_suite_names = set(files) & expected_names
     accepted_inventories = [expected_names]
     if EXPECTED_IMAGES is USAGE_IMAGES:
         accepted_inventories.append(PREVIOUS_USAGE_IMAGES)
-    if present_dashboard_names and present_dashboard_names not in accepted_inventories:
-        missing = sorted(expected_names - present_dashboard_names)
+    elif EXPECTED_IMAGES is DASHBOARD_IMAGES:
+        accepted_inventories.append(PREVIOUS_DASHBOARD_IMAGES)
+    if present_suite_names and present_suite_names not in accepted_inventories:
+        missing = sorted(expected_names - present_suite_names)
         raise CandidateError(
-            "reference destination Dashboard inventory mismatch "
+            "reference destination suite inventory mismatch "
             f"(missing: {', '.join(missing)})"
         )
     return files

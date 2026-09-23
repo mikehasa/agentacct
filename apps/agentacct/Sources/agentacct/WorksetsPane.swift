@@ -160,6 +160,7 @@ struct WorksetsPane: View {
                                 }
                                 .buttonStyle(QuietButtonStyle(horizontalPadding: 6)).foregroundStyle(Theme.accent)
                                 .help("Search recorded sessions for \(candidate.label)")
+                                .accessibilityLabel("Search sessions for \(candidate.label)")
                                 .accessibilityIdentifier("worksets.project-search.\(candidate.label)")
                                 Button("Group sessions") {
                                     beginCreating()
@@ -167,6 +168,7 @@ struct WorksetsPane: View {
                                     newName = candidate.label
                                 }
                                 .buttonStyle(QuietButtonStyle(horizontalPadding: 6)).foregroundStyle(Theme.muted)
+                                .accessibilityLabel("Group sessions for \(candidate.label)")
                                 .accessibilityIdentifier("worksets.project.\(candidate.label)")
                                 .disabled(dashboard.isOfflineSnapshot)
                             }
@@ -1274,7 +1276,7 @@ private struct WorksetSessionsList: View {
             }
             if showsHiddenNote && hiddenCount > 0 {
                 Divider().overlay(Theme.hairline)
-                Text("Showing \(lanes.count) of \(sessionsTotal) sessions returned for this group. The overview totals include all members.")
+                Text("Loaded \(lanes.count) of \(sessionsTotal) sessions for this group. The overview totals include all members.")
                     .workFont(.caption).foregroundStyle(Theme.muted)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, Space.s)
