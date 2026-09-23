@@ -9,9 +9,9 @@ English · [简体中文](README.zh-CN.md)
 
 **agentacct answers one simple question: what the fuck are my agents actually doing?**
 
-Your coding agent says it is done. agentacct shows you what it actually did, what it cost, and how much of that is proven: one Work Receipt per task, built from the session logs your coding agents (Claude Code, Codex, OpenCode, Hermes, and others) already write on your machine. No account, no cloud, nothing leaves your computer.
+See what your coding agents have been working on, across projects and clients: recent activity, tool calls, recorded steps, checks, tokens, and estimated cost. Open a task for its Work Receipt and follow the activity timeline from attempt to result. Built from the local session logs of Claude Code, Codex, OpenCode, Hermes, and others. No account, no cloud, nothing leaves your computer.
 
-![The Sessions view: on the left, the task list with one verdict per row (Verified, In Progress, Reported, Observed); on the right, the open receipt for "Add a token-bucket rate limiter to the login API", marked Verified, with two bars (5 steps: 4 self-checked, 1 claimed; 5 checks: 5 passed), the numbered step spine with the latest step expanded to its agent-reported check, exit code, and touched file, and below it the activity timeline where the check cards run from 12 failed to 12 passed, 12 passed, and 38 passed.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work-receipt.png)
+![Sessions and a Work Receipt: a latest-first task list beside the recorded outcome, session count, estimated cost, claim coverage, check results, and activity timeline.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work-receipt.png)
 
 <sub>Screenshots show a synthetic demo workspace; your install renders your own local data.</sub>
 
@@ -29,37 +29,35 @@ Either way, open a new agent session afterwards: hooks and MCP servers bind at s
 
 The per-agent setup, a `--scope project` install, and the `uv`/`venv` alternatives are in [INSTALL.md](INSTALL.md).
 
-## Done, according to whom?
+## Follow what happened
 
-The receipt above answers three questions in order: did it finish, who says so, and is the proof still current.
+Sessions opens with the most recently active tasks. Search by task or project, or choose another sort when you need it. Each receipt brings together the participating sessions, recorded outcome, estimated cost, claims, and check results; its activity timeline comes first, with steps and full check details one click away.
 
-The agent's own "done" files under **Reported**. A task reads **Verified** only when every current check passes and ran after the last recorded change. A step with no check stays **claimed**, and every check carries its evidence tier: agent-reported, a hook-observed exit code, or CI. In the receipt above, steps 1 to 4 carry agent-reported checks; step 5 is a bare claim, and the receipt says so.
-
-The timeline under the steps keeps the red run. The first test run failed 12; the later runs passed 12, 12, and 38, and nothing is averaged away, so you can see when the proof caught up with the code and when it did not.
+An agent's own "done" is **Reported**. A **Verified** result needs current passing checks after the last recorded change. Claims and checks stay separate, and a failed attempt stays visible in the history alongside later results. A recorded failure is useful context, not automatically a request for you to intervene.
 
 ## A day's work, across every agent you run
 
-![The Work tab: a "billing-svc" group of 8 sessions from 4 agents over about 9 hours (≈$72.71 as a sum of receipts) on one timeline from 09:05 to 18:20. Two long Claude Code runs anchor the morning and afternoon; shorter Codex and Hermes runs sit inside them; OpenCode runs overlap the edges; the last run, the one that needs attention, carries a red pip.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work.png)
+![Work groups show participating clients, recent sessions, token totals, and estimated cost, with a drilldown into shared project activity.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work.png)
 
-Point a work group at a project folder and every session that ran there lands on one timeline, whichever agent ran it. Each session keeps its own receipt and evidence; the group's total is a sum of 8 receipts, never a combined verdict on the work.
+Point a work group at a project folder to see which agents worked there and what they did most recently. Open the group for session details and a shared timeline. Each session keeps its own evidence; group totals are sums of the participating sessions, with partial coverage and overlap labeled.
 
-## Start the day with what needs you
+## Start with recent activity
 
-![The Dashboard: a Needs review block leading with "Fix the flaky payment test" (billing-svc, claude-code, 1 failed and 7 passed, recorded reason Failed check, provenance MCP record) with Review evidence and Copy review brief buttons; a Right now rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table; and a seven-day usage chart.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
+![Dashboard overview with recent session status, recorded task count, seven-day usage, and a latest-activity table. Recorded issues are folded below the activity list.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-dashboard.png)
 
-The Needs review block names the one task that most needs a human, its recorded reason, and where that claim came from: here a failed check on "Fix the flaky payment test", recorded over MCP. **Copy review brief** copies only recorded facts and never reruns anything.
+The Dashboard shows the latest recorded work across your projects, with its client, activity time, outcome, evidence, and cost. Historical failed checks and blockers remain available in **Recorded issues**. They do not decide the default order or become a list of things you must fix. A row's context menu can copy a brief from recorded facts.
 
-## Know your limits before the agent hits them
+## Understand the usage behind the work
 
-![Usage & limits: per-client provider windows (codex 5-hour 12% used and weekly 63% used with reset times; claude-code 34% and 59%; opencode and hermes report no provider limit) beside each client's seven-day recorded use, all marked pricing estimate.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
+![Usage with a daily chart and selected-day breakdown by client and model, including fresh input, output, cached tokens, and estimated cost.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
 
-Provider-reported quota windows sit beside what each agent actually used. Tokens are client-reported and costs are pricing-table estimates marked `≈`, never an invoice.
+Click a day in the chart to see its usage by client and model—for example, the same model used through Codex and Hermes. Switch between **Fresh** and **All tokens**, and inspect input, output, and cache components in the daily table. Provider-reported quota windows and reset times are available on the same page. Tokens come from client records; costs are pricing-table estimates marked `≈`, never an invoice.
 
 ## Also in the terminal
 
 ![agentacct tui: a Needs review block whose first item is a blocked claude-code task with its recorded reason, next step, and MCP-record provenance; a Right now rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table with outcome, evidence, and estimated cost; and a usage history sparkline.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
 
-`agentacct tui` shows the same Needs review block, receipts, and capacity in your shell — including the folder-anchored **Work** tab, where each group draws its sessions across every agent on one cross-agent timeline you can open (`↵`) and zoom/scrub by keyboard. Press `?` for the keys.
+`agentacct tui` provides receipts, usage, capacity, and its own review overview in your shell — including the folder-anchored **Work** tab, where each group draws its sessions across every agent on one cross-agent timeline you can open (`↵`) and zoom/scrub by keyboard. Press `?` for the keys.
 
 ## Honest by design
 
