@@ -74,11 +74,30 @@ struct WorksetsPane: View {
     private var content: some View {
         if dashboard.isOfflineSnapshot {
             offlineNotice
-        } else if let error = dashboard.worksetsError, dashboard.worksets.isEmpty {
-            unavailableNotice(error)
         } else if let id = openWorksetId, let card = dashboard.worksets.first(where: { $0.worksetId == id }) {
+            if let error = dashboard.worksetsError {
+                unavailableNotice(error).padding(.bottom, Space.l)
+            }
             WorksetDetailView(workset: card, onBack: { openWorksetId = nil })
         } else {
+            if let error = dashboard.worksetsError {
+                unavailableNotice(error).padding(.bottom, Space.l)
+            }
+            if let error = dashboard.worksetCandidatesError {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(dashboard.worksetCandidates.isEmpty ? "Project activity unavailable" : "Project activity hasn't refreshed")
+                        .workFont(.rowLabel).foregroundStyle(Theme.ink)
+                    if !dashboard.worksetCandidates.isEmpty {
+                        Text("Showing previously loaded folders.").workFont(.caption).foregroundStyle(Theme.muted)
+                    }
+                    Text(error).workFont(.caption).foregroundStyle(Theme.muted)
+                }
+                .padding(Space.cardPad)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
+                .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
+                .padding(.bottom, Space.l)
+            }
             if isCreating {
                 WorksetCreateForm(
                     candidates: dashboard.worksetCandidates,
@@ -94,7 +113,8 @@ struct WorksetsPane: View {
             }
             if dashboard.worksets.isEmpty && dashboard.isLoadingWorksets && !isCreating {
                 loadingState
-            } else if dashboard.worksets.isEmpty && dashboard.worksetCandidates.isEmpty && !isCreating {
+            } else if dashboard.worksets.isEmpty && dashboard.worksetCandidates.isEmpty && !isCreating
+                        && dashboard.worksetsError == nil && dashboard.worksetCandidatesError == nil {
                 emptyState
             } else {
                 VStack(alignment: .leading, spacing: Space.xl) {
@@ -217,7 +237,11 @@ struct WorksetsPane: View {
 
     private func unavailableNotice(_ error: String) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Work groups unavailable").workFont(.rowLabel).foregroundStyle(Theme.ink)
+            Text(dashboard.worksets.isEmpty ? "Work groups unavailable" : "Work groups haven't refreshed")
+                .workFont(.rowLabel).foregroundStyle(Theme.ink)
+            if !dashboard.worksets.isEmpty {
+                Text("Showing previously loaded sessions and totals.").workFont(.caption).foregroundStyle(Theme.muted)
+            }
             Text(error).workFont(.caption).foregroundStyle(Theme.muted)
         }
         .padding(Space.cardPad)
