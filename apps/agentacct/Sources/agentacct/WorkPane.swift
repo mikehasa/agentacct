@@ -15,6 +15,7 @@ import AppKit
 enum WorkSessionResolution: Equatable {
     case task(String)
     case unresolved(String)
+    case pending(String)
 }
 
 enum WorkRecordPhaseKey: Hashable {
@@ -45,11 +46,13 @@ func workRecordPhaseKey(
 
 func workSessionResolution(
     for sessionId: String,
-    in tasks: [ReceiptSummary]
+    in tasks: [ReceiptSummary],
+    projection: WorkProjectionMetadata? = nil
 ) -> WorkSessionResolution {
     if let match = tasks.first(where: { $0.primaryRoot?.sessionKey == sessionId }) {
         return .task(match.taskId)
     }
+    if projection?.needsRefresh == true { return .pending(sessionId) }
     return .unresolved(sessionId)
 }
 
@@ -605,6 +608,13 @@ struct WorkPane: View {
         return "list"
     }
 
+    private var resolutionKey: String {
+        // Session links must retry when the first usable collection arrives.
+        guard selection.sessionId != nil else { return selectionKey }
+        return selectionKey + ":" + (dashboard.receiptListProjection?.state ?? "legacy")
+            + ":" + (dashboard.receiptListProjection?.generation ?? "")
+    }
+
     private var phaseKey: WorkRecordPhaseKey {
         let refreshError = workReceiptRefreshError(
             selectedTaskId: selection.taskId,
@@ -641,7 +651,7 @@ struct WorkPane: View {
             let mode = workLayoutMode(
                 for: proxy.size.width,
                 dynamicTypeSize: dynamicTypeSize,
-                hasSelection: selection.taskId != nil || unresolvedSessionId != nil
+                hasSelection: selection.taskId != nil || selection.sessionId != nil
             )
             Group {
                 switch timelineFocused && selection.taskId != nil ? .pushDetail : mode {
@@ -663,7 +673,7 @@ struct WorkPane: View {
             reduceMotion ? Motion.reducedCrossfade : Motion.detailNavigation,
             value: selectionKey
         )
-        .task(id: selectionKey) {
+        .task(id: resolutionKey) {
             // The fixture renderer injects the exact Work state under review.
             // Starting a live fetch here would immediately clear an injected
             // error and collapse error/loading snapshots into the same frame.
@@ -721,15 +731,18 @@ struct WorkPane: View {
         if selectionKey == "list" || dashboard.receiptTasks.isEmpty {
             await dashboard.fetchReceipts()
         }
+        guard !Task.isCancelled else { return }
         if let taskId = selection.taskId {
             await dashboard.fetchReceipt(taskId: taskId)
             return
         }
         guard let sessionId = selection.sessionId else { return }
-        switch workSessionResolution(for: sessionId, in: dashboard.receiptTasks) {
+        switch workSessionResolution(for: sessionId, in: dashboard.receiptTasks, projection: dashboard.receiptListProjection) {
         case .task(let taskId):
             selection.taskId = taskId
             selection.sessionId = nil
+        case .pending:
+            return
         case .unresolved(let sessionId):
             // Compact Task summaries intentionally carry only the primary root.
             // Keep a continuation/subagent selection intact and explain the
@@ -783,10 +796,18 @@ struct WorkPane: View {
                         autoFocusEntry: autoFocusEntry
                     )
                     .accessibilityIdentifier("work.unresolved-session")
+                } else if selection.sessionId != nil, dashboard.receiptListProjection?.needsRefresh == true {
+                    WorkRecordPlaceholder(
+                        title: dashboard.receiptListProjection?.statusText ?? "Preparing work receipts",
+                        message: "The session link will open when its work receipt is ready.",
+                        symbol: "arrow.triangle.2.circlepath",
+                        showsProgress: true,
+                        autoFocusEntry: autoFocusEntry
+                    )
                 } else if selection.taskId != nil {
                     WorkRecordPlaceholder(
-                        title: "Loading receipt",
-                        message: "Fetching the latest evidence and check results…",
+                        title: dashboard.receiptProjection?.statusText ?? "Loading receipt",
+                        message: dashboard.receiptProjection?.needsRefresh == true ? "The recorder is preparing a safe snapshot. This view will update automatically." : "Fetching the latest evidence and check results…",
                         symbol: "arrow.triangle.2.circlepath",
                         showsProgress: true,
                         autoFocusEntry: autoFocusEntry
@@ -957,6 +978,9 @@ private struct WorkTablePage: View {
                     )
                     .padding(.top, Space.xl)
                     filterRow.padding(.top, Space.m)
+                    if let projection = browse.group == .attention ? dashboard.attentionProjection : dashboard.receiptListProjection {
+                        WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot).padding(.top, Space.m)
+                    }
                     if browse.group != .attention, let error = dashboard.receiptListError {
                         listStatusBanner(error).padding(.top, Space.m)
                     }
@@ -1152,7 +1176,7 @@ private struct WorkTablePage: View {
                     Rectangle().fill(Theme.hairline).frame(height: 1).padding(.horizontal, Space.xl)
                 }
                 if browse.group != .attention,
-                   dashboard.isLoadingReceipts,
+                   (dashboard.isLoadingReceipts || dashboard.receiptListProjection?.needsRefresh == true),
                    dashboard.receiptTasks.isEmpty {
                     HStack(spacing: Space.m) {
                         if SnapshotMode.enabled {
@@ -1163,7 +1187,7 @@ private struct WorkTablePage: View {
                             ProgressView().controlSize(.small)
                         }
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Loading receipts").workFont(.rowLabel).foregroundStyle(Theme.ink)
+                            Text(dashboard.receiptListProjection?.statusText ?? "Loading receipts").workFont(.rowLabel).foregroundStyle(Theme.ink)
                             Text("Reading the latest recorded work from the local store.")
                                 .workFont(.caption).foregroundStyle(Theme.muted)
                         }
@@ -1171,7 +1195,7 @@ private struct WorkTablePage: View {
                     .padding(Space.xl)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityElement(children: .combine)
-                    .accessibilityLabel("Loading receipts from the local store")
+                    .accessibilityLabel(dashboard.receiptListProjection?.needsRefresh == true ? "Preparing work receipts. Checking again automatically." : "Loading receipts from the local store")
                 } else if let error = visibleError, visibleTasks.isEmpty {
                     if browse.group == .attention {
                         Text(error).workFont(.body).foregroundStyle(Theme.muted)
@@ -1609,7 +1633,7 @@ private struct WorkMasterList: View {
         if browse.group == .attention {
             return isRetryingAttention || (dashboard.attention == nil && dashboard.attentionError == nil)
         }
-        return dashboard.isLoadingReceipts
+        return dashboard.isLoadingReceipts || dashboard.receiptListProjection?.needsRefresh == true
     }
 
     private var collectionCount: String {
@@ -1656,6 +1680,10 @@ private struct WorkMasterList: View {
             .padding(.top, Space.l)
 
             masterControls.padding(Space.l)
+            if let projection = browse.group == .attention ? dashboard.attentionProjection : dashboard.receiptListProjection {
+                WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot)
+                    .padding(.horizontal, Space.l).padding(.bottom, Space.s)
+            }
             if selectionIsOutsideBrowse {
                 HStack(alignment: .firstTextBaseline, spacing: Space.s) {
                     Text("Selected receipt is outside these filters")
@@ -1702,7 +1730,8 @@ private struct WorkMasterList: View {
                     ScrollContentStack(spacing: 0) {
                     if isLoadingCollection, sourceTasks.isEmpty {
                         masterEmpty(
-                            title: browse.group == .attention ? "Loading review items" : "Loading receipts",
+                            title: (browse.group == .attention ? dashboard.attentionProjection : dashboard.receiptListProjection)?.state == "pending"
+                                ? "Preparing work receipts" : (browse.group == .attention ? "Loading review items" : "Loading receipts"),
                             message: nil
                         )
                     } else if let error = collectionError, sourceTasks.isEmpty {
@@ -1956,6 +1985,8 @@ struct WorkRecordPage: View {
     @State private var sessionDetail: V1SessionDetail?
     @State private var sessionLoading = false
     @State private var sessionFailed = false
+    @State private var sessionProjection: WorkProjectionMetadata?
+    @State private var loadedPrimaryKey: String?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -1968,6 +1999,9 @@ struct WorkRecordPage: View {
                             DecisionBadge(key: receipt.axes.decisionStatus.key, label: receipt.axes.decisionStatus.label ?? receipt.axes.decisionStatus.key)
                         }.padding(.top, Space.s)
                     } else { titleBlock.padding(.top, Space.m) }
+                    if let projection = dashboard.receiptProjection ?? receipt.projection {
+                        WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot).padding(.top, Space.m)
+                    }
                     if let refreshError {
                         staleDetailBanner(refreshError).padding(.top, Space.m)
                     }
@@ -2005,18 +2039,20 @@ struct WorkRecordPage: View {
                 .padding(timelineFocused || compactViewport ? Space.m : Space.gutter)
                 .frame(maxWidth: timelineFocused ? .infinity : 1172 + Space.gutter * 2, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .task(id: primaryKey) {
-                    // Load the primary session's steps, re-keyed on the member so
-                    // a primary-session change (role enrichment during live
-                    // recording) supersedes the prior load and reloads. A re-key
-                    // must NOT gate on !sessionLoading — the previous load is now
-                    // stale — so drop it and reload; loadSessionSteps guards its
-                    // own assignment on the key. Snapshot mode keeps the
-                    // deterministic preloaded fast-path (no network).
+                .task(id: "\(primaryKey ?? "none"):\(receipt.projection?.generation ?? "legacy")") {
                     guard !SnapshotMode.enabled, let key = primaryKey else { return }
-                    sessionDetail = nil
-                    sessionFailed = false
-                    if effectiveSessionDetail == nil { await loadSessionSteps(for: key) }
+                    if loadedPrimaryKey != key {
+                        sessionDetail = nil
+                        sessionProjection = nil
+                        sessionFailed = false
+                        loadedPrimaryKey = key
+                    }
+                    await loadSessionSteps(for: key)
+                    while !Task.isCancelled, primaryKey == key, sessionProjection?.needsRefresh == true {
+                        do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                        guard !Task.isCancelled else { return }
+                        await loadSessionSteps(for: key)
+                    }
                 }
             }
             .id(receipt.taskId)  // reset the drill-down's expansion state per Task
@@ -2083,13 +2119,20 @@ struct WorkRecordPage: View {
         defer { if primaryKey == key { sessionLoading = false } }
         do {
             let detail = try await dashboard.loadSession(client: member.client, sessionId: member.clientSessionId)
-            guard primaryKey == key else { return }  // a re-key superseded this load
+            guard !Task.isCancelled, primaryKey == key else { return }  // a re-key superseded this load
             sessionDetail = detail
+            sessionProjection = detail.projection
+            sessionFailed = false
+        } catch let pending as WorkProjectionPending {
+            guard primaryKey == key, !Task.isCancelled else { return }
+            sessionProjection = pending.projection.retainingBuild(from: sessionProjection)
+            if pending.projection.available == false { sessionDetail = nil }
             sessionFailed = false
         } catch {
             // A cancelled (superseded) load must not strand the section on a
             // false failure; only the still-current member records a failure.
             guard primaryKey == key, !Task.isCancelled else { return }
+            sessionProjection = .failed(error, retaining: sessionProjection ?? sessionDetail?.projection)
             sessionFailed = true
         }
     }
@@ -2104,6 +2147,9 @@ struct WorkRecordPage: View {
 
     /// The step spine, or an honest load / empty / failed / offline state.
     @ViewBuilder private var stepsContent: some View {
+        if let projection = sessionProjection ?? effectiveSessionDetail?.projection {
+            WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot)
+        }
         if primarySessionMember == nil {
             Text("Session details aren't available for this receipt.")
                 .workFont(.caption).foregroundStyle(Theme.muted)
@@ -2740,6 +2786,7 @@ struct SessionDrillRow: View {
     @State private var detail: V1SessionDetail?
     @State private var loading = false
     @State private var failed = false
+    @State private var detailProjection: WorkProjectionMetadata?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
@@ -2813,7 +2860,6 @@ struct SessionDrillRow: View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
                 expanded.toggle()
-                if expanded, effectiveDetail == nil, !loading, !failed { Task { await load() } }
             } label: {
                 VStack(alignment: .leading, spacing: Space.xs) {
                     HStack(alignment: .top, spacing: 8) {
@@ -2865,19 +2911,26 @@ struct SessionDrillRow: View {
         .animation(reduceMotion ? nil : Motion.contentUpdate, value: expanded)
         .background(Theme.card, in: RoundedRectangle(cornerRadius: Metrics.radius))
         .overlay(RoundedRectangle(cornerRadius: Metrics.radius).strokeBorder(Theme.cardLine, lineWidth: Metrics.borderW))
-        .task {
-            // The root session opens expanded — its step-by-step is the point;
-            // load its steps up front.
-            if expanded, effectiveDetail == nil, !loading, !failed { await load() }
+        .task(id: "\(expanded):\(member.id):\(dashboard.receiptProjection?.generation ?? "legacy")") {
+            guard expanded, !SnapshotMode.enabled else { return }
+            await load()
+            while !Task.isCancelled, expanded, detailProjection?.needsRefresh == true {
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                guard !Task.isCancelled else { return }
+                await load()
+            }
         }
     }
 
     @ViewBuilder
     private var expandedBody: some View {
+        if let projection = detailProjection ?? effectiveDetail?.projection {
+            WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot)
+        }
         if let detail = effectiveDetail {
             VStack(alignment: .leading, spacing: 6) {
                 if let savedAt = dashboard.sessionSavedAt(client: member.client, sessionID: member.clientSessionId) {
-                    Text("Session copy saved: \(savedAt.ISO8601Format())")
+                    Text("\(detail.projection == nil ? "Session copy saved" : "Session evidence as of"): \(savedAt.ISO8601Format())")
                         .workFont(.caption).foregroundStyle(Theme.muted).textSelection(.enabled)
                 }
                 if detail.steps.isEmpty {
@@ -2952,9 +3005,19 @@ struct SessionDrillRow: View {
         loading = true
         defer { loading = false }
         do {
-            detail = try await dashboard.loadSession(client: member.client, sessionId: member.clientSessionId)
+            let loaded = try await dashboard.loadSession(client: member.client, sessionId: member.clientSessionId)
+            guard !Task.isCancelled else { return }
+            detail = loaded
+            detailProjection = loaded.projection
+            failed = false
+        } catch let pending as WorkProjectionPending {
+            guard !Task.isCancelled else { return }
+            detailProjection = pending.projection.retainingBuild(from: detailProjection)
+            if pending.projection.available == false { detail = nil }
             failed = false
         } catch {
+            guard !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
+            detailProjection = .failed(error, retaining: detailProjection ?? detail?.projection)
             failed = true
         }
     }

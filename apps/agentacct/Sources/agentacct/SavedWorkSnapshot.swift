@@ -9,6 +9,10 @@ struct SavedWorkSnapshot: Codable {
         let receivedAt: Date
         let data: Data
         var requestStartedAt: Date? = nil
+        var evidenceDate: Date? {
+            if let projection = WorkProjectionMetadata.from(data) { return projection.builtDate }
+            return receivedAt
+        }
     }
     var schema = 1
     let storePath: String
@@ -19,7 +23,7 @@ struct SavedWorkSnapshot: Codable {
             || path.hasPrefix("/v1/session?client=")
             || (path.hasPrefix("/v1/task-timeline?task=") && !path.contains("&"))
     }
-    var collectionDate: Date? { entries["/v1/tasks?limit=200"]?.receivedAt }
+    var collectionDate: Date? { entries["/v1/tasks?limit=200"]?.evidenceDate }
     var hasWork: Bool {
         guard let data = entries["/v1/tasks?limit=200"]?.data,
               let payload = try? JSONDecoder().decode(ReceiptTasksPayload.self, from: data) else { return false }
@@ -64,11 +68,22 @@ enum SavedWorkError: LocalizedError {
 actor SavedWorkCache {
     static let shared = SavedWorkCache()
     private var memory: [String: SavedWorkSnapshot] = [:]
+    private var invalidatedAt: [String: Date] = [:]
+
+    func invalidate(store: URL, at date: Date = Date(), cacheRoot: URL? = nil) {
+        let url = SavedWorkSnapshot.location(store: store, cacheRoot: cacheRoot)
+        invalidatedAt[url.path] = date
+        memory[url.path] = SavedWorkSnapshot(storePath: SavedWorkSnapshot.canonicalPath(store))
+        try? FileManager.default.removeItem(at: url)
+    }
 
     func record(path: String, data: Data, store: URL, receivedAt: Date = Date(), requestStartedAt: Date? = nil, cacheRoot: URL? = nil) {
-        guard SavedWorkSnapshot.accepts(path), data.count <= 8_000_000 else { return }
+        guard SavedWorkSnapshot.accepts(path), data.count <= 8_000_000,
+              WorkProjectionMetadata.from(data)?.state != "pending",
+              WorkProjectionMetadata.from(data)?.available != false else { return }
         let url = SavedWorkSnapshot.location(store: store, cacheRoot: cacheRoot)
         let key = url.path
+        if let invalidated = invalidatedAt[key], (requestStartedAt ?? receivedAt) <= invalidated { return }
         var saved = memory[key] ?? SavedWorkSnapshot.load(store: store, cacheRoot: cacheRoot)
             ?? SavedWorkSnapshot(storePath: SavedWorkSnapshot.canonicalPath(store))
         let started = requestStartedAt ?? receivedAt

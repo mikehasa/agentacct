@@ -8,6 +8,7 @@ import Foundation
 // plan numbers, None-never-$0 costs) rather than being re-derived here.
 
 struct V1SessionsPayload: Decodable {
+    var projection: WorkProjectionMetadata? = nil
     let schema: String
     let generatedAt: Double?
     let totalSessions: Int?
@@ -21,6 +22,7 @@ struct V1SessionsPayload: Decodable {
     let sessions: [V1SessionRow]
 
     enum CodingKeys: String, CodingKey {
+        case projection
         case schema
         case generatedAt = "generated_at"
         case totalSessions = "total_sessions"
@@ -104,6 +106,7 @@ struct V1SessionRow: Decodable, Identifiable {
 // MARK: - /v1/session detail
 
 struct V1SessionDetail: Decodable {
+    var projection: WorkProjectionMetadata? = nil
     let schema: String
     let generatedAt: Double?
     let session: V1SessionRow
@@ -112,6 +115,7 @@ struct V1SessionDetail: Decodable {
     let plan: V1SessionPlan?
 
     enum CodingKeys: String, CodingKey {
+        case projection
         case schema, session, steps, descendants, plan
         case generatedAt = "generated_at"
     }
@@ -422,6 +426,7 @@ extension Fmt {
 // rides the payload (the app never re-derives an axis or invents a number).
 
 struct ReceiptTasksPayload: Decodable {
+    var projection: WorkProjectionMetadata? = nil
     let schema: String
     let tasks: [ReceiptSummary]
     let total: Int?
@@ -443,6 +448,7 @@ struct ReceiptAttentionPayload: Decodable {
 /// so a client can make an honest empty or aggregate claim without scanning a
 /// recent-work page locally.
 struct V1AttentionPayload: Decodable {
+    var projection: WorkProjectionMetadata? = nil
     let schema: String
     let items: [ReceiptSummary]
     let total: Int
@@ -460,8 +466,10 @@ struct V1AttentionPayload: Decodable {
         snapshot: String?,
         offset: Int,
         limit: Int,
-        truncated: Bool
+        truncated: Bool,
+        projection: WorkProjectionMetadata? = nil
     ) {
+        self.projection = projection
         self.schema = schema
         self.items = items
         self.total = total
@@ -473,11 +481,13 @@ struct V1AttentionPayload: Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
+        case projection
         case schema, items, total, counts, snapshot, offset, limit, truncated
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        projection = try container.decodeIfPresent(WorkProjectionMetadata.self, forKey: .projection)
         schema = try container.decode(String.self, forKey: .schema)
         items = try container.decode([ReceiptSummary].self, forKey: .items)
         total = try container.decode(Int.self, forKey: .total)
@@ -967,6 +977,7 @@ struct ReceiptCost: Decodable {
 }
 
 struct Receipt: Decodable {
+    var projection: WorkProjectionMetadata? = nil
     let schemaVersion: String
     let taskId: String
     let title: String?
@@ -979,6 +990,7 @@ struct Receipt: Decodable {
     let durationSeconds: Double?
 
     enum CodingKeys: String, CodingKey {
+        case projection
         case schemaVersion = "schema_version"
         case taskId = "task_id"
         case durationSeconds = "duration_seconds"

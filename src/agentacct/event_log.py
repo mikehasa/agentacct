@@ -105,6 +105,42 @@ AFTER DELETE ON event_lines
 BEGIN
     UPDATE event_log_state SET revision = revision + 1 WHERE singleton = 1;
 END;
+-- Receipt snapshots may lag ordinary appends, but may NEVER survive removal
+-- or alteration of source data. Keep this generation separate from revision
+-- so existing writers/readers continue to use the original schema unchanged.
+-- A random database identity also distinguishes independently initialized logs;
+-- callers must additionally bind snapshots to the physical file identity to
+-- detect replacement with an older backup carrying the same database_id.
+CREATE TABLE IF NOT EXISTS event_log_snapshot_state (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    database_id TEXT NOT NULL,
+    destructive_revision INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO event_log_snapshot_state(singleton, database_id, destructive_revision)
+VALUES (1, lower(hex(randomblob(16))), 0);
+CREATE TRIGGER IF NOT EXISTS event_lines_snapshot_update
+AFTER UPDATE ON event_lines
+BEGIN
+    UPDATE event_log_snapshot_state
+    SET destructive_revision = destructive_revision + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS event_lines_snapshot_delete
+AFTER DELETE ON event_lines
+BEGIN
+    UPDATE event_log_snapshot_state
+    SET destructive_revision = destructive_revision + 1 WHERE singleton = 1;
+END;
+-- SQLite's REPLACE deletes do not run DELETE triggers unless the writer opts
+-- into recursive_triggers. Older processes need not do so. The sole unique
+-- key on event_lines is seq, so detect its collision BEFORE insertion using
+-- the primary-key index; a normal AUTOINCREMENT append does not invalidate.
+CREATE TRIGGER IF NOT EXISTS event_lines_snapshot_replace
+BEFORE INSERT ON event_lines
+WHEN EXISTS (SELECT 1 FROM event_lines WHERE seq = NEW.seq)
+BEGIN
+    UPDATE event_log_snapshot_state
+    SET destructive_revision = destructive_revision + 1 WHERE singleton = 1;
+END;
 -- Durable record of every flat-file line already drained into the log during a
 -- rolling upgrade (see absorb_new_events). Its keys OUTLIVE a log rewrite that
 -- removes the row, which is what stops a deliberately-removed event from being
@@ -133,6 +169,25 @@ class ParityResult:
     log_lines: int
     first_divergence: int | None  # 0-based index of the first differing line
     detail: str
+
+
+@dataclass(frozen=True)
+class EventLogSnapshotState:
+    """Atomic source versions for capturing and serving receipt snapshots.
+
+    ``revision`` identifies all committed event mutations for input capture.
+    ``destructive_revision`` changes on UPDATE/DELETE/REPLACE, even from an
+    older writer, and prevents serving a snapshot containing removed data.
+    This is a database-local identity, not a physical-file identity: callers
+    must also compare st_dev/st_ino (and their configured store identity).
+    ``schema_cookie`` catches SQLite backup restoration into the same inode:
+    backup restores the application generations but advances SQLite's cookie.
+    """
+
+    database_id: str
+    revision: int
+    destructive_revision: int
+    schema_cookie: int
 
 
 def _extract_columns(line: str) -> tuple[str | None, str | None, str | None, float | None]:
@@ -208,11 +263,30 @@ class RawEventLog:
 
         self.append_line(serialize_event(event))
 
-    def replace_all(self, lines: Iterable[str]) -> None:
-        """Rebuild the whole log to exactly ``lines`` (for a file rewrite)."""
+    def replace_all(self, lines: Iterable[str], *, preserve_usage_snapshots: bool = False) -> None:
+        """Replace the log; only a proven numeric usage refresh may retain views.
+
+        Older/raw writers still invalidate through persistent triggers. The
+        trusted importer opt-in is validated against the ACTUAL database rows
+        under the same SQLite write transaction, never a caller's stale copy.
+        """
 
         rows = [(*_extract_columns(line), line) for line in lines]
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous_safety: int | None = None
+            if preserve_usage_snapshots:
+                from .receipt_snapshot_refresh import usage_refresh_preserves_snapshots
+                try:
+                    previous = [json.loads(row[0]) for row in connection.execute("SELECT line FROM event_lines ORDER BY seq")]
+                    replacement = [json.loads(row[-1]) for row in rows]
+                    safe = usage_refresh_preserves_snapshots(previous, replacement)
+                except (ValueError, TypeError):
+                    safe = False
+                if safe:
+                    previous_safety = int(connection.execute(
+                        "SELECT destructive_revision FROM event_log_snapshot_state WHERE singleton=1"
+                    ).fetchone()[0])
             connection.execute("DELETE FROM event_lines")
             connection.execute("DELETE FROM sqlite_sequence WHERE name='event_lines'")
             connection.executemany(
@@ -220,6 +294,11 @@ class RawEventLog:
                 "VALUES (?, ?, ?, ?, ?)",
                 rows,
             )
+            if previous_safety is not None:
+                # No other writer can interleave here. Keep the full revision
+                # dirty so the worker rebuilds; preserve only stale-read safety.
+                connection.execute("UPDATE event_log_snapshot_state SET destructive_revision=? WHERE singleton=1",
+                                   (previous_safety,))
 
     # -- reads --------------------------------------------------------------
 
@@ -237,6 +316,43 @@ class RawEventLog:
         if row is None:  # Defensive: _SCHEMA always creates the singleton.
             raise sqlite3.DatabaseError("event log revision row is missing")
         return int(row[0])
+
+    def snapshot_state(self) -> EventLogSnapshotState:
+        """Read both generations in constant time without initializing/writing.
+
+        Normal ``RawEventLog`` initialization installs the persistent table and
+        triggers. This serving-path read intentionally does not call _connect,
+        negotiate WAL, or repair missing state: a missing/replaced/old-schema
+        database fails closed instead of blessing a persisted old snapshot.
+        A short timeout bounds lock contention; callers must also fail closed
+        on the resulting sqlite error rather than reuse their last token.
+        """
+
+        uri = self.db_path.resolve().as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=0.05)
+        try:
+            row = connection.execute(
+                "SELECT s.database_id, r.revision, s.destructive_revision, p.schema_version "
+                "FROM event_log_snapshot_state AS s "
+                "JOIN event_log_state AS r ON r.singleton = s.singleton "
+                "CROSS JOIN pragma_schema_version AS p "
+                "WHERE s.singleton = 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        if (
+            row is None
+            or not isinstance(row[0], str)
+            or len(row[0]) != 32
+            or any(character not in "0123456789abcdef" for character in row[0])
+            or not isinstance(row[1], int)
+            or not isinstance(row[2], int)
+            or not isinstance(row[3], int)
+            or row[1] < 0
+            or row[2] < 0
+        ):
+            raise sqlite3.DatabaseError("event log snapshot state is missing or invalid")
+        return EventLogSnapshotState(row[0], row[1], row[2], row[3])
 
     def read_lines(self) -> list[str]:
         with self._connect() as connection:
@@ -433,6 +549,7 @@ __all__ = [
     "AUTHORITATIVE_MARKER_FILENAME",
     "EVENT_LOG_AUTHORITATIVE_ENV",
     "RAW_EVENT_LOG_FILENAME",
+    "EventLogSnapshotState",
     "ParityResult",
     "RawEventLog",
     "event_log_authoritative",

@@ -459,13 +459,26 @@ final class GlanceClient {
         }
     }
 
+    static func usesSnapshotReadMode(_ path: String) -> Bool {
+        let endpoint = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
+        return ["/v1/tasks", "/v1/receipt", "/v1/session", "/v1/sessions", "/v1/task-timeline", "/v1/attention"].contains(endpoint)
+    }
+
+    static func authenticatedGetRequest(url: URL, path: String, token: String) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if usesSnapshotReadMode(path) {
+            request.setValue("snapshot", forHTTPHeaderField: "X-Agentacct-Read-Mode")
+        }
+        return request
+    }
+
     private func get<T: Decodable>(_ path: String, discovery: Discovery, cacheStore: URL? = nil, requestStartedAt: Date = Date()) async throws -> T {
         let host = discovery.host ?? "127.0.0.1"
         guard let url = URL(string: "http://\(host):\(discovery.port)\(path)") else {
             throw GlanceClientError.transport("bad daemon URL")
         }
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(discovery.token)", forHTTPHeaderField: "Authorization")
+        let request = Self.authenticatedGetRequest(url: url, path: path, token: discovery.token)
         let (data, response): (Data, URLResponse)
         do {
             (data, response) = try await session.data(for: request)
@@ -476,17 +489,22 @@ final class GlanceClient {
         guard let http = response as? HTTPURLResponse else {
             throw GlanceClientError.transport("not an HTTP response")
         }
-        guard http.statusCode == 200 else {
-            throw GlanceClientError.http(http.statusCode)
+        if Self.usesSnapshotReadMode(path), WorkProjectionMetadata.from(data)?.available == false, let cacheStore {
+            await SavedWorkCache.shared.invalidate(store: cacheStore)
         }
-        do {
-            let decoded = try JSONDecoder().decode(T.self, from: data)
-            if !Task.isCancelled, SavedWorkSnapshot.accepts(path), let cacheStore {
-                await SavedWorkCache.shared.record(path: path, data: data, store: cacheStore, requestStartedAt: requestStartedAt)
-            }
-            return decoded
-        } catch {
-            throw GlanceClientError.transport("payload decode failed: \(error.localizedDescription)")
+        let decoded: T = try Self.decodeGetPayload(data, statusCode: http.statusCode, path: path)
+        if !Task.isCancelled, SavedWorkSnapshot.accepts(path), let cacheStore {
+            await SavedWorkCache.shared.record(path: path, data: data, store: cacheStore, requestStartedAt: requestStartedAt)
         }
+        return decoded
+    }
+
+    static func decodeGetPayload<T: Decodable>(_ data: Data, statusCode: Int, path: String) throws -> T {
+        if usesSnapshotReadMode(path), statusCode == 202 || WorkProjectionMetadata.from(data)?.available == false {
+            throw WorkProjectionPending(projection: WorkProjectionMetadata.from(data) ?? .pending)
+        }
+        guard statusCode == 200 else { throw GlanceClientError.http(statusCode) }
+        do { return try JSONDecoder().decode(T.self, from: data) }
+        catch { throw GlanceClientError.transport("payload decode failed: \(error.localizedDescription)") }
     }
 }

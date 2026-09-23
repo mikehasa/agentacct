@@ -62,6 +62,7 @@ rm -rf "$DIST_DIR" "$WORK_DIR" "$HERE"/*.spec
     --collect-all zstandard \
     --collect-submodules pydantic \
     --hidden-import=agentacct.statusline_hook \
+    --hidden-import=agentacct.receipt_snapshot_worker \
     --hidden-import=uvicorn.loops.auto \
     --hidden-import=uvicorn.protocols.http.auto \
     --hidden-import=uvicorn.protocols.websockets.auto \

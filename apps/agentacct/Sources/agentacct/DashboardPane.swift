@@ -796,6 +796,10 @@ struct DashboardPane: View {
                     error: dashboard.attentionError
                 )
 
+                if let projection = dashboard.attentionProjection {
+                    WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot)
+                }
+
                 splitRow {
                     DashboardAttentionBriefCard(
                         payload: dashboard.attention,
@@ -819,6 +823,11 @@ struct DashboardPane: View {
                     ) { destination in
                         selection.open(destination)
                     }
+                }
+
+                if let projection = dashboard.receiptListProjection,
+                   projection != dashboard.attentionProjection {
+                    WorkProjectionNotice(projection: projection, isOffline: dashboard.isOfflineSnapshot)
                 }
 
                 RecentWorkCard(

@@ -58,6 +58,289 @@ _AUTO_PRUNE_METADATA_KEY = "last_auto_prune_at"
 
 
 @dataclass(frozen=True)
+class EvidenceSnapshotState:
+    """Versions for receipt capture and append-tolerant serving.
+
+    Bind these to the projection's physical st_dev/st_ino as well: restoring
+    an old backup can restore its database_id and generations too. The SQLite
+    schema_cookie additionally detects backup restoration into the same inode.
+    """
+
+    database_id: str
+    revision: int
+    destructive_revision: int
+    schema_version: str
+    schema_cookie: int
+    mechanical_revision: int
+    mechanical_destructive_revision: int
+
+
+def read_evidence_snapshot_state(projection_path: Path) -> EvidenceSnapshotState:
+    """Read generations without recovery, writes, or content-row scans.
+
+    Replay offsets and append counters in store_metadata are intentionally
+    excluded. The schema value is part of the returned safety identity.
+    Missing or incompatible state fails closed; serving must not reuse a
+    cached token after a read error.
+    """
+
+    uri = projection_path.resolve().as_uri() + "?mode=ro"
+    connection = sqlite3.connect(uri, uri=True, timeout=0.05)
+    try:
+        row = connection.execute(
+            "SELECT s.database_id, s.revision, s.destructive_revision, m.value, p.schema_version, "
+            "h.revision, h.destructive_revision "
+            "FROM evidence_snapshot_state AS s "
+            "JOIN evidence_mechanical_snapshot_state AS h ON h.singleton = s.singleton "
+            "JOIN store_metadata AS m ON m.key = 'schema_version' "
+            "CROSS JOIN pragma_schema_version AS p "
+            "WHERE s.singleton = 1"
+        ).fetchone()
+    finally:
+        connection.close()
+    if (
+        row is None
+        or not isinstance(row[0], str)
+        or len(row[0]) != 32
+        or any(character not in "0123456789abcdef" for character in row[0])
+        or not isinstance(row[1], int)
+        or not isinstance(row[2], int)
+        or row[1] < 0
+        or row[2] < 0
+        or row[3] != EVIDENCE_STORE_SCHEMA_VERSION
+        or not isinstance(row[4], int)
+        or not isinstance(row[5], int)
+        or not isinstance(row[6], int)
+        or row[5] < 0
+        or row[6] < 0
+    ):
+        raise sqlite3.DatabaseError("evidence snapshot state is missing or invalid")
+    return EvidenceSnapshotState(*row)
+
+
+# Each lookup uses an existing unique index. REPLACE can silently delete via
+# any unique key (including the implicit rowid) with recursive_triggers OFF.
+# These guards deliberately fail closed for an ignored conflicting INSERT too.
+_SNAPSHOT_UNIQUE_KEYS: dict[str, tuple[str, ...]] = {
+    "evidence_versions": ("evidence_id = NEW.evidence_id",),
+    "evidence_dimensions": ("evidence_id = NEW.evidence_id AND dimension = NEW.dimension",),
+    "evidence_receipts": ("sequence = NEW.sequence", "receipt_id = NEW.receipt_id"),
+    "evidence_acknowledgements": ("consumer = NEW.consumer AND evidence_id = NEW.evidence_id",),
+    "claimed_link_versions": ("link_id = NEW.link_id",),
+    "claimed_link_receipts": ("sequence = NEW.sequence", "receipt_id = NEW.receipt_id"),
+    "refreshable_usage_batch_receipts": ("receipt_id = NEW.receipt_id",),
+    "refreshable_usage_revisions": (
+        "revision_id = NEW.revision_id",
+        "created_transition_id = NEW.created_transition_id",
+        "slot_key = NEW.slot_key AND status = 'current' AND NEW.status = 'current'",
+    ),
+    "refreshable_usage_heads": ("slot_key = NEW.slot_key",),
+    "refreshable_usage_conflicts": ("conflict_key = NEW.conflict_key", "first_transition_id = NEW.first_transition_id"),
+    "refreshable_usage_transitions": (
+        "transition_id = NEW.transition_id",
+        "receipt_id = NEW.receipt_id AND sequence_in_batch = NEW.sequence_in_batch",
+    ),
+    "spool_errors": ("spool_offset = NEW.spool_offset AND raw_digest = NEW.raw_digest",),
+}
+
+
+def _initialize_snapshot_state(connection: sqlite3.Connection) -> None:
+    """Install durable guards once; legacy writers automatically run them."""
+
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS evidence_snapshot_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            database_id TEXT NOT NULL,
+            revision INTEGER NOT NULL,
+            destructive_revision INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO evidence_snapshot_state
+            (singleton, database_id, revision, destructive_revision)
+        VALUES (1, lower(hex(randomblob(16))), 0, 0);
+        CREATE TRIGGER IF NOT EXISTS evidence_schema_snapshot_update
+        AFTER UPDATE ON store_metadata
+        WHEN (OLD.key = 'schema_version' OR NEW.key = 'schema_version')
+            AND (OLD.key IS NOT NEW.key OR OLD.value IS NOT NEW.value)
+        BEGIN
+            UPDATE evidence_snapshot_state
+            SET revision = revision + 1, destructive_revision = destructive_revision + 1
+            WHERE singleton = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS evidence_schema_snapshot_delete
+        AFTER DELETE ON store_metadata WHEN OLD.key = 'schema_version'
+        BEGIN
+            UPDATE evidence_snapshot_state
+            SET revision = revision + 1, destructive_revision = destructive_revision + 1
+            WHERE singleton = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS evidence_schema_snapshot_replace
+        BEFORE INSERT ON store_metadata
+        WHEN NEW.key = 'schema_version'
+            AND EXISTS (SELECT 1 FROM store_metadata WHERE key = NEW.key AND value IS NOT NEW.value)
+        BEGIN
+            UPDATE evidence_snapshot_state
+            SET revision = revision + 1, destructive_revision = destructive_revision + 1
+            WHERE singleton = 1;
+        END;
+    """)
+    for table, keys in _SNAPSHOT_UNIQUE_KEYS.items():
+        columns = ["rowid", *(str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")'))]
+        changed = [f'NEW."{column}" IS NOT OLD."{column}"' for column in columns]
+        destructive = [
+            f'(OLD.first_receipt_sequence IS NOT NULL AND {condition})'
+            if column == "first_receipt_sequence" else condition
+            for column, condition in zip(columns, changed)
+        ]
+        # Separate EXISTS clauses retain each unique index, including the
+        # partial current-slot index; no per-write projection scan is needed.
+        collision = " OR ".join(
+            f'EXISTS (SELECT 1 FROM "{table}" WHERE {key})'
+            for key in ("rowid = NEW.rowid", *keys)
+        )
+        connection.executescript(f"""
+            CREATE TRIGGER IF NOT EXISTS {table}_snapshot_insert
+            AFTER INSERT ON "{table}"
+            BEGIN
+                UPDATE evidence_snapshot_state SET revision = revision + 1 WHERE singleton = 1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS {table}_snapshot_update
+            AFTER UPDATE ON "{table}" WHEN {' OR '.join(changed)}
+            BEGIN
+                UPDATE evidence_snapshot_state
+                SET revision = revision + 1,
+                    destructive_revision = destructive_revision + CASE WHEN {' OR '.join(destructive)} THEN 1 ELSE 0 END
+                WHERE singleton = 1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS {table}_snapshot_delete
+            AFTER DELETE ON "{table}"
+            BEGIN
+                UPDATE evidence_snapshot_state
+                SET revision = revision + 1, destructive_revision = destructive_revision + 1
+                WHERE singleton = 1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS {table}_snapshot_replace
+            BEFORE INSERT ON "{table}" WHEN {collision}
+            BEGIN
+                UPDATE evidence_snapshot_state
+                SET revision = revision + 1, destructive_revision = destructive_revision + 1
+                WHERE singleton = 1;
+            END;
+        """)
+    _initialize_mechanical_snapshot_state(connection)
+
+
+def _initialize_mechanical_snapshot_state(connection: sqlite3.Connection) -> None:
+    """Version the hook window and its conflict groups, not unrelated usage.
+
+    Receipt capture reads versions + receipt availability for client_hook and
+    expands their full idempotency groups. It does not read usage heads, links,
+    acknowledgements or dimension-index rows. Numeric usage refreshes in those
+    other lanes must not invalidate already served mechanical evidence.
+    """
+
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS evidence_mechanical_snapshot_state (
+            singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+            revision INTEGER NOT NULL,
+            destructive_revision INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO evidence_mechanical_snapshot_state VALUES (1, 0, 0);
+        CREATE INDEX IF NOT EXISTS idx_evidence_mechanical_group
+            ON evidence_versions(idempotency_key, source_type, evidence_id);
+    """)
+
+    def version_member(alias: str) -> str:
+        return (
+            f"({alias}.source_type = 'client_hook' OR EXISTS ("
+            "SELECT 1 FROM evidence_versions AS hook INDEXED BY idx_evidence_mechanical_group "
+            f"WHERE hook.idempotency_key = {alias}.idempotency_key AND hook.source_type = 'client_hook'))"
+        )
+
+    def receipt_member(alias: str) -> str:
+        return (
+            "EXISTS (SELECT 1 FROM evidence_versions AS member "
+            f"WHERE member.evidence_id = {alias}.evidence_id AND {version_member('member')})"
+        )
+
+    for table in ("evidence_versions", "evidence_receipts"):
+        member = version_member if table == "evidence_versions" else receipt_member
+        columns = ["rowid", *(str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")'))]
+        changes = [f'NEW."{column}" IS NOT OLD."{column}"' for column in columns]
+        destructive = [
+            f'(OLD.first_receipt_sequence IS NOT NULL AND {condition})'
+            if column == "first_receipt_sequence" else condition
+            for column, condition in zip(columns, changes)
+        ]
+        collisions = " OR ".join(
+            f'EXISTS (SELECT 1 FROM "{table}" AS prior WHERE {key} AND {member("prior")})'
+            for key in ("prior.rowid = NEW.rowid", *(
+                " AND ".join("prior." + part for part in key.split(" AND "))
+                for key in _SNAPSHOT_UNIQUE_KEYS[table]
+            ))
+        )
+        connection.executescript(f"""
+            CREATE TRIGGER IF NOT EXISTS {table}_mechanical_insert
+            AFTER INSERT ON "{table}" WHEN {member('NEW')}
+            BEGIN
+                UPDATE evidence_mechanical_snapshot_state SET revision = revision + 1 WHERE singleton = 1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS {table}_mechanical_update
+            BEFORE UPDATE ON "{table}"
+            WHEN ({' OR '.join(changes)}) AND ({member('OLD')} OR {member('NEW')} OR {collisions})
+            BEGIN
+                UPDATE evidence_mechanical_snapshot_state
+                SET revision = revision + 1,
+                    destructive_revision = destructive_revision + CASE WHEN {' OR '.join(destructive)} THEN 1 ELSE 0 END
+                WHERE singleton = 1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS {table}_mechanical_delete
+            BEFORE DELETE ON "{table}" WHEN {member('OLD')}
+            BEGIN
+                UPDATE evidence_mechanical_snapshot_state
+                SET revision = revision + 1, destructive_revision = destructive_revision + 1 WHERE singleton = 1;
+            END;
+            CREATE TRIGGER IF NOT EXISTS {table}_mechanical_replace
+            BEFORE INSERT ON "{table}" WHEN {collisions}
+            BEGIN
+                UPDATE evidence_mechanical_snapshot_state
+                SET revision = revision + 1, destructive_revision = destructive_revision + 1 WHERE singleton = 1;
+            END;
+        """)
+    connection.executescript("""
+        -- A newly visible member can retract a previously accepted conflict
+        -- group, even when an old writer does not update its is_conflict flag.
+        CREATE TRIGGER IF NOT EXISTS evidence_versions_mechanical_group_insert
+        BEFORE INSERT ON evidence_versions
+        WHEN EXISTS (
+            SELECT 1 FROM evidence_versions AS hook INDEXED BY idx_evidence_mechanical_group
+            WHERE hook.idempotency_key = NEW.idempotency_key AND hook.source_type = 'client_hook'
+                AND hook.evidence_id != NEW.evidence_id
+        )
+        BEGIN
+            UPDATE evidence_mechanical_snapshot_state
+            SET revision = revision + 1, destructive_revision = destructive_revision + 1 WHERE singleton = 1;
+        END;
+        -- Handle legacy writers that commit a version before its first
+        -- receipt: the receipt JOIN makes it visible only at this later write.
+        CREATE TRIGGER IF NOT EXISTS evidence_receipts_mechanical_group_insert
+        BEFORE INSERT ON evidence_receipts
+        WHEN NOT EXISTS (SELECT 1 FROM evidence_receipts WHERE evidence_id = NEW.evidence_id)
+            AND EXISTS (
+                SELECT 1 FROM evidence_versions AS member WHERE member.evidence_id = NEW.evidence_id
+                    AND EXISTS (
+                        SELECT 1 FROM evidence_versions AS hook INDEXED BY idx_evidence_mechanical_group
+                        WHERE hook.idempotency_key = member.idempotency_key AND hook.source_type = 'client_hook'
+                            AND hook.evidence_id != member.evidence_id
+                    )
+            )
+        BEGIN
+            UPDATE evidence_mechanical_snapshot_state
+            SET revision = revision + 1, destructive_revision = destructive_revision + 1 WHERE singleton = 1;
+        END;
+    """)
+
+
+@dataclass(frozen=True)
 class EvidencePruneResult:
     dry_run: bool
     matched_versions: int
@@ -608,6 +891,10 @@ class EvidenceStore:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (EVIDENCE_STORE_SCHEMA_VERSION,),
             )
+            _initialize_snapshot_state(connection)
+
+    def snapshot_state(self) -> EvidenceSnapshotState:
+        return read_evidence_snapshot_state(self.projection_path)
 
     def _spool_record(self, *, kind: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         body = {
@@ -2998,6 +3285,8 @@ __all__ = [
     "EvidenceAppendResult",
     "EvidencePruneResult",
     "EvidenceRecord",
+    "EvidenceSnapshotState",
+    "read_evidence_snapshot_state",
     "EvidenceStore",
     "EvidenceStoreStats",
     "LinkAppendResult",
