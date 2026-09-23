@@ -626,7 +626,7 @@ struct StepCard: View {
                     .foregroundStyle(Theme.muted)
             } else {
                 if !checkDigest.attention.isEmpty {
-                    checkGroupHeading("Needs attention", count: checkDigest.attention.count, tint: Theme.coral)
+                    checkGroupHeading("Failed / error checks", count: checkDigest.attention.count, tint: Theme.muted)
                     CheckRows(
                         items: showAllAttention
                             ? checkDigest.attention

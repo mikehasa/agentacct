@@ -624,7 +624,7 @@ struct StepDetailBody: View {
         } else {
             VStack(alignment: .leading, spacing: Space.s) {
                 if !attention.isEmpty {
-                    groupHeading("Needs attention", count: attention.count, tint: Theme.coral)
+                    groupHeading("Failed / error checks", count: attention.count, tint: Theme.muted)
                     checkList(attention)
                 }
                 if !passed.isEmpty {

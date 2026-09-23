@@ -1463,7 +1463,7 @@ struct RecordChecksCard: View {
                     let history = collection.rows(in: .history)
 
                     if !attention.isEmpty {
-                        fixedGroup(title: "Needs attention", rows: attention, tone: Theme.coral)
+                        fixedGroup(title: "Failed / error checks", rows: attention, tone: Theme.muted)
                     }
                     if !other.isEmpty {
                         if !attention.isEmpty { sectionDivider }

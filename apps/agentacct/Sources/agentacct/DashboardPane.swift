@@ -1417,7 +1417,7 @@ private struct DashboardAttentionBriefCard: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.accent)
-                .accessibilityHint("Opens this task in Work")
+                .accessibilityHint("Opens this task in Sessions")
                 .accessibilityIdentifier("dashboard.shift-brief.review-evidence")
 
                 Button {
@@ -1973,7 +1973,7 @@ private struct RecentWorkRow: View {
         .accessibilityLabel(
             "\(item.title), \(item.outcome), \(item.evidence), \(item.cost)"
         )
-        .accessibilityHint("Opens this task in Work")
+        .accessibilityHint("Opens this task in Sessions")
         .accessibilityIdentifier("dashboard.recent-work.task.\(item.id)")
     }
 }
