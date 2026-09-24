@@ -5,6 +5,7 @@ import os
 import tomllib
 from pathlib import Path
 
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 from agentacct.cli import app
@@ -14,15 +15,16 @@ runner = CliRunner()
 # The console wraps output to the terminal width, so asserting on a phrase can
 # fail on a narrow terminal (CI renders at 80 columns) even though the phrase is
 # there. Inside a panel the wrap lands against the border glyph — "refusing to │"
-# / "│ overwrite" — which leaves a border between the halves even after the
-# whitespace is collapsed, so drop the box-drawing characters first.
+# / "│ overwrite" — and a colored console interleaves SGR escapes around both the
+# glyph and the line break, so strip ANSI first, then drop the box-drawing
+# characters, then collapse whitespace.
 _BOX_GLYPHS = "│┃─━╭╮╰╯┌┐└┘├┤┬┴┼┏┓┗┛╔╗╚╝║═"
 _BOX_TO_SPACE = str.maketrans(_BOX_GLYPHS, " " * len(_BOX_GLYPHS))
 
 
 def _flat(output: str) -> str:
-    """Output rendered without reference to where the console happened to wrap."""
-    return " ".join(output.translate(_BOX_TO_SPACE).split())
+    """Output rendered without reference to where or how the console wrapped."""
+    return " ".join(strip_ansi(output).translate(_BOX_TO_SPACE).split())
 
 
 def test_setup_mcp_claude_code_preview_is_copy_paste_friendly_and_does_not_write(tmp_path: Path) -> None:

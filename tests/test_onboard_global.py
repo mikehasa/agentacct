@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 from agentacct.cli import app
@@ -18,14 +19,15 @@ from agentacct.cli import app
 # The console wraps output to the terminal width, so asserting on a phrase can
 # fail on a narrow terminal (CI renders at 80 columns) even though the phrase is
 # there, and even after whitespace is collapsed when a panel border glyph sits
-# between the wrapped halves. Drop the box-drawing characters as well.
+# between the wrapped halves, or a colored console interleaves SGR escapes around
+# the glyph and the break. Strip ANSI, drop the box-drawing characters, collapse.
 _BOX_GLYPHS = "│┃─━╭╮╰╯┌┐└┘├┤┬┴┼┏┓┗┛╔╗╚╝║═"
 _BOX_TO_SPACE = str.maketrans(_BOX_GLYPHS, " " * len(_BOX_GLYPHS))
 
 
 def _flat(output: str) -> str:
-    """Output rendered without reference to where the console happened to wrap."""
-    return " ".join(output.translate(_BOX_TO_SPACE).split())
+    """Output rendered without reference to where or how the console wrapped."""
+    return " ".join(strip_ansi(output).translate(_BOX_TO_SPACE).split())
 
 
 @pytest.fixture
