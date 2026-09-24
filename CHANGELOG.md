@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.1] — 2026-09-24
+
+Kimi Code support end to end — usage import, pricing-table estimates, automatic MCP registration, and client labels across the CLI, the local API, the TUI, and the app — plus independent Usage filters, an always-visible freshness stamp, and a verified cold compaction for the append-only evidence spool.
+
 ### Added
 
 - Kimi Code support. Local usage import reads `~/.kimi-code` (session ids from
