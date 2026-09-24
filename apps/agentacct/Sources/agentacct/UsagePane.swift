@@ -19,6 +19,7 @@ struct UsagePane: View {
         ScrollBox {
             VStack(alignment: .leading, spacing: 0) {
                 header
+                UsageFilterBar().padding(.top, Space.l)
                 recordedUsageSection.padding(.top, Space.l)
                 DisclosureGroup(isExpanded: $showCapacity) {
                     capacitySection.padding(.top, Space.m)
@@ -48,7 +49,6 @@ struct UsagePane: View {
             Text("Usage").workFont(.titlePage).tracking(Type.titlePageTracking).foregroundStyle(Theme.ink)
             Text("Recorded tokens and cost").workFont(.caption).foregroundStyle(Theme.muted)
             Spacer()
-            usageRangeControl
         }
     }
 
@@ -107,7 +107,8 @@ struct UsagePane: View {
                 } else {
                     UsageCapacityLedger(
                         rows: presentation.rows,
-                        days: dashboard.usageDays,
+                        days: dashboard.usagePlanDays,
+                        recordedUseRange: recordedUseRangeText,
                         usageLoaded: dashboard.usage != nil
                     )
                 }
@@ -153,6 +154,13 @@ struct UsagePane: View {
             return "Recorded usage is still loading or unavailable; no client has reported a live quota window."
         }
         return "No client has reported a live quota window or usage in the selected range."
+    }
+
+    /// The capacity ledger's recorded-use column is scoped to the page's
+    /// filter, so its header names that filter — an all-time or narrowed read
+    /// must not wear the plan lane's day count.
+    private var recordedUseRangeText: String {
+        UsageFilterSummary.build(filter: dashboard.usageFilter, echo: dashboard.usage?.filtersEcho).text
     }
 
     private func scopedCapacityState(title: String, detail: String) -> some View {
@@ -204,8 +212,15 @@ struct UsagePane: View {
                     .workFont(.caption).foregroundStyle(Theme.coral)
             }
             if let usage = dashboard.usage {
-                UsageRecordedExplorer(usage: usage, days: dashboard.usageDays,
-                    tokenBasis: Binding(get: { tokenBasis }, set: { savedTokenBasis = $0 }))
+                filterSummaryLine(usage)
+                if let mismatch = dashboard.usageFilterMismatch {
+                    filteredNumbersHidden(mismatch)
+                } else if usage.hasNoSavedRows {
+                    emptyFilterState(usage)
+                } else {
+                    UsageRecordedExplorer(usage: usage, rangeLabel: dashboard.usageRangeLabel,
+                        tokenBasis: Binding(get: { tokenBasis }, set: { savedTokenBasis = $0 }))
+                }
             } else {
                 Text("Recorded usage not loaded").workFont(.rowLabel).foregroundStyle(Theme.ink)
                 Text("The local recorder is loading token and cost records.")
@@ -214,26 +229,85 @@ struct UsagePane: View {
         }
     }
 
-    @ViewBuilder
-    private var usageRangeControl: some View {
-        if SnapshotMode.enabled && !SnapshotMode.interactiveFixture {
-            HStack(spacing: Space.s) {
-                Chip(text: "\(dashboard.usageDays)d", tint: Theme.accent)
+    /// What every number below is scoped to, in the filter bar's own order.
+    /// The store owns the wording (see ``UsageFilterSummary``); this only shows
+    /// it, so a filtered page can never be mistaken for an unfiltered one.
+    private func filterSummaryLine(_ usage: UsageSummary) -> some View {
+        let summary = UsageFilterSummary.build(filter: dashboard.usageFilter, echo: usage.filtersEcho)
+        return HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.s) {
+                CapsLabel(text: "Showing")
+                Text(summary.text).workFont(.captionSemibold).foregroundStyle(Theme.ink)
             }
-        } else {
-            Picker("Usage range", selection: Binding(
-                get: { dashboard.usageDays },
-                set: { days in Task { await dashboard.setUsageDays(days) } }
-            )) {
-                Text("7d").tag(7)
-                Text("30d").tag(30)
-                Text("90d").tag(90)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 190)
-            .accessibilityIdentifier("usage.history.range")
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("usage.filters.summary")
+            ContextHelp(
+                title: "About these filters",
+                message: filterHelpMessage(usage, summary: summary),
+                identifier: "usage.filters.help"
+            )
+            Spacer()
         }
+    }
+
+    private func filterHelpMessage(_ usage: UsageSummary, summary: UsageFilterSummary) -> String {
+        var parts = [
+            "Every number below comes from one /usage/summary read with these filters: date range, agent, model and provider, each applied independently and combined with AND. Nothing here is re-added or rescaled by the app.",
+            "This page is showing \(summary.text).",
+        ]
+        if let resolved = usage.filtersEcho?.resolvedRange {
+            parts.append("The recorder resolved the date range to \(resolved).")
+        } else {
+            parts.append("The recorder did not report the window it resolved.")
+        }
+        if dashboard.usageFilter.model != UsageFilter.anyValue {
+            parts.append(echoVerdict("model", usage.filtersEcho?.modelMatchesSavedRows, value: dashboard.usageFilter.model))
+        }
+        if dashboard.usageFilter.provider != UsageFilter.anyValue {
+            parts.append(echoVerdict("provider", usage.filtersEcho?.providerMatchesSavedRows, value: dashboard.usageFilter.provider))
+        }
+        return parts.joined(separator: " ")
+    }
+
+    /// The daemon's own verdict on a value filter, quoted as given: an absent
+    /// flag is named absent rather than read as a match.
+    private func echoVerdict(_ field: String, _ matches: Bool?, value: String) -> String {
+        switch matches {
+        case true: return "The recorder's filter echo confirms the \(field) filter “\(value)” matches saved rows."
+        case false: return "The recorder's filter echo reports the \(field) filter “\(value)” matches no saved row."
+        case nil: return "The recorder did not report whether the \(field) filter “\(value)” matches saved rows."
+        }
+    }
+
+    /// The payload's own `filters_echo` did not confirm this filter, so its
+    /// numbers may cover a wider set of rows than the filter asks for. They are
+    /// named as hidden rather than shown under a label they do not match.
+    private func filteredNumbersHidden(_ mismatch: UsageFilterMismatch) -> some View {
+        Card {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Filtered numbers unavailable").workFont(.rowLabel).foregroundStyle(Theme.ink)
+                Text(mismatch.detail)
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityIdentifier("usage.filters.mismatch")
+    }
+
+    /// No saved row matches the committed filter. The copy names the value the
+    /// recorder itself reported missing, and never renders a zero total as if
+    /// the range had data.
+    private func emptyFilterState(_ usage: UsageSummary) -> some View {
+        let state = UsageFilterEmptyState.build(filter: dashboard.usageFilter, echo: usage.filtersEcho)
+        return Card {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(state.title).workFont(.rowLabel).foregroundStyle(Theme.ink)
+                Text(state.detail)
+                    .workFont(.caption).foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityIdentifier("usage.filters.empty")
     }
 
     /// The basis facts for the loaded range. They used to trail the page as
@@ -315,15 +389,26 @@ struct UsagePane: View {
                 Rectangle().fill(Theme.hairline).frame(height: 1)
                 VStack(alignment: .leading, spacing: Space.m) {
                     CapsLabel(text: "Weekly plan-share estimates")
-                    Text("Today and 7d estimates stay fixed; the selected usage range applies only to each model accumulation below.")
+                    Text(planShareNote)
                         .workFont(.caption).foregroundStyle(Theme.muted)
                     ForEach(Array(dashboard.planClients.enumerated()), id: \.element.id) { index, client in
                         if index > 0 { Rectangle().fill(Theme.hairline).frame(height: 1) }
-                        UsagePlanClientDetail(client: client, days: dashboard.usageDays)
+                        UsagePlanClientDetail(client: client, days: dashboard.usagePlanDays)
                     }
                 }
             }
         }
+    }
+
+    /// The plan endpoint's own window, stated as such: the plan lane is not the
+    /// usage filter, and the two only coincide while the filter fits inside its
+    /// 1...90-day bound.
+    private var planShareNote: String {
+        var note = "Today and 7d estimates stay fixed. Each model accumulation below covers the plan endpoint's own window — the last \(dashboard.usagePlanDays) days (it accepts at most 90)."
+        if !dashboard.usageFilter.range.fitsPlanWindow {
+            note += " That window is narrower than the usage filter above (\(dashboard.usageRangeLabel.long)), which this lane cannot cover in full."
+        }
+        return note
     }
 }
 

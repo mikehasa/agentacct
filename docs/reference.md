@@ -180,13 +180,39 @@ curl http://127.0.0.1:8765/events/summary
 ```
 
 `GET /usage/summary?days=7&granularity=daily` returns saved usage grouped by
-client, model and local calendar date. `days` accepts `7`, `30`, `90`, or `all`;
-`granularity` accepts `daily`, `weekly`, or `auto` (daily for 7/30, weekly for
-90/all). A selected `by_period[]` entry contains `by_client`, a dictionary keyed
-by client, and `by_model`, a list keyed by `(client, provider, model)`. Both carry
-the full bucket fields used by the top-level totals: input, output, fresh,
-cache-creation, cache-read and total tokens, session counts, cost and reporting
-coverage. The same model used through Hermes and Codex remains separate.
+client, provider, model and local calendar date. `days` accepts `7`, `30`, `90`,
+or `all`; `granularity` accepts `daily`, `weekly`, or `auto` (daily for 7/30,
+weekly for 90/all). A selected `by_period[]` entry contains `by_client`, a
+dictionary keyed by client, and `by_model`, a list keyed by
+`(client, provider, model)`. Both carry the full bucket fields used by the
+top-level totals: input, output, fresh, cache-creation, cache-read and total
+tokens, session counts, cost and reporting coverage. The same model used through
+Hermes and Codex remains separate.
+
+`client`, `model` and `provider` filter rows by their exact saved value, and the
+filter applies identically to `totals`, `by_client`, `by_model`, `by_period`
+(including each period's own slices), `range_context` and `usage_exclusions` —
+one population per response, never a filtered total over unfiltered buckets.
+`client` is whitelisted (an unknown value is a `422`). `model` and `provider`
+are data, not whitelists: an unknown or merely unmatched value is NOT an error —
+the response is the empty result (no rows, no buckets, no gap-filled zero days)
+with `filters_echo.model_matches_saved_rows` / `filters_echo.provider_matches_saved_rows`
+`false`. Those flags report the saved-row vocabulary, so they stay `true` when
+the value exists in the store but another filter, or the date range, left its
+rows out. Nothing is ever guessed or substituted for an unknown value.
+
+`start` and `end` (ISO `YYYY-MM-DD`, either may be given alone) are an explicit
+CLOSED local-date interval — both boundary days are included — that takes
+precedence over `days` whenever at least one of them is present: a request
+carrying both uses the explicit interval, and `days` is still echoed unchanged
+because it did not run. An unparseable date, or a `start` later than `end`, is a
+`422` like the whitelist values. `filters_echo` states which rule produced the
+numbers: `range_mode` is `explicit` or `days`, and `resolved_start`/`resolved_end`
+name the dates actually applied (`null` for an open side, and both `null` for
+`days=all`). In the `days` mode `resolved_start` is the first day of the window
+(`today - days + 1`) and `resolved_end` is today, so a client can always verify
+the window it received. A valid window with no matching rows is a `200` empty
+result, never an error and never a nearby range.
 
 `fresh_tokens = input_tokens + output_tokens`;
 `total_tokens_including_cached` adds normalized cache reads and writes once.
@@ -210,8 +236,10 @@ counts the held (non-additive) rows inside it — their tokens and costs reach n
 subtotal — while `unknown_time_rows` counts every in-range row dropped for an
 unusable timestamp, additive and held alike. That count is the same one
 `totals.unknown_time_rows` reports, so the two disclosures cannot disagree;
-with `days=all` nothing is dropped for that reason and the count matches the
-rows kept under the `unknown` period. `reason` names the normalization state of
+with `days=all` (the only unbounded mode) nothing is dropped for that reason and
+the count matches the rows kept under the `unknown` period, while a `days`
+window and an explicit `start`/`end` interval are both bounded and both drop and
+count them. `reason` names the normalization state of
 the held rows (a stable informational value when none are held), and
 `raw_evidence_preserved: true` records that an exclusion is a display rule,
 never a deletion.

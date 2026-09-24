@@ -1,7 +1,9 @@
 """Usage cube — the pure Theme A aggregation over saved usage rows (PRD §5.4).
 
 Aggregates SAVED usage rows by client, by (client, provider, model), and by
-local-day / ISO-week period, with a date-range filter. The caller feeds it the
+local-day / ISO-week period, with a date-range filter — either the trailing
+``days`` window or the explicit ``start``/``end`` closed interval, which wins
+whenever either bound is given. The caller feeds it the
 same ``DashboardUsageRecord`` intake every dashboard surface shares (trusted
 local import rows only — diagnostic events and shadowed legacy rows can never
 enter), plus the ONE canonical row-timestamp rule (``usage_view._usage_record_time``)
@@ -25,8 +27,9 @@ Honesty contract carried in every bucket (PRD §10):
   lane rows of one session never double-count it.
 - Rows whose timestamps fail the bad-timestamp guard are excluded from
   date-bounded ranges (a bounded range cannot honestly claim them) and
-  reported via ``totals.unknown_time_rows``; with ``days=None`` they stay in
-  the totals under the explicit "unknown" period.
+  reported via ``totals.unknown_time_rows``; with no date bound at all
+  (``days=None`` and no ``start``/``end``) they stay in the totals under the
+  explicit "unknown" period.
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ KNOWN_LOCAL_CLIENTS = (*KNOWN_USAGE_CLIENTS, "cursor")
 USAGE_CUBE_DAYS_CHOICES = ("7", "30", "90", "all")
 USAGE_CUBE_GRANULARITY_CHOICES = ("daily", "weekly")
 
-# Period key for rows whose timestamp failed the guard (days=None only).
+# Period key for rows whose timestamp failed the guard (unbounded ranges only).
 UNKNOWN_PERIOD = "unknown"
 
 # Empty-period gap fill covers at most this many trailing periods so one
@@ -135,13 +138,27 @@ def models_in_records(records: Iterable[Any]) -> list[str]:
     return sorted({str(model) for record in records if (model := getattr(record, "model", None))})
 
 
+def providers_in_records(records: Iterable[Any]) -> list[str]:
+    """Sorted distinct provider names across ALL rows — the parallel of
+    ``models_in_records`` for the provider filter: providers are data (not a
+    whitelist), so an unknown/unmatched one returns the empty result with the
+    filter echoed and never a guess."""
+
+    return sorted(
+        {str(provider) for record in records if (provider := getattr(record, "provider", None))}
+    )
+
+
 def filter_usage_records(
     records: Iterable[Any],
     *,
     record_time: Callable[[Any], float],
     client: str | None = None,
     model: str | None = None,
+    provider: str | None = None,
     days: int | None = None,
+    start: date | None = None,
+    end: date | None = None,
     today: date | None = None,
 ) -> tuple[list[Any], int]:
     """(rows matching the filters, unknown-time row count) — the ONE filter
@@ -149,27 +166,39 @@ def filter_usage_records(
     by-model cost table), so a page can never show two different populations.
 
     ``days=N`` keeps rows whose local calendar day falls in the trailing N
-    days ending ``today``. Unknown-time rows (bad-timestamp guard) are
-    counted either way, but kept only when ``days`` is None — a bounded date
-    range cannot honestly include a row with no usable date.
+    days ending ``today``. An explicit ``start``/``end`` closed local-date
+    interval takes precedence over ``days`` whenever either bound is given
+    (an omitted side stays open; ``start`` > ``end`` is the caller's 422).
+    Unknown-time rows (bad-timestamp guard) are counted either way, but kept
+    only when the filter carries no date bound at all — a bounded date range
+    cannot honestly include a row with no usable date.
     """
 
     today = today or date.today()
-    range_start = today - timedelta(days=days - 1) if days is not None else None
+    if start is not None or end is not None:
+        range_start, range_end = start, end
+    elif days is not None:
+        range_start, range_end = today - timedelta(days=days - 1), today
+    else:
+        range_start = range_end = None
     kept: list[Any] = []
     unknown_time_rows = 0
     for record in records:
         if client is not None and str(getattr(record, "client", "") or "") != client:
+            continue
+        if provider is not None and str(getattr(record, "provider", "") or "") != provider:
             continue
         if model is not None and str(getattr(record, "model", "") or "") != model:
             continue
         day = usage_bucket_date(record_time(record))
         if day is None:
             unknown_time_rows += 1
-            if days is None:
+            if range_start is None and range_end is None:
                 kept.append(record)
             continue
-        if range_start is not None and not (range_start <= day <= today):
+        if range_start is not None and day < range_start:
+            continue
+        if range_end is not None and day > range_end:
             continue
         kept.append(record)
     return kept, unknown_time_rows
@@ -363,28 +392,42 @@ def _token_reporting_status(
     return None
 
 
-def _filled_period_keys(dated_days: list[date], *, days: int | None, granularity: str, today: date) -> list[str]:
+def _filled_period_keys(
+    dated_days: list[date],
+    *,
+    days: int | None,
+    granularity: str,
+    today: date,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[str]:
     """Every period key in range — a gap is information, so empty periods are
-    enumerated (bounded ranges: the whole range; 'all': earliest dated row
-    through today, capped at MAX_FILLED_PERIODS trailing periods)."""
+    enumerated (a days window: the whole window; an explicit interval: its own
+    bounds, an open side completed from the earliest dated row / today; 'all':
+    earliest dated row through today, capped at MAX_FILLED_PERIODS periods)."""
 
-    if days is not None:
-        start, end = today - timedelta(days=days - 1), today
+    if start is not None or end is not None:
+        fill_start = start if start is not None else (min(dated_days) if dated_days else None)
+        fill_end = end if end is not None else today
+        if fill_start is None:
+            return []
+    elif days is not None:
+        fill_start, fill_end = today - timedelta(days=days - 1), today
     elif dated_days:
-        start, end = min(dated_days), today
+        fill_start, fill_end = min(dated_days), today
     else:
         return []
-    step = timedelta(days=7 if granularity == "weekly" else 1)
     if granularity == "weekly":
-        start, end = week_start(start), week_start(end)
-    if end < start:
-        start = end
-    span_periods = (end - start).days // step.days + 1
+        fill_start, fill_end = week_start(fill_start), week_start(fill_end)
+    if fill_end < fill_start:
+        fill_start = fill_end
+    step = timedelta(days=7 if granularity == "weekly" else 1)
+    span_periods = (fill_end - fill_start).days // step.days + 1
     if span_periods > MAX_FILLED_PERIODS:
-        start = end - step * (MAX_FILLED_PERIODS - 1)
+        fill_start = fill_end - step * (MAX_FILLED_PERIODS - 1)
     keys: list[str] = []
-    cursor = start
-    while cursor <= end:
+    cursor = fill_start
+    while cursor <= fill_end:
         keys.append(cursor.isoformat())
         cursor += step
     return keys
@@ -396,11 +439,19 @@ def build_usage_cube(
     record_time: Callable[[Any], float],
     client: str | None = None,
     model: str | None = None,
+    provider: str | None = None,
     days: int | None = None,
+    start: date | None = None,
+    end: date | None = None,
     granularity: str = "daily",
     today: date | None = None,
 ) -> dict[str, Any]:
     """The Theme A usage cube: {totals, by_client[], by_model[], by_period[]}.
+
+    ``client``/``model``/``provider`` narrow every bucket to rows carrying
+    that exact value; ``days``/``start``+``end`` bound the local-date range
+    (the explicit interval wins whenever either bound is given — the ONE rule
+    ``filter_usage_records`` owns, shared with every per-record view).
 
     - ``by_client``: one bucket per platform with rows, sorted by total token
       volume including caches (client name breaks ties).
@@ -410,8 +461,9 @@ def build_usage_cube(
       carries full ``by_client`` buckets keyed by client and ``by_model``
       buckets keyed by (client, provider, model), so a selected chart period
       can show its token and cost breakdown without another read. The
-      "unknown" period (days=None only) sorts last. These are row-attribution
-      dates, not reconstructed per-call history for cumulative session rows.
+      "unknown" period (unbounded ranges only) sorts last. These are
+      row-attribution dates, not reconstructed per-call history for
+      cumulative session rows.
     - ``totals``: the same bucket shape over everything in filter, plus
       ``unknown_time_rows``.
 
@@ -426,7 +478,15 @@ def build_usage_cube(
         raise ValueError(f"unknown granularity: {granularity!r}")
     today = today or date.today()
     kept, unknown_time_rows = filter_usage_records(
-        records, record_time=record_time, client=client, model=model, days=days, today=today
+        records,
+        record_time=record_time,
+        client=client,
+        model=model,
+        provider=provider,
+        days=days,
+        start=start,
+        end=end,
+        today=today,
     )
 
     totals = _new_accumulator()
@@ -471,7 +531,9 @@ def build_usage_cube(
     # instead of a wall of zero rows), while any real data makes every empty
     # period in range visible — a gap is information.
     if kept:
-        for period_key in _filled_period_keys(dated_days, days=days, granularity=granularity, today=today):
+        for period_key in _filled_period_keys(
+            dated_days, days=days, granularity=granularity, today=today, start=start, end=end
+        ):
             by_period.setdefault(period_key, _new_accumulator())
 
     def total_rank(bucket: dict[str, Any]) -> int:

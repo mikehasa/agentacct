@@ -195,8 +195,38 @@ struct UsagePeriodAttribution: Decodable {
     }
 }
 
+/// What the cube says it applied. Every field is optional: an older daemon
+/// echoes only `granularity`/`days`, and the pane treats a missing field as
+/// "not confirmed" rather than assuming it was honored.
 struct UsageFiltersEcho: Decodable {
     let granularity: String?
+    let client: String?
+    let model: String?
+    let provider: String?
+    let days: String?
+    /// The daemon's own verdict on a model/provider filter: false means no
+    /// saved row carries that value, and the payload is the empty result.
+    let modelMatchesSavedRows: Bool?
+    let providerMatchesSavedRows: Bool?
+    let rangeMode: String?
+    let resolvedStart: String?
+    let resolvedEnd: String?
+
+    /// The window the daemon resolved for an explicit range, as the results
+    /// summary prints it; nil when it did not report one.
+    var resolvedRange: String? {
+        guard let resolvedStart, let resolvedEnd else { return nil }
+        return "\(resolvedStart) – \(resolvedEnd)"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case granularity, client, model, provider, days
+        case modelMatchesSavedRows = "model_matches_saved_rows"
+        case providerMatchesSavedRows = "provider_matches_saved_rows"
+        case rangeMode = "range_mode"
+        case resolvedStart = "resolved_start"
+        case resolvedEnd = "resolved_end"
+    }
 }
 
 struct PeriodBucket: Decodable {

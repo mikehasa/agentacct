@@ -27,6 +27,7 @@ from agentacct.usage_cube import (
     client_lane_class,
     filter_usage_records,
     models_in_records,
+    providers_in_records,
     resolve_granularity,
     week_start,
 )
@@ -86,6 +87,7 @@ def _trusted_usage_event(
     *,
     session,
     client="codex",
+    provider=None,
     model="gpt-5.5",
     input_tokens=100,
     output_tokens=25,
@@ -126,7 +128,7 @@ def _trusted_usage_event(
     return {
         "source": f"{client}-local-session-import",
         "event_type": "model_usage",
-        "provider": client,
+        "provider": provider or client,
         "model": model,
         "estimated_input_tokens": input_tokens,
         "estimated_output_tokens": output_tokens,
@@ -142,6 +144,7 @@ def _trusted_usage(
     *,
     session,
     client="codex",
+    provider=None,
     model="gpt-5.5",
     input_tokens=100,
     output_tokens=25,
@@ -160,6 +163,7 @@ def _trusted_usage(
         _trusted_usage_event(
             session=session,
             client=client,
+            provider=provider,
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -357,6 +361,80 @@ def test_cube_filter_rule_is_shared_with_per_record_views():
     assert client_lane_class("mystery-agent") == "lane-other"
 
 
+def test_cube_provider_filter_keeps_only_that_provider_and_unknown_is_empty():
+    records = [
+        _cube_record(client="claude-code", provider="anthropic", model="fable-5", session="a", day=TODAY),
+        _cube_record(client="kimi-code", provider="moonshot", model="kimi-k2", session="b", day=TODAY),
+        _cube_record(client="codex", provider="openai", model="gpt-5.5", session="c", day=TODAY),
+    ]
+
+    moonshot = _cube(records, provider="moonshot", days=30, granularity="daily")
+
+    assert moonshot["totals"]["rows"] == 1
+    assert [entry["client"] for entry in moonshot["by_client"]] == ["kimi-code"]
+    assert [entry["provider"] for entry in moonshot["by_model"]] == ["moonshot"]
+    assert moonshot["by_period"][-1]["by_client"]["kimi-code"]["rows"] == 1
+
+    # Same rule as the model filter: providers are data, so an unmatched one
+    # is a truly empty result (no gap-filled zero wall), never a 422 or a guess.
+    unknown = _cube(records, provider="never-seen", days=30, granularity="daily")
+    assert unknown["totals"]["rows"] == 0
+    assert unknown["by_client"] == []
+    assert unknown["by_model"] == []
+    assert unknown["by_period"] == []
+
+    assert providers_in_records(records) == ["anthropic", "moonshot", "openai"]
+
+
+def test_cube_explicit_range_is_closed_and_takes_precedence_over_days():
+    records = [
+        _cube_record(day=TODAY, session="today"),
+        _cube_record(day=TODAY - timedelta(days=6), session="first-day"),  # the closed start
+        _cube_record(day=TODAY - timedelta(days=7), session="day-before"),
+        # Dated after today: outside the window, but an explicit interval is
+        # the caller's own question and answers it honestly.
+        _cube_record(day=TODAY + timedelta(days=2), session="after-today"),
+    ]
+
+    explicit = _cube(records, days=None, start=TODAY - timedelta(days=6), end=TODAY, granularity="daily")
+    preset = _cube(records, days=7, granularity="daily")
+
+    # start=today-6, end=today IS the 7-day preset, every section included.
+    assert explicit == preset
+    assert explicit["totals"]["rows"] == 2
+    assert [entry["period"] for entry in explicit["by_period"]] == [
+        (TODAY - timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)
+    ]
+
+    after = _cube(records, days=None, start=TODAY + timedelta(days=2), end=TODAY + timedelta(days=2),
+                  granularity="daily")
+    assert [entry["period"] for entry in after["by_period"]] == [(TODAY + timedelta(days=2)).isoformat()]
+    assert after["totals"]["rows"] == 1
+
+    # The explicit interval replaces the days window instead of intersecting it.
+    overriding = _cube(records, days=30, start=TODAY, end=TODAY, granularity="daily")
+    assert overriding["totals"]["rows"] == 1
+    assert [entry["period"] for entry in overriding["by_period"]] == [TODAY.isoformat()]
+
+    # An open side keeps unknown-time rows excluded-but-counted (a bounded
+    # range cannot honestly claim a row with no usable date) ...
+    bad_timestamp = _cube_record(timestamp=1e300, session="bad-ts")
+    bounded, unknown_time_rows = filter_usage_records(
+        [*records, bad_timestamp],
+        record_time=_usage_record_time,
+        start=TODAY - timedelta(days=6),
+        today=TODAY,
+    )
+    assert unknown_time_rows == 1
+    assert bad_timestamp not in bounded
+    # ... while an unbounded filter still keeps and counts it.
+    unbounded, unbounded_unknown = filter_usage_records(
+        [*records, bad_timestamp], record_time=_usage_record_time, days=None, today=TODAY
+    )
+    assert unbounded_unknown == 1
+    assert bad_timestamp in unbounded
+
+
 # ---------------------------------------------------------------------------
 # GET /usage/summary — shape, validation, honesty of the intake
 # ---------------------------------------------------------------------------
@@ -365,11 +443,14 @@ def test_cube_filter_rule_is_shared_with_per_record_views():
 def test_usage_summary_shape_totals_and_periods(tmp_path):
     store_root = tmp_path / "state"
     now = time.time()
+    today = date.today()
     _trusted_usage(store_root, session="sum-a", client="codex", started_at=now - 3600, cache_read=500)
     _trusted_usage(store_root, session="sum-b", client="claude-code", model="fable-5", started_at=now - 86400)
     client = _client(store_root)
 
     payload = client.get("/usage/summary").json()
+    if date.today() != today:
+        pytest.skip("local midnight crossed while the request resolved its own today")
 
     assert set(payload) == {
         "schema_version",
@@ -386,10 +467,15 @@ def test_usage_summary_shape_totals_and_periods(tmp_path):
     assert payload["filters_echo"] == {
         "client": "all",
         "model": "all",
+        "provider": "all",
         "days": "30",
         "granularity": "daily",
         "granularity_requested": "auto",
+        "range_mode": "days",
+        "resolved_start": (today - timedelta(days=29)).isoformat(),
+        "resolved_end": today.isoformat(),
         "model_matches_saved_rows": True,
+        "provider_matches_saved_rows": True,
     }
     assert payload["usage_exclusions"] == {
         "non_additive_rows": 0,
@@ -692,6 +778,57 @@ def test_usage_summary_unknown_model_returns_empty_result_with_echo(tmp_path):
     assert payload["by_client"] == []
     assert payload["by_model"] == []
     assert payload["by_period"] == []
+
+
+def test_usage_summary_provider_filter_narrows_every_section_and_echoes_unknown(tmp_path):
+    store_root = tmp_path / "state"
+    now = time.time()
+    _trusted_usage(store_root, session="prov-anthropic", client="claude-code", provider="anthropic",
+                   model="fable-5", started_at=now - 3600, cost=0.10)
+    _trusted_usage(store_root, session="prov-moonshot", client="kimi-code", provider="moonshot",
+                   model="kimi-k2", started_at=now - 3600, cost=0.20)
+    _trusted_usage(store_root, session="prov-openai", client="codex", provider="openai",
+                   model="gpt-5.5", started_at=now - 3600, cost=0.40)
+    client = _client(store_root)
+
+    everything = client.get("/usage/summary").json()
+    assert everything["filters_echo"]["provider"] == "all"
+    assert everything["filters_echo"]["provider_matches_saved_rows"] is True
+    assert everything["totals"]["rows"] == 3
+
+    moonshot = client.get("/usage/summary?provider=moonshot").json()
+
+    assert moonshot["filters_echo"]["provider"] == "moonshot"
+    assert moonshot["filters_echo"]["provider_matches_saved_rows"] is True
+    assert moonshot["totals"]["rows"] == 1
+    assert moonshot["totals"]["fresh_tokens"] == 125
+    assert moonshot["totals"]["estimated_cost_usd"] == pytest.approx(0.20)
+    assert [entry["client"] for entry in moonshot["by_client"]] == ["kimi-code"]
+    assert [(entry["client"], entry["provider"], entry["model"]) for entry in moonshot["by_model"]] == [
+        ("kimi-code", "moonshot", "kimi-k2")
+    ]
+    # The per-period slices carry the same filter as the period totals.
+    active = next(entry for entry in moonshot["by_period"] if entry["rows"])
+    assert set(active["by_client"]) == {"kimi-code"}
+    assert active["rows"] == 1
+
+    # Provider is data too, not a whitelist: an unknown or merely unmatched
+    # provider returns the EMPTY result with the echo saying so — no 422, no
+    # fallback to a nearby provider.
+    unknown = client.get("/usage/summary?provider=never-seen").json()
+    assert unknown["filters_echo"]["provider"] == "never-seen"
+    assert unknown["filters_echo"]["provider_matches_saved_rows"] is False
+    assert unknown["totals"]["rows"] == 0
+    assert unknown["by_client"] == []
+    assert unknown["by_model"] == []
+    assert unknown["by_period"] == []
+
+    # A provider that IS saved but whose rows the client filter excludes stays
+    # echo-true (the flag reports the saved-row vocabulary, not the join).
+    joined = client.get("/usage/summary?client=codex&provider=moonshot").json()
+    assert joined["filters_echo"]["provider_matches_saved_rows"] is True
+    assert joined["totals"]["rows"] == 0
+    assert joined["by_client"] == []
 
 
 def test_usage_summary_uses_trusted_import_rows_only_and_never_scans(tmp_path, monkeypatch):
@@ -1853,3 +1990,203 @@ def test_usage_summary_range_unknown_time_row_is_disclosed_by_totals_and_exclusi
     assert all_time["usage_exclusions"]["unknown_time_rows"] == all_time["totals"]["unknown_time_rows"] == 2
     assert all_time["usage_exclusions"]["non_additive_rows"] == 1
     assert unknown_period["rows"] == all_time["usage_exclusions"]["unknown_time_rows"]
+
+
+# ---------------------------------------------------------------------------
+# Explicit date range + provider filter — the independent filter axes the
+# macOS Usage range/filter controls drive. `start`/`end` are a closed
+# interval that replaces `days` whenever either bound is given; `provider`
+# follows the locked "unknown value = empty result + honest echo, never a
+# guess" rule the model filter established.
+# ---------------------------------------------------------------------------
+
+
+def test_usage_summary_explicit_range_equals_the_days_preset_and_echoes_the_mode(tmp_path):
+    """``start=today-6 & end=today`` IS ``days=7`` — every section — and the
+    echo says which mode produced the numbers."""
+
+    store_root = tmp_path / "state"
+    today = date.today()
+    _seed_usage_rows(store_root, _range_rows(), today=today)
+    client = _client(store_root)
+
+    start = (today - timedelta(days=6)).isoformat()
+    end = today.isoformat()
+    explicit = client.get(f"/usage/summary?start={start}&end={end}&granularity=daily").json()
+    preset = client.get("/usage/summary?days=7&granularity=daily").json()
+
+    # Both boundary days are inclusive, so the equivalence holds in every
+    # section — including the gap-filled period list and range_context.
+    for section in ("totals", "by_client", "by_model", "by_period", "usage_exclusions", "range_context"):
+        assert explicit[section] == preset[section]
+    assert [entry["period"] for entry in explicit["by_period"]][0] == start
+    assert [entry["period"] for entry in explicit["by_period"]][-1] == end
+
+    assert explicit["filters_echo"]["range_mode"] == "explicit"
+    assert explicit["filters_echo"]["resolved_start"] == start
+    assert explicit["filters_echo"]["resolved_end"] == end
+    assert preset["filters_echo"]["range_mode"] == "days"
+    assert preset["filters_echo"]["resolved_start"] == start
+    assert preset["filters_echo"]["resolved_end"] == end
+
+    # An explicit interval REPLACES the days window; it never intersects with
+    # the rolling default the request also carried.
+    overriding = client.get(
+        f"/usage/summary?days=30&start={start}&end={end}&granularity=daily"
+    ).json()
+    assert overriding["totals"] == preset["totals"]
+    assert overriding["by_period"] == preset["by_period"]
+    # ...and `days` is still echoed exactly as requested, because range_mode is
+    # what says it did not run.
+    assert overriding["filters_echo"]["days"] == "30"
+    assert overriding["filters_echo"]["range_mode"] == "explicit"
+
+    # days=all is the unbounded mode: it has no resolved bounds to name.
+    all_time = client.get("/usage/summary?days=all").json()
+    assert all_time["filters_echo"]["range_mode"] == "days"
+    assert all_time["filters_echo"]["resolved_start"] is None
+    assert all_time["filters_echo"]["resolved_end"] is None
+
+
+def test_usage_summary_rejects_unparseable_dates_and_a_reversed_range(tmp_path):
+    store_root = tmp_path / "state"
+    _trusted_usage(store_root, session="date-validation", started_at=time.time() - 3600)
+    client = _client(store_root)
+
+    # Same validation class as the whitelists: junk is a 422, never a quietly
+    # ignored filter (that would answer a different question than the one asked).
+    for query in (
+        "start=not-a-date",
+        "start=2026-7-1",  # not zero-padded, so not the documented YYYY-MM-DD
+        "end=2026-02-30",  # no such day
+        "end=2026-13-01",  # no such month
+    ):
+        assert client.get(f"/usage/summary?{query}").status_code == 422
+    assert client.get("/usage/summary?start=2026-07-10&end=2026-07-09").status_code == 422
+    # A single bound needs no partner and is not a reversed range.
+    assert client.get("/usage/summary?start=2026-07-09&end=2026-07-10").status_code == 200
+    assert client.get("/usage/summary?end=2026-07-10").status_code == 200
+
+    # A valid window with no saved rows is an empty 200 that echoes the range:
+    # an empty result, never an error and never a fallback to a nearby window.
+    empty = client.get("/usage/summary?start=2000-01-01&end=2000-01-31").json()
+    assert empty["totals"]["rows"] == 0
+    assert empty["by_client"] == [] and empty["by_model"] == [] and empty["by_period"] == []
+    assert empty["filters_echo"]["range_mode"] == "explicit"
+    assert empty["filters_echo"]["resolved_start"] == "2000-01-01"
+    assert empty["filters_echo"]["resolved_end"] == "2000-01-31"
+    assert empty["range_context"] == {"history_outside_range": []}
+
+
+def test_usage_summary_combined_filters_are_the_matching_row_sums(tmp_path):
+    """client + provider + model + explicit interval: totals are exactly the
+    rows that pass EVERY filter, recomputed with plain arithmetic."""
+
+    store_root = tmp_path / "state"
+    today = date.today()
+    # (client, provider, model, day offset, input, output, cost)
+    rows = [
+        ("claude-code", "anthropic", "fable-5", 0, 100, 25, 0.10),
+        ("claude-code", "anthropic", "fable-5", 3, 200, 50, 0.20),
+        ("claude-code", "anthropic", "fable-5", 8, 400, 100, 0.40),
+        ("claude-code", "anthropic", "haiku-4", 1, 7, 3, 0.07),
+        ("claude-code", "router", "fable-5", 1, 5, 5, 0.05),
+        ("codex", "openai", "fable-5", 1, 900, 900, 9.00),
+    ]
+    for client_name, provider, model, offset, input_tokens, output_tokens, cost in rows:
+        _trusted_usage(
+            store_root,
+            session=f"combo-{offset}-{provider}-{model}-{client_name}",
+            client=client_name,
+            provider=provider,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost=cost,
+            started_at=_range_day(offset, today),
+        )
+    client = _client(store_root)
+
+    start, end = today - timedelta(days=6), today
+    payload = client.get(
+        "/usage/summary?client=claude-code&provider=anthropic&model=fable-5"
+        f"&start={start.isoformat()}&end={end.isoformat()}&granularity=daily"
+    ).json()
+
+    # Independent recomputation: the rows passing all four filters, summed with
+    # nothing but the documented closed-interval rule.
+    expected = [
+        row
+        for row in rows
+        if row[0] == "claude-code"
+        and row[1] == "anthropic"
+        and row[2] == "fable-5"
+        and start <= today - timedelta(days=row[3]) <= end
+    ]
+    expected_cost = sum(row[6] for row in expected)
+    assert len(expected) == 2
+    assert expected_cost == pytest.approx(0.30)
+    totals = payload["totals"]
+    assert totals["rows"] == len(expected)
+    assert totals["sessions"] == len(expected)
+    assert totals["input_tokens"] == sum(row[4] for row in expected) == 300
+    assert totals["output_tokens"] == sum(row[5] for row in expected) == 75
+    assert totals["fresh_tokens"] == 375
+    assert totals["total_tokens_including_cached"] == 375
+    assert totals["estimated_cost_usd"] == pytest.approx(expected_cost)
+    assert [entry["client"] for entry in payload["by_client"]] == ["claude-code"]
+    assert [(entry["client"], entry["provider"], entry["model"]) for entry in payload["by_model"]] == [
+        ("claude-code", "anthropic", "fable-5")
+    ]
+    assert sum(entry["rows"] for entry in payload["by_client"]) == totals["rows"]
+    assert sum(entry["rows"] for entry in payload["by_period"]) == totals["rows"]
+
+    # The filters really did cut: the same store unfiltered holds all six rows.
+    everything = client.get("/usage/summary?days=all&granularity=daily").json()
+    assert everything["totals"]["rows"] == 6
+    assert len(everything["by_model"]) == 4
+
+
+def test_usage_summary_open_ended_explicit_range_bounds_one_side_and_keeps_the_contract(tmp_path):
+    """One bound is enough: it still replaces days, still drops-and-counts
+    unknown-time rows, and still explains older saved history."""
+
+    store_root = tmp_path / "state"
+    today = date.today()
+    _seed_usage_rows(store_root, _range_rows(), today=today)
+    SentinelService(store_root).record_event(
+        _trusted_usage_event(
+            session="undated-in-explicit-range",
+            client="codex",
+            model="gpt-5.5",
+            started_at=1e300,
+            updated_at=1e300,
+        ),
+        trusted_usage_import=True,
+    )
+    client = _client(store_root)
+
+    start = (today - timedelta(days=6)).isoformat()
+    payload = client.get(f"/usage/summary?start={start}&granularity=daily").json()
+
+    assert payload["filters_echo"]["range_mode"] == "explicit"
+    assert payload["filters_echo"]["resolved_start"] == start
+    # An open side is named as open, not silently filled with a guess.
+    assert payload["filters_echo"]["resolved_end"] is None
+    assert [entry["period"] for entry in payload["by_period"]] == [
+        (today - timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)
+    ]
+    # A bounded range drops the unusable timestamp AND counts it, in both
+    # disclosures (the count cannot drift between them).
+    assert payload["totals"]["unknown_time_rows"] == 1
+    assert payload["usage_exclusions"]["unknown_time_rows"] == 1
+
+    # Older saved history is still explained in explicit mode: every saved
+    # Hermes row sits before a start of today, so its absence is disclosed
+    # instead of reading as deleted data.
+    only_today = client.get(
+        f"/usage/summary?client=hermes&start={today.isoformat()}&end={today.isoformat()}"
+    ).json()
+    assert only_today["by_client"] == []
+    assert [entry["client"] for entry in only_today["range_context"]["history_outside_range"]] == ["hermes"]
+    assert only_today["range_context"]["history_outside_range"][0]["rows"] == 2

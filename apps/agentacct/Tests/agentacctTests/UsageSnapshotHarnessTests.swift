@@ -61,7 +61,7 @@ final class UsageSnapshotHarnessTests: XCTestCase {
         XCTAssertEqual(configurations.count, 2)
         for configuration in configurations {
             let state = configuration.recordedUsageState.storeState(for: fixture)
-            XCTAssertEqual(state.days, 90)
+            XCTAssertEqual(state.filter.range, .days(90))
             XCTAssertEqual(state.summary.filtersEcho?.granularity, "weekly")
             XCTAssertEqual(state.summary.byPeriod?.count, 14)
             let presentation = UsagePeriodPresentation(usage: state.summary)

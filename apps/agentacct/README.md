@@ -6,8 +6,9 @@ plan-calibration status, and recent sessions (with per-session weekly-plan
 share where calibrated). The full window has a recent-activity **Dashboard**,
 folder-based **Work** groups with client participation and shared timelines,
 and latest-first **Sessions** with a Work Receipt for each task. Receipts put
-activity before detailed steps and checks. **Usage & limits** leads with the
-selected 7d/30d/90d range's own cost and token totals per agent and per model,
+activity before detailed steps and checks. **Usage & limits** leads with a row of independent filters — Date
+(presets or a custom range), Agent, Model, and Provider — and shows the
+filtered selection's own cost and token totals per agent and per model,
 then combines daily client/model drilldowns, Fresh/All token counting, and
 provider capacity.
 Recorded issues remain available without becoming the default task order.
@@ -98,11 +99,13 @@ checklist.
       latest-first Sessions (root task list → Work Receipt
       detail: what ran, files touched, tools, usage, work items with check
       evidence, attribution, subagent rollup) · one Usage & limits pane with
-      provider windows, 7d/30d/90d recorded usage, daily and model attribution,
+      provider windows, independent Date / Agent / Model / Provider usage
+      filters with daily and model attribution,
       plus explicit stale and calibration states
 - [ ] adaptive poll cadence (menu-open recency / Low Power Mode — CodexBar's
       2–30 min policy)
-- [x] usage window picker (7d/30d/90d)
+- [x] usage filters: independent Date (presets or custom range), Agent, Model,
+      and Provider pickers
 - [x] calibrated plan share: per-session in the dropdown and per-Task in the
       window's Work Receipts
 - [x] app-owned embedded CLI validation + transactional launch-time sync

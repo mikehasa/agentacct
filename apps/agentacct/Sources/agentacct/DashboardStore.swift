@@ -67,10 +67,49 @@ enum SnapshotWorkStoreState {
 }
 
 struct SnapshotUsageStoreState {
-    /// Keep the selected range and its matching response inseparable in
-    /// deterministic renders; a stale summary must never wear a new range.
-    let days: Int
+    /// Keep the selected filter and its matching response inseparable in
+    /// deterministic renders; a stale summary must never wear a new filter.
+    let filter: UsageFilter
     let summary: UsageSummary
+
+    init(days: Int, summary: UsageSummary) {
+        self.init(filter: UsageFilter(range: .days(days)), summary: summary)
+    }
+
+    init(filter: UsageFilter, summary: UsageSummary) {
+        self.filter = filter
+        self.summary = summary
+    }
+}
+
+/// One reader per lane the Usage page needs: the filtered cube, the plan
+/// window's aggregates, and the unfiltered cube the three list menus draw
+/// their options from. The live store wires these to the daemon; a test
+/// substitutes scripted readers to prove the request and staleness rules
+/// without one.
+struct UsageReaders {
+    var summary: (String) async throws -> UsageSummary
+    var plan: (Int) async throws -> [V1PlanClient]
+    var options: () async throws -> UsageSummary
+
+    static func live(_ client: GlanceClient) -> Self {
+        .init(
+            summary: { path in try await client.getLocal(path) },
+            plan: { days in
+                let payload: V1PlanPayload = try await client.getAuthed("/v1/plan?days=\(days)")
+                return payload.clients
+            },
+            options: { try await client.getLocal(UsageFilter.optionsPath) }
+        )
+    }
+
+    /// An offline store never runs the usage lane; these stand in so the
+    /// readers are always wired to something.
+    static let offline = Self(
+        summary: { _ in throw SavedWorkError.notSaved },
+        plan: { _ in [] },
+        options: { throw SavedWorkError.notSaved }
+    )
 }
 
 // Data for the full window: /v1/tasks and /v1/receipt supply task-level work
@@ -165,15 +204,34 @@ final class DashboardStore {
     /// Receipt-list failures must not make a successful usage refresh look old.
     private(set) var usageLastUpdated: Date?
 
-    /// The usage-pane range (7/30/90 trailing days). Defaults to 7 so the
-    /// per-model plan breakdown lines up with the 7d headline out of the box
-    /// (a 30-day accumulation reads as >100% of a weekly plan and confuses);
-    /// the today/7d headline windows are fixed regardless of this.
-    private(set) var usageDays = 7
+    /// The usage-pane filter (date range + one value per agent/model/provider).
+    /// Defaults to the 7d preset so the per-model plan breakdown lines up with
+    /// the 7d headline out of the box (a 30-day accumulation reads as >100% of
+    /// a weekly plan and confuses); the today/7d headline windows are fixed
+    /// regardless of this.
+    private(set) var usageFilter = UsageFilter()
 
-    /// Monotonic token so rapid range switches can't land out of order and a
-    /// failed fetch can't leave the old data labeled with the new range.
+    /// Every value the filter bar's three list menus can offer, from the
+    /// UNFILTERED cube. Held apart from `usage`: with the filtered payload the
+    /// menus would erase their own choices as soon as one filter applied.
+    private(set) var usageFilterOptions: UsageFilterOptions?
+
+    /// Set when the payload's own `filters_echo` does not confirm the filter it
+    /// was requested with (an older recorder ignores the newer parameters).
+    /// The pane hides the numbers rather than pass them off as filtered.
+    private(set) var usageFilterMismatch: UsageFilterMismatch?
+
+    /// How the pane names its range. `usagePlanDays` is the plan lane's own
+    /// window — /v1/plan takes 1...90 days, so a wider or open-ended filter
+    /// asks it for 90 and its labels print exactly that.
+    var usageRangeLabel: UsageRangeLabel { UsageRangeLabel(range: usageFilter.range) }
+    var usagePlanDays: Int { usageFilter.planDays() }
+
+    /// Monotonic token so rapid filter switches can't land out of order and a
+    /// failed fetch can't leave the old data labeled with the new filter.
     @ObservationIgnored private var usageDaysGeneration = 0
+    @ObservationIgnored private var usageOptionsGeneration = LatestRequestGeneration()
+    @ObservationIgnored var usageReaders = UsageReaders.offline
     @ObservationIgnored private var attentionGeneration = LatestRequestGeneration()
     @ObservationIgnored private var setupCaptureCursors = SetupCaptureCursorState()
 
@@ -191,11 +249,17 @@ final class DashboardStore {
         value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? value
     }
 
-    init() { client = GlanceClient(); savedWork = nil }
+    init() {
+        let client = GlanceClient()
+        self.client = client
+        savedWork = nil
+        usageReaders = .live(client)
+    }
 
     init(savedWork: SavedWorkSnapshot, taskID: String? = nil) {
         self.savedWork = savedWork
         client = GlanceClient(savedWork: savedWork)
+        usageReaders = .offline
         if let tasks: ReceiptTasksPayload = try? savedWork.value("/v1/tasks?limit=200") {
             publishReceiptTasks(tasks)
         }
@@ -217,11 +281,19 @@ final class DashboardStore {
         usageState: SnapshotUsageStoreState? = nil,
         ingestionOverride: V1IngestionSnapshot? = nil
     ) {
-        client = GlanceClient()
+        let client = GlanceClient()
+        self.client = client
         savedWork = nil
+        usageReaders = .live(client)
         planClients = fixture.plan.clients
-        usage = usageState?.summary ?? fixture.usage
-        usageDays = usageState?.days ?? 7
+        let usageSummary = usageState?.summary ?? fixture.usage
+        usage = usageSummary
+        // The fixture's own payload stands in for the unfiltered read the three
+        // menus would otherwise fetch: a deterministic render must never reach
+        // the network, and its rows are what the menus may offer.
+        usageFilter = usageState?.filter ?? UsageFilter(range: .days(7))
+        usageFilterOptions = UsageFilterOptions.build(usageSummary)
+        usageFilterMismatch = UsageFilterMismatch.evaluate(filter: usageFilter, echo: usageSummary.filtersEcho)
         attention = fixture.attention
         attentionProjection = fixture.attention.projection
         receiptListProjection = fixture.tasks.projection
@@ -362,7 +434,7 @@ final class DashboardStore {
         defer {
             isRefreshing = false
         }
-        let days = usageDays
+        let filter = usageFilter
         let rangeGeneration = usageDaysGeneration
         let attentionRequestGeneration = attentionGeneration.begin()
         isLoadingMoreAttention = false
@@ -371,8 +443,9 @@ final class DashboardStore {
         // list (or vice versa).
         async let tasksRequest: ReceiptTasksPayload = readAuthed("/v1/tasks?limit=200")
         async let attentionRequest: V1AttentionPayload = readAuthed("/v1/attention?limit=5")
-        async let planRequest: V1PlanPayload = readAuthed("/v1/plan?days=\(days)")
-        async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)&granularity=daily")
+        async let planRequest = usageReaders.plan(filter.planDays())
+        async let usageRequest = usageReaders.summary(filter.summaryPath())
+        async let optionsRefresh: Void = refreshUsageFilterOptions()
         async let ingestionRefresh: Void = refreshIngestion()
         async let connectionsRefresh: Void = refreshConnections()
         async let versionRefresh: Void = refreshVersion()
@@ -438,24 +511,48 @@ final class DashboardStore {
 
         do {
             let (plan, summary) = try await (planRequest, usageRequest)
-            guard rangeGeneration == usageDaysGeneration, days == usageDays else { return }
-            planClients = plan.clients
-            usage = summary
-            errorText = nil
-            let updated = Date()
-            // Only the recorded-usage lane is stamped here. `lastUpdated` is
-            // written by the Task-list lane that produced it, so a usage
-            // failure can no longer hide a local-data stamp this window has.
-            usageLastUpdated = updated
+            // The page's own payload publishes first: the unfiltered option
+            // read is a separate, slower lane and must not hold up the numbers.
+            if rangeGeneration == usageDaysGeneration, filter == usageFilter {
+                planClients = plan
+                publishUsage(summary)
+            }
         } catch GlanceClientError.noDiscovery(_) {
-            guard !Task.isCancelled,
-                  rangeGeneration == usageDaysGeneration else { return }
-            errorText = "daemon not running (no discovery file) — start it with `agentacct start`"
+            if !Task.isCancelled, rangeGeneration == usageDaysGeneration {
+                errorText = "daemon not running (no discovery file) — start it with `agentacct start`"
+            }
         } catch {
-            guard rangeGeneration == usageDaysGeneration,
-                  !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) else { return }
-            errorText = "daemon fetch failed: \(error.localizedDescription)"
+            if rangeGeneration == usageDaysGeneration,
+               !requestWasCancelled(error, taskIsCancelled: Task.isCancelled) {
+                errorText = "daemon fetch failed: \(error.localizedDescription)"
+            }
         }
+
+        _ = await optionsRefresh
+    }
+
+    /// The unfiltered cube the three list menus draw their options from. It is
+    /// deliberately its own read, not the page's payload: options taken from a
+    /// filtered response would erase a menu's own choices the moment a
+    /// neighbouring filter applied. A failed read retains the last option set
+    /// instead of emptying the menus.
+    func refreshUsageFilterOptions() async {
+        let generation = usageOptionsGeneration.begin()
+        guard let summary = try? await usageReaders.options() else { return }
+        guard usageOptionsGeneration.accepts(generation) else { return }
+        usageFilterOptions = UsageFilterOptions.build(summary)
+    }
+
+    /// Publish one usage payload with the disclosure that belongs to it: the
+    /// summary, the echo check that guards its filter label, and the lane's own
+    /// stamp. Only the recorded-usage lane is stamped here. `lastUpdated` is
+    /// written by the Task-list lane that produced it, so a usage failure can
+    /// no longer hide a local-data stamp this window has.
+    private func publishUsage(_ summary: UsageSummary) {
+        usage = summary
+        usageFilterMismatch = UsageFilterMismatch.evaluate(filter: usageFilter, echo: summary.filtersEcho)
+        errorText = nil
+        usageLastUpdated = Date()
     }
 
     /// Sources retries only its own endpoint (upstream PR #158). A cancelled
@@ -1062,26 +1159,23 @@ final class DashboardStore {
         }
     }
 
-    /// Switch the pane range and refetch BOTH the plan lane and the cost cube
-    /// so the plan breakdown, the period bars, and the $ view stay on one window.
-    /// The range label only flips once both payloads have landed, and only the
-    /// newest in-flight switch is allowed to write.
-    func setUsageDays(_ days: Int) async {
+    /// Commit a filter and refetch BOTH the plan lane and the cost cube so the
+    /// plan breakdown, the period bars, and the $ view stay on one window. The
+    /// label only flips once both payloads have landed, and only the newest
+    /// in-flight switch is allowed to write.
+    func setUsageFilter(_ filter: UsageFilter) async {
         guard !isOfflineSnapshot else { return }
-        guard days != usageDays else { return }
+        guard filter != usageFilter else { return }
         usageDaysGeneration += 1
         let generation = usageDaysGeneration
         do {
-            async let planRequest: V1PlanPayload = readAuthed("/v1/plan?days=\(days)")
-            async let usageRequest: UsageSummary = client.getLocal("/usage/summary?days=\(days)&granularity=daily")
+            async let planRequest = usageReaders.plan(filter.planDays())
+            async let usageRequest = usageReaders.summary(filter.summaryPath())
             let (plan, summary) = try await (planRequest, usageRequest)
             guard generation == usageDaysGeneration else { return }
-            usageDays = days
-            planClients = plan.clients
-            usage = summary
-            errorText = nil
-            let updated = Date()
-            usageLastUpdated = updated
+            usageFilter = filter
+            planClients = plan
+            publishUsage(summary)
         } catch {
             guard generation == usageDaysGeneration else { return }
             errorText = "usage range fetch failed: \(error.localizedDescription)"
