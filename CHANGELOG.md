@@ -6,6 +6,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Evidence spool compaction no longer reads a concurrent refreshable-usage
+  write as lost evidence. Its containment check excluded main-spool rows that
+  arrived after the snapshot but not refreshable-usage records, so a live
+  daemon writing during the offline window made the blocking verification
+  abort on a compaction that was correct (the first real-store runs aborted
+  with 15 such rows: 8 batch receipts, 4 transitions, 2 revisions, 1 head).
+  Those records are now identified by their own offsets inside the
+  refreshable-usage file — the main-spool fence cannot tell them apart,
+  because a reconcile that wrote nothing new carries a fence exactly at the
+  snapshot boundary — together with a watermark's in-place head update, while
+  a record that was already in the snapshot and is genuinely missing still
+  aborts the swap.
+
 ## [0.12.1] — 2026-09-24
 
 Kimi Code support end to end — usage import, pricing-table estimates, automatic MCP registration, and client labels across the CLI, the local API, the TUI, and the app — plus independent Usage filters, an always-visible freshness stamp, and a verified cold compaction for the append-only evidence spool.
