@@ -809,7 +809,7 @@ struct DashboardPane: View {
                     taskCount: dashboard.totalReceiptTasks,
                     taskProjection: dashboard.receiptListProjection,
                     usage: dashboard.usage,
-                    usageDays: dashboard.usageDays,
+                    usageRange: dashboard.usageRangeLabel,
                     usageUpdated: dashboard.usageLastUpdated,
                     usageError: dashboard.errorText
                 ) { selection.open($0) }
@@ -854,7 +854,9 @@ private struct DashboardActivitySummary: View {
     let taskCount: Int?
     let taskProjection: WorkProjectionMetadata?
     let usage: UsageSummary?
-    let usageDays: Int
+    /// How the Usage page names the range its filter is on: the dashboard
+    /// metric follows that filter, so it wears the same words.
+    let usageRange: UsageRangeLabel
     let usageUpdated: Date?
     let usageError: String?
     let open: (DashboardDestination) -> Void
@@ -894,7 +896,7 @@ private struct DashboardActivitySummary: View {
                 destination: "Open all recorded tasks"
             ) { open(.work) }
             DashboardActivityMetric(
-                label: usageDays == 0 ? "All recorded usage" : "Usage · last \(usageDays) days",
+                label: usageRange.isAllTime ? "All recorded usage" : "Usage · \(usageRange.long)",
                 value: tokens.value == nil ? "Not reported" : "\(tokens.text) tokens",
                 detail: usageError ?? (tokens.partial ? "Recorded subtotal · token coverage incomplete · \(costDetail)" : costDetail),
                 help: tokens.exactText

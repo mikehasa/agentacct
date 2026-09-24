@@ -103,14 +103,15 @@ enum UsageHistoryMeasure: String, CaseIterable {
 
 struct UsageRecordedExplorer: View {
     let usage: UsageSummary
-    let days: Int
+    /// How the page names the range this payload was scoped to.
+    let rangeLabel: UsageRangeLabel
     @Binding var tokenBasis: UsageTokenBasis
     @State private var selectedPeriod: String?
     @State private var chartMeasure: UsageHistoryMeasure = .tokens
 
-    init(usage: UsageSummary, days: Int, tokenBasis: Binding<UsageTokenBasis>) {
+    init(usage: UsageSummary, rangeLabel: UsageRangeLabel, tokenBasis: Binding<UsageTokenBasis>) {
         self.usage = usage
-        self.days = days
+        self.rangeLabel = rangeLabel
         _tokenBasis = tokenBasis
         let pinned = SnapshotMode.enabled ? SnapshotMode.usageChartSelectedIndex : nil
         let periods = usage.byPeriod ?? []
@@ -128,7 +129,7 @@ struct UsageRecordedExplorer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             summary
-            UsageRangeSummary(usage: usage, days: days)
+            UsageRangeSummary(usage: usage, rangeLabel: rangeLabel)
             if !periods.isEmpty {
                 history
                 dayTable
@@ -138,7 +139,7 @@ struct UsageRecordedExplorer: View {
                 .workFont(.caption).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .onChange(of: days) { selectedPeriod = UsageDaySelection.latestActive(in: usage) }
+        .onChange(of: rangeLabel) { selectedPeriod = UsageDaySelection.latestActive(in: usage) }
         .onChange(of: periods.map(\.period)) {
             if let selectedPeriod, !periods.contains(where: { $0.period == selectedPeriod }) {
                 self.selectedPeriod = UsageDaySelection.latestActive(in: usage)
@@ -216,7 +217,7 @@ struct UsageRecordedExplorer: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(usage.periodAttribution?.label ?? "Session totals by activity date").workFont(.rowLabel).foregroundStyle(Theme.ink)
                 Spacer()
-                Button("All \(days)d") { selectedPeriod = nil }
+                Button(rangeLabel.allDays) { selectedPeriod = nil }
                     .buttonStyle(QuietButtonStyle())
                     .foregroundStyle(selectedPeriod == nil ? Theme.accent : Theme.muted)
                     .accessibilityAddTraits(selectedPeriod == nil ? .isSelected : [])
@@ -279,7 +280,7 @@ struct UsageRecordedExplorer: View {
     private var clientTable: some View {
         VStack(alignment: .leading, spacing: Space.s) {
             HStack(alignment: .firstTextBaseline) {
-                Text(selectedPeriod.map { "\($0) · by client and model" } ?? "All \(days)d · by client and model")
+                Text(selectedPeriod.map { "\($0) · by client and model" } ?? "\(rangeLabel.allDays) · by client and model")
                     .workFont(.titleSection).foregroundStyle(Theme.ink)
                 Spacer()
                 let count = selectedPeriod == nil ? usage.totals?.sessions : selected?.usage.sessions

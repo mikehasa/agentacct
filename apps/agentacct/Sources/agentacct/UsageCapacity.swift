@@ -152,7 +152,12 @@ struct UsageCapacityRow: Identifiable {
         }
     }
 
-    func accessibilitySummary(days: Int, usageLoaded: Bool = true, tokenBasis: UsageTokenBasis = .fresh) -> String {
+    func accessibilitySummary(
+        days: Int,
+        usageLoaded: Bool = true,
+        tokenBasis: UsageTokenBasis = .fresh,
+        recordedUseRange: String? = nil
+    ) -> String {
         var parts = [client]
         if let plan {
             parts.append(UsagePlanPresentation(client: plan, days: days).detailText)
@@ -177,7 +182,10 @@ struct UsageCapacityRow: Identifiable {
             }
         }
         if let usage {
-            parts.append("last \(days) days")
+            // The recorded-use figures are scoped to the page's own filter,
+            // while `days` above is the plan lane's window: name each one as it
+            // is, so a narrowed or all-time read is never read as "last Nd".
+            parts.append(recordedUseRange ?? "last \(days) days")
             parts.append(tokenBasis.value(usage).map { "\($0) \(tokenBasis.label.lowercased())" } ?? "tokens not reported")
             parts.append(usage.sessions.map { Fmt.count($0, "session") } ?? "sessions not reported")
             parts.append(usage.costText == "—" ? "cost unpriced" : usage.costText)
@@ -362,8 +370,17 @@ struct UsagePlanPresentation {
 struct UsageCapacityLedger: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let rows: [UsageCapacityRow]
+    /// The plan lane's own window (`/v1/plan` takes 1...90 days).
     let days: Int
+    /// What the recorded-use column is scoped to — the Usage page's filter,
+    /// which is not the plan window. nil keeps the preset wording for callers
+    /// that only have the day count.
+    var recordedUseRange: String? = nil
     let usageLoaded: Bool
+
+    private var recordedUseHeader: String {
+        "Recorded use · \(recordedUseRange ?? "\(days)d")"
+    }
 
     var body: some View {
         Card(padding: 0) {
@@ -372,7 +389,10 @@ struct UsageCapacityLedger: View {
                     HStack(spacing: Space.l) {
                         CapsLabel(text: "Client").frame(width: 160, alignment: .leading)
                         CapsLabel(text: "Provider window").frame(maxWidth: .infinity, alignment: .leading)
-                        CapsLabel(text: "Recorded use · \(days)d").frame(width: 230, alignment: .leading)
+                        CapsLabel(text: recordedUseHeader)
+                            .lineLimit(1)
+                            .help(recordedUseHeader)
+                            .frame(width: 230, alignment: .leading)
                     }
                     .padding(.horizontal, Space.xl)
                     .frame(height: Metrics.rowHeader)
@@ -397,7 +417,12 @@ struct UsageCapacityLedger: View {
             if index > 0 {
                 Rectangle().fill(Theme.hairline).frame(height: 1).padding(.horizontal, Space.xl)
             }
-            UsageCapacityLedgerRow(row: row, days: days, usageLoaded: usageLoaded)
+            UsageCapacityLedgerRow(
+                row: row,
+                days: days,
+                recordedUseRange: recordedUseRange,
+                usageLoaded: usageLoaded
+            )
         }
     }
 }
@@ -405,9 +430,15 @@ struct UsageCapacityLedger: View {
 private struct UsageCapacityLedgerRow: View {
     @Environment(\.usageTokenBasis) private var tokenBasis
     let row: UsageCapacityRow
+    /// The plan lane's own window (`/v1/plan` takes 1...90 days).
     let days: Int
+    var recordedUseRange: String? = nil
     let usageLoaded: Bool
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    private var recordedUseHeader: String {
+        "Recorded use · \(recordedUseRange ?? "\(days)d")"
+    }
 
     var body: some View {
         Group {
@@ -417,7 +448,7 @@ private struct UsageCapacityLedgerRow: View {
                     Text("Provider windows").workFont(.captionSemibold).foregroundStyle(Theme.muted)
                     capacityLane
                     Rectangle().fill(Theme.hairline).frame(height: 1)
-                    Text("Recorded use · \(days)d").workFont(.captionSemibold).foregroundStyle(Theme.muted)
+                    Text(recordedUseHeader).workFont(.captionSemibold).foregroundStyle(Theme.muted)
                     usageLane
                 }
             } else {
@@ -432,7 +463,12 @@ private struct UsageCapacityLedgerRow: View {
         .padding(.horizontal, Space.xl)
         .padding(.vertical, Space.l)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(row.accessibilitySummary(days: days, usageLoaded: usageLoaded, tokenBasis: tokenBasis))
+        .accessibilityLabel(row.accessibilitySummary(
+            days: days,
+            usageLoaded: usageLoaded,
+            tokenBasis: tokenBasis,
+            recordedUseRange: recordedUseRange.map { "recorded use \($0)" }
+        ))
     }
 
     private var clientLane: some View {

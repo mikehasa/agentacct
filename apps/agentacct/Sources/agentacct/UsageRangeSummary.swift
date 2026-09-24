@@ -8,9 +8,9 @@ import SwiftUI
 /// the date table below it untouched.
 struct UsageRangeSummary: View {
     let usage: UsageSummary
-    let days: Int
+    let rangeLabel: UsageRangeLabel
 
-    private var presentation: UsageRangePresentation { UsageRangePresentation(days: days) }
+    private var presentation: UsageRangePresentation { UsageRangePresentation(rangeLabel: rangeLabel) }
     private var agents: [UsageRangeLedger.Row] { UsageRangeLedger.agentRows(in: usage) }
     private var models: [UsageRangeLedger.Row] { UsageRangeLedger.modelRows(in: usage) }
 
@@ -62,10 +62,13 @@ struct UsageRangeSummary: View {
 /// The range block's copy. Kept out of the view so the two tables' vocabulary
 /// (agent, model, range totals) has one definition a test can assert.
 struct UsageRangePresentation {
-    let days: Int
+    let rangeLabel: UsageRangeLabel
+
+    init(days: Int) { self.rangeLabel = UsageRangeLabel(range: .days(days)) }
+    init(rangeLabel: UsageRangeLabel) { self.rangeLabel = rangeLabel }
 
     var title: String { "This range" }
-    var caption: String { "last \(days) days · by agent and by model" }
+    var caption: String { "\(rangeLabel.long) · by agent and by model" }
     var agentTitle: String { "By agent" }
     var modelTitle: String { "By model" }
     var emptyText: String { "No agent or model usage reported in this range." }

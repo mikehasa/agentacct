@@ -151,3 +151,70 @@ def test_usage_summary_exposes_selected_day_client_model_cost_breakdown(tmp_path
     assert period["by_client"]["codex"]["estimated_cost_usd"] == pytest.approx(0.1)
     assert period["by_client"]["hermes"]["estimated_cost_usd"] is None
     assert period["by_model"] == payload["by_model"]
+
+
+def test_period_slices_stay_additive_under_provider_and_explicit_range_filters():
+    """One population everywhere: a provider-filtered explicit range keeps each
+    day's slices, their sum over the range, and the range totals consistent."""
+
+    records = [
+        _cube_record(client="claude-code", provider="anthropic", model="fable-5", session="a",
+                     day=TODAY, input_tokens=100, output_tokens=25, cache_read=500, cost=0.10),
+        _cube_record(client="claude-code", provider="anthropic", model="haiku-4", session="a",
+                     day=TODAY - timedelta(days=3), input_tokens=50, output_tokens=5, cost=0.05),
+        # Same client or same model, other axis: both must drop out.
+        _cube_record(client="claude-code", provider="router", model="fable-5", session="b",
+                     day=TODAY, input_tokens=7, output_tokens=3, cost=0.01),
+        _cube_record(client="claude-code", provider="anthropic", model="fable-5", session="c",
+                     day=TODAY - timedelta(days=8), input_tokens=9, output_tokens=1, cost=0.09),
+        _cube_record(client="codex", provider="openai", model="fable-5", session="d",
+                     day=TODAY, input_tokens=900, output_tokens=900, cost=9.0),
+    ]
+
+    cube = _cube(records, days=None, start=TODAY - timedelta(days=6), end=TODAY,
+                 provider="anthropic", granularity="daily")
+
+    # start=today-6 & end=today is the 7-day preset, provider filter included.
+    assert cube == _cube(records, days=7, provider="anthropic", granularity="daily")
+    assert cube["totals"]["rows"] == 2
+    assert cube["totals"]["fresh_tokens"] == 180
+    assert cube["totals"]["total_tokens_including_cached"] == 680
+    assert cube["totals"]["estimated_cost_usd"] == pytest.approx(0.15)
+    assert [period["period"] for period in cube["by_period"]] == [
+        (TODAY - timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)
+    ]
+    lanes = {("claude-code", "anthropic", "fable-5"), ("claude-code", "anthropic", "haiku-4")}
+    for period in cube["by_period"]:
+        slices = {
+            (slice_bucket["client"], slice_bucket["provider"], slice_bucket["model"]): slice_bucket
+            for slice_bucket in period["by_model"]
+        }
+        assert set(slices) <= lanes
+        assert set(period["by_client"]) <= {"claude-code"}
+        # A slice bucket is the same shape and scope as its period bucket.
+        assert sum(slice_bucket["fresh_tokens"] for slice_bucket in slices.values()) == period["fresh_tokens"]
+        assert sum(
+            slice_bucket["total_tokens_including_cached"] for slice_bucket in slices.values()
+        ) == period["total_tokens_including_cached"]
+        assert sum(
+            slice_bucket["fresh_tokens"] for slice_bucket in period["by_client"].values()
+        ) == period["fresh_tokens"]
+
+    # Additive dimensions roll up from the slices to the filtered range totals.
+    assert sum(period["fresh_tokens"] for period in cube["by_period"]) == cube["totals"]["fresh_tokens"]
+    assert sum(
+        slice_bucket["fresh_tokens"] for period in cube["by_period"] for slice_bucket in period["by_model"]
+    ) == cube["totals"]["fresh_tokens"]
+    assert sum(
+        slice_bucket["fresh_tokens"]
+        for period in cube["by_period"]
+        for slice_bucket in period["by_client"].values()
+    ) == cube["totals"]["fresh_tokens"]
+    priced = [period for period in cube["by_period"] if period["rows"]]
+    assert [period["period"] for period in priced] == [
+        (TODAY - timedelta(days=3)).isoformat(),
+        TODAY.isoformat(),
+    ]
+    assert sum(period["estimated_cost_usd"] for period in priced) == pytest.approx(0.15)
+    # A gap-filled period has no priced row, so it reports None — never $0.00.
+    assert all(period["estimated_cost_usd"] is None for period in cube["by_period"] if not period["rows"])

@@ -24,6 +24,30 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   buckets the local API already returns. Per-day history and the selected
   day's detail are unchanged, and the cost labels keep their ≈ / `~$` /
   Unpriced meaning.
+- The Usage page is driven by a row of independent filters: Date (Today / 7d /
+  30d / 90d / All / custom range), Agent, Model, and Provider. Any combination
+  is allowed and the whole page — the per-agent and per-model tables, the
+  history chart, and the date table — follows the selection, labeled with it.
+  Options are read unfiltered, so a selection never removes the other choices.
+  A combination with no saved rows shows an explicit empty state instead of
+  zeros, and if the daemon's echo cannot confirm a requested filter the
+  numbers are withheld rather than shown under a label they do not match
+  (unknown model or provider ids return that empty result by design, never a
+  near match).
+- `GET /usage/summary` gained two independent filter axes: `provider` narrows
+  the saved rows to one provider (e.g. `anthropic`, `openai`, `moonshot`), and
+  `start`/`end` (ISO `YYYY-MM-DD`) select an explicit closed date interval that
+  takes precedence over `days` — so a caller can ask for one provider over an
+  arbitrary window instead of only the whole store or the 7/30/90-day presets.
+  Every filter scopes `totals`, `by_client`, `by_model`, `by_period` (including
+  each period's own client/model slices), `range_context` and `usage_exclusions`
+  alike, so one response never mixes populations. `filters_echo` reports
+  `range_mode` (`explicit` or `days`) together with the `resolved_start`/
+  `resolved_end` actually applied, plus the new `provider_matches_saved_rows`.
+  An unknown or unmatched provider is not an error: it returns the empty result
+  with the echo saying so, exactly as the model filter already did — never a
+  guessed or nearby provider — while an unparseable date or a `start` after
+  `end` is rejected with `422`.
 
 ### Changed
 

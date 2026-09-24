@@ -128,6 +128,7 @@ from .usage_cube import (
     days_choice_to_int,
     filter_usage_records,
     models_in_records,
+    providers_in_records,
     resolve_granularity,
     usage_bucket_date,
 )
@@ -1035,30 +1036,55 @@ def _dashboard_page_data(
 # are capped like every other data-driven list — a store accumulating
 # distinct values over years must not turn the filter controls themselves
 # into the page-bloat vector.
+def _usage_filter_date(value: str | None, name: str) -> date | None:
+    """Parse an optional explicit ``start``/``end`` filter date; 422 on junk.
+
+    Same validation class as the whitelists: an unparseable date is a request
+    error, never a silently ignored filter (that would answer a different
+    question than the one asked).
+    """
+
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail=f"unknown {name} date filter: {value} (expected YYYY-MM-DD)"
+        ) from exc
+
+
 def _usage_history_outside_range(
     *,
     current_cube: Mapping[str, Any],
     all_time_cube: Mapping[str, Any],
     records: list[DashboardUsageRecord],
     model: str | None,
+    provider: str | None,
     days: int | None,
     today: date,
+    start: date | None = None,
 ) -> list[dict[str, Any]]:
     """Clients absent solely because every matching row is outside the range.
 
-    Both cubes must already carry the same client/model filters. Unknown-time
-    rows deliberately suppress the claim: a bounded range excludes them, but
-    agentacct cannot honestly say which side of the range they belong on.
-    The raw epoch is returned so JSON consumers are not coupled to server-local
-    display formatting.
+    Both cubes must already carry the same client/model/provider filters. The
+    lower bound is the explicit ``start`` when one was given, else the
+    ``days`` window's first day; without either there is no "older history"
+    to claim. Unknown-time rows deliberately suppress the claim: a bounded
+    range excludes them, but agentacct cannot honestly say which side of the
+    range they belong on. The raw epoch is returned so JSON consumers are not
+    coupled to server-local display formatting.
     """
 
     # The helper is meaningful only for a bounded range. Keep the guard here
     # as well as at the callers so a future direct caller cannot describe
     # all-time or malformed input as "older history".
-    if days is None or days < 1:
+    if start is not None:
+        range_start = start
+    elif days is not None and days >= 1:
+        range_start = today - timedelta(days=days - 1)
+    else:
         return []
-    range_start = today - timedelta(days=days - 1)
     current_clients = {
         str(row.get("client") or "")
         for row in current_cube.get("by_client", [])
@@ -1075,7 +1101,9 @@ def _usage_history_outside_range(
         matching_records = [
             record
             for record in records
-            if record.client == client_name and (model is None or record.model == model)
+            if record.client == client_name
+            and (model is None or record.model == model)
+            and (provider is None or record.provider == provider)
         ]
         timestamps = [_usage_record_time(record) for record in matching_records]
         if len(matching_records) != rows or not timestamps:
@@ -4476,13 +4504,16 @@ def create_local_api_app(
     def usage_summary(
         client: str = "all",
         model: str = "all",
+        provider: str = "all",
         days: str = "30",
         granularity: str = "auto",
+        start: str | None = None,
+        end: str | None = None,
     ) -> dict[str, Any]:
         """Usage cube JSON (schema agent-sentinel.usage-summary.v1, PRD §5.4):
-        tokens by platform / model / period over SAVED usage rows only — the
-        same trusted-import intake every dashboard surface shares, so
-        diagnostic events and shadowed legacy rows never enter, and no live
+        tokens by platform / provider / model / period over SAVED usage rows
+        only — the same trusted-import intake every dashboard surface shares,
+        so diagnostic events and shadowed legacy rows never enter, and no live
         scan runs. JSON parity with the /tokens explorer (the chart's
         per-period platform split rides in by_period[].by_client, with
         full token/cost coverage and model lanes in by_period[].by_model).
@@ -4490,12 +4521,23 @@ def create_local_api_app(
         are assigned to one local date, not split into per-call daily usage.
 
         ``client``/``days``/``granularity`` are whitelisted → 422 on unknown
-        values. ``model`` is echoed and validated against models present in
-        saved rows: an unknown model returns the EMPTY result with the filter
-        echoed (filters_echo.model_matches_saved_rows false) — never a guess
-        (locked decision). ``granularity=auto`` applies the locked range rule
-        (daily for 7/30, weekly for 90/all); filters_echo carries both the
-        requested and the effective value. GET-only, zero writes.
+        values. ``model`` and ``provider`` are echoed and validated against
+        the values present in saved rows: an unknown/unmatched one returns the
+        EMPTY result with the filter echoed (filters_echo.model_matches_saved_rows
+        / provider_matches_saved_rows false) — never a guess (locked decision).
+        ``granularity=auto`` applies the locked range rule (daily for 7/30,
+        weekly for 90/all); filters_echo carries both the requested and the
+        effective value.
+
+        ``start``/``end`` (``YYYY-MM-DD``) are an explicit closed local-date
+        interval that TAKES PRECEDENCE over ``days`` whenever either bound is
+        given (the omitted side stays open). ``filters_echo.range_mode`` says
+        which mode actually ran and ``resolved_start``/``resolved_end`` name
+        the dates it applied (null where a side is open). An unparseable date
+        or ``start`` > ``end`` is 422, the same class as the whitelists. Every
+        filter applies identically to totals, by_client, by_model, by_period
+        (including each period's own slices), range_context, and
+        usage_exclusions. GET-only, zero writes.
 
         Bounded ranges also return ``range_context.history_outside_range`` so
         a client with saved older history is not mistaken for deleted data;
@@ -4508,18 +4550,45 @@ def create_local_api_app(
             raise HTTPException(status_code=422, detail=f"unknown days filter: {days}")
         if granularity not in {"auto", *USAGE_CUBE_GRANULARITY_CHOICES}:
             raise HTTPException(status_code=422, detail=f"unknown granularity: {granularity}")
+        explicit_start = _usage_filter_date(start, "start")
+        explicit_end = _usage_filter_date(end, "end")
+        if explicit_start is not None and explicit_end is not None and explicit_start > explicit_end:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"start date filter {explicit_start.isoformat()} is after "
+                    f"end date filter {explicit_end.isoformat()}"
+                ),
+            )
         events, _ = _dashboard_events()
         usage_view = _build_usage_view([], events)
         records = usage_view.saved_records
         cube_records = [*records, *usage_view.excluded_saved_records]
         effective_granularity = resolve_granularity(days, granularity)
         today = date.today()
+        # One range rule per request, and filters_echo says which one ran:
+        # an explicit interval replaces the days window entirely rather than
+        # intersecting with it (a caller asking for a date range must not also
+        # inherit the rolling default).
+        explicit_range = explicit_start is not None or explicit_end is not None
+        range_days = None if explicit_range else days_choice_to_int(days)
+        if explicit_range:
+            resolved_start, resolved_end = explicit_start, explicit_end
+        else:
+            resolved_start = today - timedelta(days=range_days - 1) if range_days is not None else None
+            resolved_end = today if range_days is not None else None
+        client_filter = None if client == "all" else client
+        model_filter = None if model == "all" else model
+        provider_filter = None if provider == "all" else provider
         cube = build_usage_cube(
             cube_records,
             record_time=_usage_record_time,
-            client=None if client == "all" else client,
-            model=None if model == "all" else model,
-            days=days_choice_to_int(days),
+            client=client_filter,
+            model=model_filter,
+            provider=provider_filter,
+            days=range_days,
+            start=explicit_start,
+            end=explicit_end,
             granularity=effective_granularity,
             # ONE today per request (same rule as the HTML pages).
             today=today,
@@ -4528,8 +4597,9 @@ def create_local_api_app(
             build_usage_cube(
                 cube_records,
                 record_time=_usage_record_time,
-                client=None if client == "all" else client,
-                model=None if model == "all" else model,
+                client=client_filter,
+                model=model_filter,
+                provider=provider_filter,
                 days=None,
                 # Only by_client is consumed for range context. Weekly keeps
                 # a long-lived all-time store bounded without changing those
@@ -4537,7 +4607,7 @@ def create_local_api_app(
                 granularity="weekly",
                 today=today,
             )
-            if days != "all"
+            if days != "all" or explicit_range
             else None
         )
         history_outside_range = (
@@ -4545,9 +4615,11 @@ def create_local_api_app(
                 current_cube=cube,
                 all_time_cube=all_time_cube,
                 records=cube_records,
-                model=None if model == "all" else model,
-                days=days_choice_to_int(days),
+                model=model_filter,
+                provider=provider_filter,
+                days=range_days,
                 today=today,
+                start=explicit_start,
             )
             if all_time_cube is not None
             else []
@@ -4560,9 +4632,12 @@ def create_local_api_app(
         excluded_records, _ = filter_usage_records(
             usage_view.excluded_saved_records,
             record_time=_usage_record_time,
-            client=None if client == "all" else client,
-            model=None if model == "all" else model,
-            days=days_choice_to_int(days),
+            client=client_filter,
+            model=model_filter,
+            provider=provider_filter,
+            days=range_days,
+            start=explicit_start,
+            end=explicit_end,
             today=today,
         )
         payload = {
@@ -4570,12 +4645,18 @@ def create_local_api_app(
             "filters_echo": {
                 "client": client,
                 "model": model,
+                "provider": provider,
                 "days": days,
                 "granularity": effective_granularity,
                 "granularity_requested": granularity,
+                "range_mode": "explicit" if explicit_range else "days",
+                "resolved_start": resolved_start.isoformat() if resolved_start is not None else None,
+                "resolved_end": resolved_end.isoformat() if resolved_end is not None else None,
                 "model_matches_saved_rows": model == "all" or model in models_in_records(
                     [*records, *usage_view.excluded_saved_records]
                 ),
+                "provider_matches_saved_rows": provider == "all"
+                or provider in providers_in_records([*records, *usage_view.excluded_saved_records]),
             },
             "period_attribution": {
                 "basis": "saved_session_row",
@@ -4595,9 +4676,11 @@ def create_local_api_app(
                 # in-range row dropped for an unusable timestamp in EITHER lane
                 # — additive or held — and therefore reuses the cube's own
                 # count (equal to totals.unknown_time_rows by construction, so
-                # the two can never drift). With days=all nothing is dropped
-                # for this reason: the count then matches the rows kept under
-                # the explicit "unknown" period, exactly as totals reports it.
+                # the two can never drift). With days=all nothing is dropped for
+                # this reason: the count then matches the rows kept under the
+                # explicit "unknown" period, exactly as totals reports it; an
+                # explicit date range is always bounded, so it drops and counts
+                # them like any other window.
                 "unknown_time_rows": cube["totals"]["unknown_time_rows"],
                 "reason": _usage_exclusion_reason(excluded_records),
                 "raw_evidence_preserved": True,
