@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.2] — 2026-09-24
+
+A correctness patch for the evidence-spool compaction introduced in 0.12.1: its blocking verification could not pass on any store that had ever been pruned, and it read a concurrent refreshable-usage write as lost evidence. Both are fixed here, with the real 22.8 GB store compacted under the repaired gate (21.24 GiB -> 131.7 MiB, archived first).
+
 ### Fixed
 
 - Evidence spool compaction no longer reads a concurrent refreshable-usage
