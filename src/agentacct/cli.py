@@ -169,6 +169,7 @@ from .store_resolution import (
     StoreResolutionError,
     canonical_global_store_dir,
     onboard_global_store_dir,
+    is_recognized_global_store,
     claude_worktree_owner_dir,
     resolve_dashboard_store_dir,
     resolve_read_store_dir,
@@ -1398,6 +1399,10 @@ def _mcp_store_dir_for_project(project_dir: Path, explicit_store_dir: Path | Non
     worktree's vanishing store path (it would merge to main and silently
     re-create phantom stores after worktree cleanup). The worktree's own
     EXISTING store still wins, consistent with the resolver.
+
+    Deliberately NOT the resolver for USER-level registrations: a client home
+    file applies to every session on the machine, so Kimi Code's resolves
+    through ``_kimi_code_user_scope_store_dir`` instead.
     """
     if explicit_store_dir is not None:
         return explicit_store_dir.expanduser().resolve()
@@ -1408,6 +1413,72 @@ def _mcp_store_dir_for_project(project_dir: Path, explicit_store_dir: Path | Non
         if owner_dir is not None:
             return (owner_dir.resolve() / ".agent-sentinel" / "state").resolve()
     return own_store.resolve()
+
+
+def _kimi_code_user_scope_store_dir(explicit_store_dir: Path | None) -> Path:
+    """The store baked into Kimi Code's USER-level MCP registration.
+
+    Kimi Code's registration lives in ``$KIMI_CODE_HOME/mcp.json``, which every
+    Kimi Code session on this machine loads — not only sessions started in the
+    directory this command ran from. So its default is the machine-wide store
+    global onboarding uses (``onboard_global_store_dir``), never the invoking
+    project's store (``setup mcp``'s default for clients whose config is
+    project-local): a project store baked in here routes every unrelated Kimi
+    Code session on the machine into one project's ledger.
+
+    An explicit ``--store-dir`` is still honored — the user named a store, and a
+    store on another volume or an operator override is a legitimate setup — but
+    it must be ABSOLUTE, because a relative value would resolve against each
+    session's launch cwd (the stray-store trap every other writer refuses). The
+    caller reports whether the value it got is one of the recognized machine-wide
+    stores.
+    """
+    if explicit_store_dir is None:
+        return _resolve_onboard_global_store_dir()[0]
+    expanded = explicit_store_dir.expanduser()
+    if not expanded.is_absolute():
+        raise typer.BadParameter(
+            f"--store-dir must be an absolute path with kimi-code, got {explicit_store_dir}: the registration "
+            "goes into the user-level $KIMI_CODE_HOME/mcp.json, so a relative path would resolve against each "
+            "Kimi Code session's launch cwd. Pass the absolute machine-wide store "
+            "(`agentacct setup global-store-path` prints it), or drop --store-dir to use it."
+        )
+    return expanded.resolve()
+
+
+def _print_kimi_code_user_scope_basis(store_dir: Path, command: str, *, explicit_store: bool) -> None:
+    """State what the user-level Kimi Code registration is bound to.
+
+    That file is user-level: whatever store is baked into it receives sessions
+    from EVERY directory on the machine, and a GUI-launched Kimi Code session
+    does not inherit the shell PATH. The machine-wide store and an absolute
+    command are the intended shape, so anything else is reported rather than
+    left implicit.
+    """
+    if explicit_store:
+        console.print(
+            "Using the store you passed with --store-dir. The registration is user-level "
+            "($KIMI_CODE_HOME/mcp.json), so it applies to every Kimi Code session on this machine."
+        )
+        if not is_recognized_global_store(store_dir):
+            console.print(
+                f"Warning: {store_dir} is not one of agentacct's machine-wide stores. Because the registration "
+                "is user-level, every Kimi Code session on this machine — from any directory — will record into "
+                "it. Re-run without --store-dir to use the machine-wide store instead "
+                "(`agentacct setup global-store-path` prints it)."
+            )
+    else:
+        console.print(
+            "Kimi Code's MCP config is user-level ($KIMI_CODE_HOME/mcp.json), so this registration uses the "
+            "machine-wide store above — not this project's store: every Kimi Code session on this machine "
+            "records into that one ledger, whatever directory it starts in."
+        )
+    if not Path(command).is_absolute():
+        console.print(
+            f"Warning: the MCP command {command!r} is not an absolute path. A Kimi Code session launched outside "
+            "a shell (GUI/desktop) does not inherit the shell PATH, which is why the global install writes an "
+            "absolute path — pass --mcp-command <absolute path> if that session cannot find the binary."
+        )
 
 
 def _onboarding_project_dir(project_dir: Path) -> tuple[Path, Path | None]:
@@ -2268,6 +2339,11 @@ def _print_agent_mcp_preview(agent: str, config_store_dir: Path | str, *, comman
             "machine-wide with `agentacct onboard --scope global --agent kimi-code` — preserving every other "
             "mcpServers entry and every other key in the file:"
         )
+        console.print(
+            "Because that file is user-level, agentacct writes the machine-wide store and an absolute command "
+            "path into it by default (GUI-launched Kimi Code does not inherit the shell PATH): every Kimi Code "
+            "session on this machine records into that one ledger, whatever directory it starts in."
+        )
         print(_claude_mcp_json(config_store_dir, command=command).rstrip())
         console.print(
             "Then start a NEW Kimi Code session: running sessions never register a newly added server. Standing "
@@ -2477,7 +2553,26 @@ def init_project(
                     _print_codex_mcp_setup(config_store_dir, command=mcp_command)
                     console.print("Preview only. Re-run with --write-mcp to create/update project .codex/config.toml.")
             else:
-                _print_agent_mcp_preview(name, config_store_dir, command=mcp_command)
+                if name == "kimi-code":
+                    # kimi-code's registration is USER-level, so its writer
+                    # (`setup mcp --agent kimi-code --write`, and global
+                    # onboarding) binds the machine-wide store and an absolute
+                    # command. Preview those: showing this project's store here
+                    # would advertise an entry no writer produces. A broken
+                    # global-store override must not fail a project-scoped
+                    # command, so that case degrades to an explicit caveat.
+                    try:
+                        user_scope_store: Path | str = onboard_global_store_dir()[0]
+                    except StoreResolutionError as exc:
+                        user_scope_store = config_store_dir
+                        console.print(
+                            f"kimi-code: the machine-wide store could not be resolved ({exc}) — the entry below "
+                            "shows this project's store instead, which `agentacct setup mcp --agent kimi-code "
+                            "--write` would refuse. Fix the global-store environment first."
+                        )
+                    _print_agent_mcp_preview(name, user_scope_store, command=_resolve_absolute_mcp_command())
+                else:
+                    _print_agent_mcp_preview(name, config_store_dir, command=mcp_command)
                 if write_mcp and name == "kimi-code":
                     # kimi-code HAS a writer, just not a project-local one: its
                     # registration is the user-level $KIMI_CODE_HOME/mcp.json, which
@@ -2490,6 +2585,14 @@ def init_project(
                     )
                 elif write_mcp:
                     console.print(f"{name}: project-local MCP config write is not available; use the preview command above.")
+                elif name == "kimi-code":
+                    # Same reason as the --write-mcp branch above: agentacct DOES
+                    # have a writer for this client, just not a project-local one.
+                    console.print(
+                        "Preview only. `init` (project scope) does not write the user-level Kimi Code config; apply it "
+                        "with `agentacct setup mcp --agent kimi-code --write` or install machine-wide with "
+                        "`agentacct onboard --scope global --agent kimi-code`."
+                    )
                 else:
                     console.print("Preview only. agentacct will not modify global/profile agent config.")
     console.print("Next checks:")
@@ -5977,7 +6080,7 @@ def setup_instructions(
 def setup_mcp(
     agent: Annotated[str, typer.Option(help="Agent client to configure: claude-code, codex, generic, hermes, opencode, openclaw, dsh, or kimi-code.")],
     project_dir: Annotated[Path, typer.Option(help="Project directory that should own local agentacct state.")] = Path("."),
-    store_dir: Annotated[Optional[Path], typer.Option(help="Override agentacct state directory for the MCP server.")] = None,
+    store_dir: Annotated[Optional[Path], typer.Option(help="Override agentacct state directory for the MCP server. Must be absolute for kimi-code, whose registration is user-level.")] = None,
     mcp_command: Annotated[
         Optional[str],
         typer.Option(help="Command path to write/print in MCP config. Use when agentacct is not on the agent's PATH."),
@@ -5996,24 +6099,51 @@ def setup_mcp(
 ) -> None:
     """Generate safe MCP setup instructions for coding agents."""
     project_dir = project_dir.resolve()
-    mcp_command = _resolve_mcp_command(mcp_command)
     if relative_store_path and store_dir is not None:
         raise typer.BadParameter("--relative-store-path cannot be combined with --store-dir")
-    effective_store_dir = _mcp_store_dir_for_project(project_dir, store_dir)
+    if agent not in MCP_SETUP_AGENTS:
+        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw, dsh, kimi-code")
+    # kimi-code registers in the USER-level $KIMI_CODE_HOME/mcp.json, which every
+    # Kimi Code session on this machine loads — not just sessions started in this
+    # directory. So its defaults are the MACHINE-WIDE ones the global install path
+    # uses: the global store and an absolute command path
+    # (_resolve_absolute_mcp_command: GUI-launched clients do not inherit the
+    # shell PATH). A project store or a bare command name baked in here would
+    # route unrelated Kimi Code sessions into one project's ledger, or nowhere.
+    # `onboard --scope global --agent kimi-code` and `setup preview --agent
+    # kimi-code --user` resolve the same way, so preview and write agree.
+    user_scope = agent == "kimi-code"
+    if user_scope:
+        if relative_store_path:
+            # The registration target is the user-level $KIMI_CODE_HOME/mcp.json,
+            # not a repo file, so a relative store path would resolve against each
+            # session's launch cwd. --relative-store-path exists for committed,
+            # shared config, which this user-level file is not.
+            raise typer.BadParameter(
+                "--relative-store-path cannot be used with kimi-code: the registration goes into the user-level "
+                "$KIMI_CODE_HOME/mcp.json, whose relative store path would resolve against each session's launch "
+                "cwd instead of this project."
+            )
+        # An explicit --mcp-command is still honored (validated by the resolver).
+        mcp_command = _resolve_mcp_command(mcp_command) if mcp_command is not None else _resolve_absolute_mcp_command()
+        effective_store_dir = _kimi_code_user_scope_store_dir(store_dir)
+    else:
+        mcp_command = _resolve_mcp_command(mcp_command)
+        effective_store_dir = _mcp_store_dir_for_project(project_dir, store_dir)
     # Absolute by default: a relative config path is resolved against whatever
     # cwd the MCP client launches the server with, silently creating stray
     # stores. --relative-store-path opts back into the portable relative form
     # (now safe-ish: `mcp serve` resolves it against the project root).
     config_store_dir: Path | str = ".agent-sentinel/state" if relative_store_path else effective_store_dir
-    if agent not in MCP_SETUP_AGENTS:
-        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw, dsh, kimi-code")
 
     console.print("agentacct MCP setup")
     console.print("Source: PyPI (pipx install agentacct)")
     console.print(f"Store dir: {effective_store_dir}")
     console.print(f"Config store arg: {config_store_dir}")
     console.print(f"MCP command: {mcp_command} mcp serve")
-    worktree_owner = claude_worktree_owner_dir(project_dir) if store_dir is None else None
+    if user_scope:
+        _print_kimi_code_user_scope_basis(effective_store_dir, mcp_command, explicit_store=store_dir is not None)
+    worktree_owner = claude_worktree_owner_dir(project_dir) if store_dir is None and not user_scope else None
     if worktree_owner is not None:
         if effective_store_dir == (worktree_owner.resolve() / ".agent-sentinel" / "state").resolve():
             console.print("Claude Code worktree detected.")
@@ -6043,16 +6173,9 @@ def setup_mcp(
 
     if agent == "kimi-code":
         # The registration target is the USER-level $KIMI_CODE_HOME/mcp.json, not a
-        # repo file, and it is written with an ABSOLUTE store path: a relative one
-        # would resolve against whatever cwd a Kimi Code session launches the server
-        # in. --relative-store-path exists for committed, shared config, which this
-        # user-level file is not.
-        if relative_store_path:
-            raise typer.BadParameter(
-                "--relative-store-path cannot be used with kimi-code: the registration goes into the user-level "
-                "$KIMI_CODE_HOME/mcp.json, whose relative store path would resolve against each session's launch "
-                "cwd instead of this project."
-            )
+        # repo file, so both the store (machine-wide by default) and the command
+        # (absolute) were resolved for user scope above; --relative-store-path was
+        # refused there too.
         config_path = _kimi_code_home_dir() / "mcp.json"
         _print_agent_mcp_preview(agent, config_store_dir, command=mcp_command)
         if not write:

@@ -33,7 +33,9 @@ _PASSIVE_CLIENTS = frozenset({"cursor"})
 # and agentacct writes that file itself
 # (cli._write_kimi_code_mcp_config_at via `setup mcp --agent kimi-code --write` and
 # global onboarding), so its row is a one-click connect that re-syncs — the active
-# contract, not manual guidance.
+# contract, not manual guidance. That file is USER-level, so both writers bind the
+# machine-wide store and an absolute command (every Kimi Code session on the machine
+# reads it, and a GUI launch does not inherit the shell PATH).
 #
 # openclaw stays out of _ACTIVE_CLIENTS on purpose: its MCP servers are registered
 # through OpenClaw's OWN CLI against its active profile, agentacct has no writer for

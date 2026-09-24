@@ -5,9 +5,11 @@ import os
 import tomllib
 from pathlib import Path
 
+import pytest
 from click.utils import strip_ansi
 from typer.testing import CliRunner
 
+import agentacct.cli as cli
 from agentacct.cli import app
 
 runner = CliRunner()
@@ -25,6 +27,27 @@ _BOX_TO_SPACE = str.maketrans(_BOX_GLYPHS, " " * len(_BOX_GLYPHS))
 def _flat(output: str) -> str:
     """Output rendered without reference to where or how the console wrapped."""
     return " ".join(strip_ansi(output).translate(_BOX_TO_SPACE).split())
+
+
+@pytest.fixture
+def kimi_user_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Path]:
+    """Sandbox Kimi Code's home AND the machine-wide store resolution.
+
+    The user-level registration binds the machine-wide store, so a test that
+    left HOME (and the global-store overrides) alone would resolve — and assert
+    against — the DEVELOPER's real machine state. Returns
+    ``(kimi_home, machine_store)``: the home the registration lands in (never a
+    real ``~/.kimi-code``) and the store the resolver must pick there.
+    """
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "kimi-home"))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    for name in ("AGENTACCT_GLOBAL_STORE_DIR", "AGENT_CHRONICLE_GLOBAL_STORE_DIR", "AGENT_SENTINEL_GLOBAL_STORE_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    return tmp_path / "kimi-home", home / ".local" / "state" / "agentacct" / "state"
 
 
 def test_setup_mcp_claude_code_preview_is_copy_paste_friendly_and_does_not_write(tmp_path: Path) -> None:
@@ -640,10 +663,9 @@ def test_setup_mcp_profile_global_agents_reject_write(tmp_path: Path) -> None:
 
 
 def test_setup_mcp_kimi_code_preview_promises_the_write_and_touches_nothing(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, kimi_user_scope: tuple[Path, Path]
 ) -> None:
-    kimi_home = tmp_path / "kimi-home"
-    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+    kimi_home, machine_store = kimi_user_scope
 
     result = runner.invoke(app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path)])
 
@@ -655,7 +677,12 @@ def test_setup_mcp_kimi_code_preview_promises_the_write_and_touches_nothing(
     assert "Kimi Code" in unwrapped
     assert str(kimi_home / "mcp.json") in squished
     assert '"mcpServers"' in squished
-    assert str((tmp_path / ".agent-sentinel" / "state").resolve()) in squished
+    # The user-level file binds the MACHINE-WIDE store, previewed like the write.
+    assert str(machine_store) in squished
+    assert "machine-wide store" in unwrapped
+    # ...and never the invoking project's store: every Kimi Code session on the
+    # machine reads this file, whatever directory it starts in.
+    assert str((tmp_path / ".agent-sentinel" / "state").resolve()) not in squished
     # A managed write, not a hand-applied block: the old "no writer" wording is gone.
     assert "no mcp.json writer" not in unwrapped
     assert "by hand" not in unwrapped
@@ -664,9 +691,10 @@ def test_setup_mcp_kimi_code_preview_promises_the_write_and_touches_nothing(
     assert not kimi_home.exists()
 
 
-def test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json(tmp_path: Path, monkeypatch) -> None:
-    kimi_home = tmp_path / "kimi-home"
-    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+def test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json(
+    tmp_path: Path, kimi_user_scope: tuple[Path, Path]
+) -> None:
+    kimi_home, machine_store = kimi_user_scope
 
     result = runner.invoke(
         app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path), "--write"]
@@ -675,25 +703,80 @@ def test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json(tmp_path: Path
     assert result.exit_code == 0, result.output
     config_path = kimi_home / "mcp.json"
     entry = json.loads(config_path.read_text())["mcpServers"]["agentacct"]
-    # Absolute store path: the user-level registration is loaded by every Kimi Code
+    # Machine-wide store: the user-level registration is loaded by every Kimi Code
     # session, whatever cwd it launches the server from.
-    assert entry["args"] == ["mcp", "serve", "--store-dir", str((tmp_path / ".agent-sentinel" / "state").resolve())]
+    assert entry["args"] == ["mcp", "serve", "--store-dir", str(machine_store)]
     unwrapped = _flat(result.output)
     assert "user level" in unwrapped
     assert "Already registered" not in unwrapped
     # Zero repo files, despite the project-dir argument.
     assert not (tmp_path / ".mcp.json").exists()
     assert not (tmp_path / ".kimi-code").exists()
+    assert not (tmp_path / ".agent-sentinel").exists()
+
+
+def test_setup_mcp_kimi_code_defaults_to_the_absolute_command_resolver(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kimi_user_scope: tuple[Path, Path]
+) -> None:
+    """The reproducing case: run inside a project, write the user-level file.
+
+    A project store baked into that file would send every Kimi Code session
+    started anywhere on the machine into this one project's ledger, and a bare
+    ``agentacct`` command would not resolve for a GUI-launched session (no shell
+    PATH) — so the default command must come from the ABSOLUTE resolver, never
+    from the bare-name one the project-config path writes.
+    """
+    kimi_home, machine_store = kimi_user_scope
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(cli, "_resolve_mcp_command", lambda value: "BARE-NAME-RESOLVER")
+    monkeypatch.setattr(cli, "_resolve_absolute_mcp_command", lambda: "/opt/agentacct/bin/agentacct")
+
+    result = runner.invoke(app, ["setup", "mcp", "--agent", "kimi-code", "--write"])
+
+    assert result.exit_code == 0, result.output
+    entry = json.loads((kimi_home / "mcp.json").read_text())["mcpServers"]["agentacct"]
+    assert entry == {
+        "command": "/opt/agentacct/bin/agentacct",
+        "args": ["mcp", "serve", "--store-dir", str(machine_store)],
+    }
+    # The invoking project is left untouched, store and config alike.
+    assert not (project / ".agent-sentinel").exists()
+    assert not (project / ".kimi-code").exists()
+    squished = "".join(result.output.split())
+    assert str(machine_store) in squished and "/opt/agentacct/bin/agentacct" in squished
+
+
+def test_setup_mcp_kimi_code_global_onboard_and_setup_mcp_write_the_same_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kimi_user_scope: tuple[Path, Path]
+) -> None:
+    """One user-level file, one entry: both writers must agree exactly."""
+    kimi_home, _machine_store = kimi_user_scope
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(cli, "_resolve_absolute_mcp_command", lambda: "/opt/agentacct/bin/agentacct")
+
+    onboarded = runner.invoke(app, ["onboard", "--scope", "global", "--agent", "kimi-code", "--no-start"])
+    assert onboarded.exit_code == 0, onboarded.output
+    after_onboard = (kimi_home / "mcp.json").read_text()
+
+    written = runner.invoke(app, ["setup", "mcp", "--agent", "kimi-code", "--write"])
+
+    assert written.exit_code == 0, written.output
+    # Byte-identical, and the second writer reports it as already registered.
+    assert (kimi_home / "mcp.json").read_text() == after_onboard
+    assert "Already registered" in _flat(written.output)
 
 
 def test_setup_mcp_kimi_code_write_is_idempotent_and_preserves_other_servers(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, kimi_user_scope: tuple[Path, Path]
 ) -> None:
-    kimi_home = tmp_path / "kimi-home"
+    kimi_home, _machine_store = kimi_user_scope
     kimi_home.mkdir()
     config_path = kimi_home / "mcp.json"
     config_path.write_text(json.dumps({"mcpServers": {"linear": {"command": "linear-mcp"}}}))
-    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
     arguments = ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path), "--write"]
 
     first = runner.invoke(app, arguments)
@@ -709,13 +792,12 @@ def test_setup_mcp_kimi_code_write_is_idempotent_and_preserves_other_servers(
     assert set(data["mcpServers"]) == {"linear", "agentacct"}
 
 
-def test_setup_mcp_kimi_code_write_refuses_a_file_it_cannot_parse(tmp_path: Path, monkeypatch) -> None:
-    kimi_home = tmp_path / "kimi-home"
+def test_setup_mcp_kimi_code_write_refuses_a_file_it_cannot_parse(kimi_user_scope: tuple[Path, Path], tmp_path: Path) -> None:
+    kimi_home, _machine_store = kimi_user_scope
     kimi_home.mkdir()
     config_path = kimi_home / "mcp.json"
     original = '{"mcpServers": {"linear": '
     config_path.write_text(original)
-    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
 
     result = runner.invoke(
         app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path), "--write"]
@@ -726,8 +808,10 @@ def test_setup_mcp_kimi_code_write_refuses_a_file_it_cannot_parse(tmp_path: Path
     assert config_path.read_text() == original  # never partially rewritten
 
 
-def test_setup_mcp_kimi_code_rejects_a_relative_store_path(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "kimi-home"))
+def test_setup_mcp_kimi_code_rejects_a_relative_store_path(
+    tmp_path: Path, kimi_user_scope: tuple[Path, Path]
+) -> None:
+    kimi_home, _machine_store = kimi_user_scope
 
     result = runner.invoke(
         app,
@@ -739,12 +823,103 @@ def test_setup_mcp_kimi_code_rejects_a_relative_store_path(tmp_path: Path, monke
 
     assert result.exit_code != 0
     assert "cannot be used with kimi-code" in _flat(result.output)
-    assert not (tmp_path / "kimi-home" / "mcp.json").exists()
+    assert not (kimi_home / "mcp.json").exists()
 
 
-def test_setup_mcp_kimi_code_preview_explains_stale_entries_are_collapsed(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "kimi-home"))
+def test_setup_mcp_kimi_code_rejects_a_relative_store_dir(
+    tmp_path: Path, kimi_user_scope: tuple[Path, Path]
+) -> None:
+    """A relative --store-dir in a user-level file resolves against each session's
+    launch cwd — the stray-store trap — so it is refused, not resolved."""
+    kimi_home, machine_store = kimi_user_scope
 
+    result = runner.invoke(
+        app,
+        ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path), "--store-dir", ".agent-sentinel/state", "--write"],
+    )
+
+    assert result.exit_code != 0
+    assert "must be an absolute path with kimi-code" in _flat(result.output)
+    assert not (kimi_home / "mcp.json").exists()
+
+
+def test_setup_mcp_kimi_code_explicit_project_store_is_honored_but_warned_about(
+    tmp_path: Path, kimi_user_scope: tuple[Path, Path]
+) -> None:
+    """An explicit --store-dir is the user's choice, so it is written — but a
+    project store in a MACHINE-WIDE file gets every Kimi Code session on the box,
+    so it is called out rather than silently accepted."""
+    kimi_home, machine_store = kimi_user_scope
+    project_store = tmp_path / "project" / ".agent-sentinel" / "state"
+
+    result = runner.invoke(
+        app,
+        ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path), "--store-dir", str(project_store), "--write"],
+    )
+
+    assert result.exit_code == 0, result.output
+    unwrapped = _flat(result.output)
+    entry = json.loads((kimi_home / "mcp.json").read_text())["mcpServers"]["agentacct"]
+    assert entry["args"] == ["mcp", "serve", "--store-dir", str(project_store)]
+    assert "is not one of agentacct's machine-wide stores" in unwrapped
+    assert "every Kimi Code session on this machine" in unwrapped
+    assert "agentacct setup global-store-path" in unwrapped
+
+    # The recognized machine-wide store is an explicit pass-through, not a warning.
+    accepted = runner.invoke(
+        app,
+        ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path), "--store-dir", str(machine_store), "--write"],
+    )
+
+    assert accepted.exit_code == 0, accepted.output
+    assert "is not one of agentacct's machine-wide stores" not in _flat(accepted.output)
+    accepted_entry = json.loads((kimi_home / "mcp.json").read_text())["mcpServers"]["agentacct"]
+    assert accepted_entry["args"] == ["mcp", "serve", "--store-dir", str(machine_store)]
+    assert "Updated the agentacct MCP server" in _flat(accepted.output)
+
+
+def test_setup_mcp_kimi_code_preview_matches_setup_preview_and_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kimi_user_scope: tuple[Path, Path]
+) -> None:
+    """`setup mcp`, `setup preview --user`, and the file on disk must agree.
+
+    They are three surfaces of one registration; a preview that shows a
+    different command or store than the write is how the project-store bug
+    stayed invisible.
+    """
+    kimi_home, machine_store = kimi_user_scope
+    monkeypatch.setattr(cli, "_resolve_absolute_mcp_command", lambda: "/opt/agentacct/bin/agentacct")
+    expected = {
+        "command": "/opt/agentacct/bin/agentacct",
+        "args": ["mcp", "serve", "--store-dir", str(machine_store)],
+    }
+
+    preview = runner.invoke(app, ["setup", "preview", "--agent", "kimi-code", "--user", "--json"])
+    assert preview.exit_code == 0, preview.output
+    payload = json.loads(preview.output)
+    assert payload["store_dir"] == str(machine_store)
+    assert payload["command"] == "/opt/agentacct/bin/agentacct"
+    mcp_row = next(item for item in payload["files"] if item["kind"] == "mcp")
+    assert json.loads(mcp_row["proposed_content"])["mcpServers"]["agentacct"] == expected
+
+    # `init` (project scope) writes no MCP config for this client, so its preview
+    # must show what the writer it points at would actually write.
+    init_preview = runner.invoke(app, ["init", "--project-dir", str(tmp_path), "--agent", "kimi-code"])
+    assert init_preview.exit_code == 0, init_preview.output
+    init_squished = "".join(init_preview.output.split())
+    assert str(machine_store) in init_squished and "/opt/agentacct/bin/agentacct" in init_squished
+    init_unwrapped = _flat(init_preview.output)
+    assert "agentacct will not modify global/profile agent config" not in init_unwrapped
+    assert "apply it with `agentacct setup mcp --agent kimi-code --write`" in init_unwrapped
+
+    setup_mcp = runner.invoke(app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path), "--write"])
+    assert setup_mcp.exit_code == 0, setup_mcp.output
+    assert json.loads((kimi_home / "mcp.json").read_text())["mcpServers"]["agentacct"] == expected
+    squished = "".join(setup_mcp.output.split())
+    assert str(machine_store) in squished and "/opt/agentacct/bin/agentacct" in squished
+
+
+def test_setup_mcp_kimi_code_preview_explains_stale_entries_are_collapsed(kimi_user_scope: tuple[Path, Path], tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path)])
 
     assert result.exit_code == 0, result.output

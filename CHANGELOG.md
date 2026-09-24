@@ -56,6 +56,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `agentacct setup mcp --agent kimi-code` no longer bakes this project's store
+  and a bare `agentacct` command name into Kimi Code's **user-level**
+  `$KIMI_CODE_HOME/mcp.json`. Run from inside a project, it used to write that
+  project's `.agent-sentinel/state` into a file every Kimi Code session on the
+  machine loads, so sessions started in unrelated directories recorded into one
+  project's ledger; it now resolves the machine-wide store
+  (`agentacct setup global-store-path`) like `onboard --scope global --agent
+  kimi-code`, states on every run which store the user-level registration is
+  bound to, and warns when an explicit `--store-dir` is not a recognized
+  machine-wide store (a relative one is refused, like `--relative-store-path`).
+  The command is now the absolute path a global install writes, because a
+  GUI-launched Kimi Code session does not inherit the shell PATH. Preview and
+  write agree: `setup mcp`'s Kimi Code preview, `setup preview --agent
+  kimi-code --user`, `init --agent kimi-code`'s preview, and `onboard --scope
+  global --agent kimi-code` all show or write the same entry.
 - The capability manifest no longer understates the cost basis of Claude Code,
   Codex, hermes, and dsh usage rows. These clients store no cost figure, so a
   row priced by `--estimate-costs` (which the daemon and first-sync import
