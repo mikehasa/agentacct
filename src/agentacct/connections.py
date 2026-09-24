@@ -25,14 +25,21 @@ CONNECTIONS_SCHEMA_VERSION = "agentacct.connections.v1"
 #   semi    : imported, but its MCP registration is manual (the user runs a
 #             command); agentacct has no writer, so the row offers guidance, not
 #             a one-click connect.
-_ACTIVE_CLIENTS = frozenset({"claude-code", "codex", "opencode", "hermes", "dsh"})
+_ACTIVE_CLIENTS = frozenset({"claude-code", "codex", "opencode", "hermes", "dsh", "kimi-code"})
 _PASSIVE_CLIENTS = frozenset({"cursor"})
-# kimi-code stays out of _ACTIVE_CLIENTS on purpose: Kimi Code declares MCP
-# servers in ~/.kimi-code/mcp.json (JSON "mcpServers" entries), never in
-# config.toml — that TOML file carries provider credentials and has no MCP
-# section — and agentacct has no mcp.json writer, so its MCP registration is
-# manual. Like openclaw it falls through to "semi" in agent_kind: usage import
-# plus guidance, never a one-click connect.
+# kimi-code is ACTIVE: Kimi Code declares MCP servers as JSON "mcpServers" entries
+# in a user-level mcp.json ($KIMI_CODE_HOME/mcp.json, default ~/.kimi-code/mcp.json;
+# never config.toml, which carries provider credentials and has no MCP section),
+# and agentacct writes that file itself
+# (cli._write_kimi_code_mcp_config_at via `setup mcp --agent kimi-code --write` and
+# global onboarding), so its row is a one-click connect that re-syncs — the active
+# contract, not manual guidance.
+#
+# openclaw stays out of _ACTIVE_CLIENTS on purpose: its MCP servers are registered
+# through OpenClaw's OWN CLI against its active profile, agentacct has no writer for
+# that config (its manifest `automatic_install` lane is unavailable), so it falls
+# through to "semi" in agent_kind: usage import plus guidance, never a one-click
+# connect.
 
 _KIND_RANK = {"active": 0, "semi": 1, "passive": 2}
 

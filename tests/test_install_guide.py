@@ -752,6 +752,24 @@ def test_capability_matrix_claude_code_line_is_honest_about_the_recipe() -> None
     assert "PreToolUse still captures" in claude_line
 
 
+def test_capability_matrix_kimi_code_line_is_honest_about_the_writer() -> None:
+    """The Kimi Code claim must name the write agentacct makes (user-level
+    mcp.json, not the project file), keep the preview available, and not claim a
+    live-verified MCP recording it has never observed."""
+    kimi_line = next(line for line in install_guide.CAPABILITY_MATRIX if line.startswith("Kimi Code:"))
+    assert "agentacct setup mcp --agent kimi-code --write" in kimi_line
+    assert "$KIMI_CODE_HOME/mcp.json" in kimi_line
+    # The stale claim this replaced: no writer exists / manual application by hand.
+    assert "no agentacct writer" not in kimi_line
+    assert "manual MCP registration preview" not in kimi_line
+    # The project-level file is explicitly NOT written, and recording is unproven.
+    assert "project-level `.kimi-code/mcp.json` is not written" in kimi_line
+    assert "has been observed recording over MCP" in kimi_line
+    assert "experimental" in kimi_line
+    assert "no Evidence v2 manifest adapter" in kimi_line
+    assert "client_reported" in kimi_line and "≈" in kimi_line
+
+
 def test_serve_note_never_references_the_retired_dashboard_mechanics():
     """G1 (post HTML retirement): the serve note must describe the JSON API and
     must not resurrect retired page mechanics — no "Refresh & save usage"

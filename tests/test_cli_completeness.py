@@ -350,6 +350,29 @@ def test_init_write_mcp_keeps_profile_agents_preview_only(tmp_path):
     assert not (tmp_path / ".mcp.json").exists()
 
 
+def test_init_write_mcp_points_kimi_code_at_its_user_level_writer(tmp_path, monkeypatch):
+    """kimi-code HAS a writer — a user-level one. `init` (project scope) must not
+    write it, and must not claim no write exists either: it points at the command
+    that does."""
+    kimi_home = tmp_path / "kimi-home"
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+    monkeypatch.delenv("HOME", raising=False)  # no real-home fallback for this test
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    result = CliRunner().invoke(app, ["init", "--project-dir", str(tmp_path), "--agent", "kimi-code", "--write-mcp"])
+
+    assert result.exit_code == 0, result.output
+    unwrapped = " ".join(result.output.split())
+    assert "MCP config is user-level, not project-local" in unwrapped
+    assert "agentacct setup mcp --agent kimi-code --write" in unwrapped
+    assert "project-local MCP config write is not available" not in unwrapped
+    # The user-level registration is NOT written by a project-scoped command...
+    assert not kimi_home.exists()
+    assert not (tmp_path / ".kimi-code").exists()
+    # ...but the project instruction block still is.
+    assert (tmp_path / "AGENTS.md").exists()
+
+
 def test_init_write_mcp_requires_agent(tmp_path):
     result = CliRunner().invoke(app, ["init", "--project-dir", str(tmp_path), "--write-mcp"])
 

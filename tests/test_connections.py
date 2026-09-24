@@ -22,10 +22,34 @@ def _by_id(rows):
 
 
 def test_agent_kind_classifies_active_semi_passive():
-    for c in ("claude-code", "codex", "opencode", "hermes", "dsh"):
+    for c in ("claude-code", "codex", "opencode", "hermes", "dsh", "kimi-code"):
         assert agent_kind(c) == "active"
     assert agent_kind("openclaw") == "semi"
     assert agent_kind("cursor") == "passive"
+
+
+def test_kimi_code_is_active_because_agentacct_writes_its_mcp_json():
+    # kimi-code gained a writer for its user-level mcp.json, so its row is the
+    # active contract: a configured kimi-code reads as set up (never the semi
+    # "manual MCP step" guidance), and only its ingestion health is reported.
+    configured = build_connections(
+        supported_clients=["kimi-code"],
+        configured_clients=["kimi-code"],
+        ingestion_snapshot=_snapshot(sources=[{"source": "kimi-code", "state": "healthy", "last_success_at": 10.0}]),
+    )[0]
+    assert configured["kind"] == "active"
+    assert configured["configured"] is True
+    assert configured["status"] == "recording"
+    assert configured["primary_action"] is None  # never connect_manual
+
+    unconfigured = build_connections(
+        supported_clients=["kimi-code"],
+        configured_clients=[],
+        ingestion_snapshot=_snapshot(),
+    )[0]
+    assert unconfigured["kind"] == "active"
+    assert unconfigured["status"] == "not_connected"
+    assert unconfigured["primary_action"] == "connect"  # one-click, not connect_manual
 
 
 def test_active_agent_recording_when_configured_and_healthy():

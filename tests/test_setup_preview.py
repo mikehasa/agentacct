@@ -52,7 +52,8 @@ def test_command_is_read_only_for_every_client(tmp_path, monkeypatch, client):
     for name in ("_onboard_global", "_onboard_global_codex", "_onboard_global_claude", "_onboard_global_opencode",
                  "_onboard_global_hermes", "_atomic_write_text", "_write_codex_mcp_config_at",
                  "_write_user_claude_mcp_config", "_write_opencode_mcp_config_at", "_write_hermes_mcp_config_at",
-                 "_install_codex_hook", "_install_hermes_hook", "_managed_runtime", "_record_instrumentation_marker_best_effort"):
+                 "_install_codex_hook", "_install_hermes_hook", "_managed_runtime", "_record_instrumentation_marker_best_effort",
+                 "_write_kimi_code_mcp_config_at", "_write_kimi_code_home_mcp", "_onboard_global_kimi_code"):
         monkeypatch.setattr(cli, name, forbidden)
     monkeypatch.setattr(cli, "setup_instructions", forbidden)
     store = tmp_path / "not-created-store"
@@ -137,6 +138,7 @@ def test_fenced_markers_are_preserved_and_real_legacy_block_is_replaced(tmp_path
     ("codex", ".codex/config.toml", '[broken PRIVATE-TOML'),
     ("opencode", ".config/opencode/opencode.jsonc", '{// PRIVATE-COMMENT\n"mcp":{}}'),
     ("claude-code", ".claude.json", 'PRIVATE-INVALID-JSON'),
+    ("kimi-code", ".kimi-code/mcp.json", '{"mcpServers": {"x": '),
 ])
 def test_parser_failures_are_named_without_echoing_input(tmp_path, client, path, content):
     write(tmp_path / path, content)
@@ -147,6 +149,40 @@ def test_parser_failures_are_named_without_echoing_input(tmp_path, client, path,
     assert "PRIVATE-" not in json.dumps(payload)
     if client == "codex":
         assert any("may still perform" in x for x in row(payload, "mcp")["conditions"])
+    if client == "kimi-code":
+        # The writer refuses an unreadable file outright; the preview must say so
+        # rather than imply a partial merge.
+        assert any("refuses to rewrite" in x for x in row(payload, "mcp")["conditions"])
+
+
+def test_kimi_code_preview_shows_a_managed_write_with_legacy_actions(tmp_path):
+    write(tmp_path / ".kimi-code/mcp.json", json.dumps({"mcpServers": {
+        "linear": {"command": "linear-mcp"},
+        "agentacct": {"command": "old", "args": ["mcp", "serve", "--store-dir", "/old"]},
+        "agent-chronicle": {"command": "/old/agent-chronicle", "args": []},
+        "agent-sentinel": {"command": "custom-recorder", "args": ["serve-elsewhere"]},
+    }}))
+    before = snapshot(tmp_path)
+
+    payload = preview(tmp_path, "kimi-code")
+
+    mcp = row(payload, "mcp")
+    assert mcp["path"] == str(tmp_path / ".kimi-code" / "mcp.json")
+    # The preview names the user-level file it would write, and the entry's shape.
+    assert mcp["proposed_content"] == json.dumps({"mcpServers": {"agentacct": {
+        "command": "/managed/agentacct",
+        "args": ["mcp", "serve", "--store-dir", str(tmp_path / "uncreated-store")],
+    }}}, indent=2) + "\n"
+    assert {x["name"]: x["action"] for x in mcp["registrations"]} == {
+        "agentacct": "update",  # managed write, not manual guidance
+        "agent-chronicle": "remove",  # this tool's own prior name
+        "agent-sentinel": "preserve",  # custom command/args are the user's
+    }
+    # The instruction proposal targets the same user-level home.
+    assert row(payload, "instructions")["path"] == str(tmp_path / ".kimi-code" / "AGENTS.md")
+    # Read-only: not one byte changes, and no writer ran.
+    assert snapshot(tmp_path) == before
+    assert "linear-mcp" not in json.dumps(payload)  # unrelated servers stay private
 
 
 def test_opencode_only_collapses_recognized_legacy_commands(tmp_path):

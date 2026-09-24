@@ -134,9 +134,19 @@ struct V1Connection: Decodable, Identifiable {
         case primaryAction = "primary_action"
     }
 
-    /// The wizard client for an active agent (nil for semi/passive, which have
-    /// no one-click setup path).
+    /// The wizard client for a client agentacct can configure. nil for a client
+    /// with no onboarding writer at all (passive cursor), which therefore has no
+    /// setup path. A client that is still reported as `semi` — an older recorder,
+    /// or an agent whose MCP registration stays manual (openclaw) — is absent from
+    /// this roster too, but the row's action is the authority in every case.
     var setupClient: SetupClient? { SetupClient(rawValue: id) }
+
+    /// One-click Connect/Re-sync. Only an ACTIVE agent receives the backend's
+    /// connect/re-sync action; a semi agent's manual registration arrives as
+    /// `connect_manual` guidance, which must never render as a button.
+    var offersOneClickSetup: Bool {
+        setupClient != nil && (primaryAction == "connect" || primaryAction == "resync")
+    }
 }
 
 /// Only this backend code is a store-wide cause projected onto each source.
@@ -546,8 +556,8 @@ struct SourcesPane: View {
     /// row shows guidance/health instead of a button.
     @ViewBuilder
     private func connectionActionButton(_ conn: V1Connection) -> some View {
-        if let onSetup, !connectionsRetained, let client = conn.setupClient,
-           conn.primaryAction == "connect" || conn.primaryAction == "resync" {
+        if let onSetup, !connectionsRetained, conn.offersOneClickSetup,
+           let client = conn.setupClient {
             Button(conn.primaryAction == "resync" ? "Re-sync" : "Connect") { onSetup(client) }
                 .buttonStyle(NativeSetupActionStyle())
                 .disabled(dashboard.isOfflineSnapshot || SnapshotMode.enabled)

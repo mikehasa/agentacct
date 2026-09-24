@@ -461,3 +461,168 @@ def test_hermes_refuses_tab_indented_config(tmp_path: Path) -> None:
 
     assert action == "skipped-unparsed"
     assert config.read_text() == original  # never clobbered
+
+
+# --- Kimi Code ($KIMI_CODE_HOME/mcp.json) -------------------------------------
+
+
+def test_kimi_code_mcp_fresh_file_uses_the_documented_shape(tmp_path: Path) -> None:
+    config = tmp_path / ".kimi-code" / "mcp.json"
+    path, action = cli._write_kimi_code_mcp_config_at(config, "/global/store", command="/bin/agentacct")
+
+    assert path == config
+    assert action == "wrote"
+    data = json.loads(config.read_text())
+    # The shape Kimi Code documents: mcpServers -> name -> command + args.
+    assert data == {"mcpServers": {"agentacct": {
+        "command": "/bin/agentacct",
+        "args": ["mcp", "serve", "--store-dir", "/global/store"],
+    }}}
+    assert (config.stat().st_mode & 0o777) == 0o600
+
+
+def test_kimi_code_mcp_is_idempotent_and_does_not_rewrite(tmp_path: Path) -> None:
+    config = tmp_path / "mcp.json"
+    cli._write_kimi_code_mcp_config_at(config, "/store", command="/bin/agentacct")
+    before = config.read_bytes()
+
+    path, action = cli._write_kimi_code_mcp_config_at(config, "/store", command="/bin/agentacct")
+
+    assert (path, action) == (config, "unchanged")
+    assert config.read_bytes() == before  # not even a re-serialized rewrite
+
+
+def test_kimi_code_mcp_updates_store_and_preserves_other_keys_and_servers(tmp_path: Path) -> None:
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({
+        "theme": "dark",
+        "mcpServers": {
+            "linear": {"command": "linear-mcp", "args": ["serve"]},
+            "agentacct": {
+                "command": "old",
+                "args": ["mcp", "serve", "--store-dir", "/old"],
+                "type": "stdio",
+                "env": {"KEEP": "1"},
+            },
+        },
+    }))
+
+    _path, action = cli._write_kimi_code_mcp_config_at(config, "/new", command="/bin/agentacct")
+
+    assert action == "updated"
+    data = json.loads(config.read_text())
+    assert data["theme"] == "dark"  # unrelated top-level key untouched
+    assert data["mcpServers"]["linear"]["command"] == "linear-mcp"
+    entry = data["mcpServers"]["agentacct"]
+    assert entry["command"] == "/bin/agentacct"
+    assert entry["args"][-1] == "/new"
+    assert entry["type"] == "stdio"  # a user-set extra key is never dropped
+    assert entry["env"] == {"KEEP": "1"}
+
+
+def test_kimi_code_mcp_collapses_prior_generations_and_carries_env(tmp_path: Path) -> None:
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"mcpServers": {
+        "agent-chronicle": {"command": "/old/agent-chronicle", "args": ["mcp", "serve", "--store-dir", "/new"], "env": {"A": "1"}},
+        "agent-sentinel": {"command": "/bin/agent-sentinel", "args": ["mcp", "serve", "--store-dir", "/new"], "env": {"B": "2"}},
+    }}))
+
+    _path, action = cli._write_kimi_code_mcp_config_at(config, "/new", command="/bin/agentacct")
+
+    # No `agentacct` entry existed before, so the write CREATED the registration
+    # (the two dead-name entries were collateral of the same write).
+    assert action == "wrote"
+    servers = json.loads(config.read_text())["mcpServers"]
+    assert set(servers) == {"agentacct"}  # both dead-name entries collapsed
+    assert servers["agentacct"]["env"] == {"A": "1", "B": "2"}  # env carried
+    assert servers["agentacct"]["args"][-1] == "/new"
+
+
+def test_kimi_code_mcp_preserves_a_pre_rename_entry_pointing_at_another_store(tmp_path: Path) -> None:
+    # Same rule as the Claude Code / Codex user writers: a pre-rename entry whose
+    # command/args this writer would NOT generate is the user's own configuration
+    # (it may drive a second server against another ledger) — leave it, and say so.
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"mcpServers": {
+        "agent-sentinel": {"command": "/bin/agent-sentinel", "args": ["mcp", "serve", "--store-dir", "/elsewhere"]},
+    }}))
+
+    _path, action = cli._write_kimi_code_mcp_config_at(config, "/new", command="/bin/agentacct")
+
+    assert action == "wrote"
+    servers = json.loads(config.read_text())["mcpServers"]
+    assert servers["agent-sentinel"]["args"][-1] == "/elsewhere"  # untouched
+    assert servers["agentacct"]["args"][-1] == "/new"
+
+
+def test_kimi_code_mcp_leaves_custom_sentinel_but_still_registers(tmp_path: Path) -> None:
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"mcpServers": {
+        "agent-sentinel": {"command": "custom-recorder", "args": ["serve-elsewhere"]},
+    }}))
+
+    _path, _action = cli._write_kimi_code_mcp_config_at(config, "/new", command="/bin/agentacct")
+
+    servers = json.loads(config.read_text())["mcpServers"]
+    # A user's custom pre-rename server is theirs: never clobbered.
+    assert servers["agent-sentinel"]["command"] == "custom-recorder"
+    assert servers["agentacct"]["args"][-1] == "/new"
+
+
+def test_kimi_code_mcp_drops_stale_entry_even_when_agentacct_is_already_correct(tmp_path: Path) -> None:
+    # The idempotency short-circuit must key on whether a stale key was POPPED,
+    # not on the post-pop key set: otherwise the collapse would be silently lost.
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"mcpServers": {
+        "agentacct": {"command": "/bin/agentacct", "args": ["mcp", "serve", "--store-dir", "/store"]},
+        "agent-chronicle": {"command": "agent-chronicle", "args": ["mcp", "serve", "--store-dir", "/store"]},
+    }}))
+
+    _path, action = cli._write_kimi_code_mcp_config_at(config, "/store", command="/bin/agentacct")
+
+    assert action == "updated"
+    assert set(json.loads(config.read_text())["mcpServers"]) == {"agentacct"}
+
+
+def test_kimi_code_mcp_refuses_unparseable_and_non_object_files(tmp_path: Path) -> None:
+    import pytest
+
+    broken = tmp_path / "broken.json"
+    broken.write_text('{"mcpServers": {"agentacct": ')
+    non_object = tmp_path / "list.json"
+    non_object.write_text("[]")
+    bad_servers = tmp_path / "servers.json"
+    bad_servers.write_text('{"mcpServers": ["agentacct"]}')
+
+    for config in (broken, non_object, bad_servers):
+        original = config.read_bytes()
+        with pytest.raises(Exception):
+            cli._write_kimi_code_mcp_config_at(config, "/store", command="/bin/agentacct")
+        # A file agentacct cannot read is left byte-for-byte alone.
+        assert config.read_bytes() == original
+
+
+def test_kimi_code_home_writer_honors_kimi_code_home_override(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "custom-kimi-home"
+    monkeypatch.setenv("KIMI_CODE_HOME", str(home))
+    monkeypatch.setenv("HOME", str(tmp_path / "real-home"))
+
+    path, action = cli._write_kimi_code_home_mcp(tmp_path / "store", "/bin/agentacct")
+
+    assert path == home / "mcp.json"
+    assert action == "wrote"
+    assert json.loads(path.read_text())["mcpServers"]["agentacct"]["args"] == [
+        "mcp", "serve", "--store-dir", str(tmp_path / "store"),
+    ]
+    assert not (tmp_path / "real-home" / ".kimi-code").exists()
+
+
+def test_kimi_code_home_writer_defaults_to_dot_kimi_code_in_home(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.delenv("KIMI_CODE_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(home))
+
+    path, _action = cli._write_kimi_code_home_mcp(tmp_path / "store", "/bin/agentacct")
+
+    assert path == home / ".kimi-code" / "mcp.json"

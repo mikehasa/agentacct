@@ -624,6 +624,122 @@ def test_setup_mcp_profile_global_agents_reject_write(tmp_path: Path) -> None:
         assert "--write is not available" in result.output
 
 
+def test_setup_mcp_kimi_code_preview_promises_the_write_and_touches_nothing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    kimi_home = tmp_path / "kimi-home"
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+
+    result = runner.invoke(app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    # The console wraps long lines (and can split a path mid-token), so assert on
+    # whitespace-stripped output for the path and whitespace-normalized for prose.
+    unwrapped = " ".join(result.output.split())
+    squished = "".join(result.output.split())
+    assert "Kimi Code" in result.output
+    assert str(kimi_home / "mcp.json") in squished
+    assert '"mcpServers"' in result.output
+    assert str((tmp_path / ".agent-sentinel" / "state").resolve()) in squished
+    # A managed write, not a hand-applied block: the old "no writer" wording is gone.
+    assert "no mcp.json writer" not in unwrapped
+    assert "by hand" not in unwrapped
+    assert "--write" in result.output
+    # Preview mode writes nothing at all.
+    assert not kimi_home.exists()
+
+
+def test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json(tmp_path: Path, monkeypatch) -> None:
+    kimi_home = tmp_path / "kimi-home"
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+
+    result = runner.invoke(
+        app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path), "--write"]
+    )
+
+    assert result.exit_code == 0, result.output
+    config_path = kimi_home / "mcp.json"
+    entry = json.loads(config_path.read_text())["mcpServers"]["agentacct"]
+    # Absolute store path: the user-level registration is loaded by every Kimi Code
+    # session, whatever cwd it launches the server from.
+    assert entry["args"] == ["mcp", "serve", "--store-dir", str((tmp_path / ".agent-sentinel" / "state").resolve())]
+    assert "user level" in result.output
+    assert "Already registered" not in result.output
+    # Zero repo files, despite the project-dir argument.
+    assert not (tmp_path / ".mcp.json").exists()
+    assert not (tmp_path / ".kimi-code").exists()
+
+
+def test_setup_mcp_kimi_code_write_is_idempotent_and_preserves_other_servers(
+    tmp_path: Path, monkeypatch
+) -> None:
+    kimi_home = tmp_path / "kimi-home"
+    kimi_home.mkdir()
+    config_path = kimi_home / "mcp.json"
+    config_path.write_text(json.dumps({"mcpServers": {"linear": {"command": "linear-mcp"}}}))
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+    arguments = ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path), "--write"]
+
+    first = runner.invoke(app, arguments)
+    assert first.exit_code == 0, first.output
+    after_first = config_path.read_text()
+    second = runner.invoke(app, arguments)
+
+    assert second.exit_code == 0, second.output
+    assert "Already registered" in second.output
+    assert config_path.read_text() == after_first  # no rewrite, no churn
+    data = json.loads(config_path.read_text())
+    assert data["mcpServers"]["linear"] == {"command": "linear-mcp"}
+    assert set(data["mcpServers"]) == {"linear", "agentacct"}
+
+
+def test_setup_mcp_kimi_code_write_refuses_a_file_it_cannot_parse(tmp_path: Path, monkeypatch) -> None:
+    kimi_home = tmp_path / "kimi-home"
+    kimi_home.mkdir()
+    config_path = kimi_home / "mcp.json"
+    original = '{"mcpServers": {"linear": '
+    config_path.write_text(original)
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+
+    result = runner.invoke(
+        app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path), "--write"]
+    )
+
+    assert result.exit_code != 0
+    assert "refusing to overwrite" in result.output
+    assert config_path.read_text() == original  # never partially rewritten
+
+
+def test_setup_mcp_kimi_code_rejects_a_relative_store_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "kimi-home"))
+
+    result = runner.invoke(
+        app,
+        [
+            "setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path),
+            "--write", "--relative-store-path",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "cannot be used with kimi-code" in result.output
+    assert not (tmp_path / "kimi-home" / "mcp.json").exists()
+
+
+def test_setup_mcp_kimi_code_preview_explains_stale_entries_are_collapsed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("KIMI_CODE_HOME", str(tmp_path / "kimi-home"))
+
+    result = runner.invoke(app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    unwrapped = " ".join(result.output.split())
+    # agentacct writes the file, so the stale pre-rename entry is agentacct's job —
+    # there is no `kimi-code mcp remove` verb to hand the user.
+    assert "kimi-code mcp remove" not in unwrapped
+    assert "is replaced" in unwrapped
+    assert "custom 'agent-sentinel' server is left alone" in unwrapped
+
+
 def test_readme_links_coding_agent_integration_guide() -> None:
     readme = Path("README.md").read_text()
     guide = Path("docs/coding-agent-integrations.md").read_text()

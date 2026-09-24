@@ -66,6 +66,18 @@ struct SetupConfigurationPlan {
                 Change(path: dshHome.appendingPathComponent("cordis.patch.yml").path, action: "Add the @deepseek-ai/dsh-mcp-client MCP server to the home patch applied over every dsh profile (non-destructive append; previewed if the file cannot be safely extended)."),
                 Change(path: dshHome.appendingPathComponent("AGENTS.md").path, action: "Add or update the managed instruction to record work sections and checks.")
             ]
+        case .kimiCode:
+            // Kimi Code declares MCP servers as mcpServers entries in mcp.json
+            // ($KIMI_CODE_HOME/mcp.json, default ~/.kimi-code/mcp.json), never in
+            // config.toml, which carries provider credentials — so that TOML file
+            // is never a target here.
+            let kimiEnv = environment["KIMI_CODE_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let kimiHome = kimiEnv.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+                ?? homeDirectory.appendingPathComponent(".kimi-code")
+            changes = [
+                Change(path: kimiHome.appendingPathComponent("mcp.json").path, action: "Add or update agentacct's MCP server in mcpServers, preserving every other server and key. A file agentacct cannot read as a JSON object is left for manual registration instead of rewritten."),
+                Change(path: kimiHome.appendingPathComponent("AGENTS.md").path, action: "Add or update the managed instruction to record work sections and checks.")
+            ]
         }
     }
 
@@ -89,6 +101,8 @@ struct SetupConfigurationPlan {
             return "Approve the agentacct hooks in Hermes, then restart its gateway or open a new session. The setup output contains the exact consent steps."
         case .deepseekHarness:
             return "Start a new dsh session so it loads the home-patch MCP server and $DSH_HOME/AGENTS.md instructions. If dsh reports the @deepseek-ai/dsh-mcp-client plugin is missing, run: dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client."
+        case .kimiCode:
+            return "Start a new Kimi Code session so it loads the agentacct MCP server and the $KIMI_CODE_HOME/AGENTS.md instruction. A session that is already running never registers a newly added server."
         }
     }
 }

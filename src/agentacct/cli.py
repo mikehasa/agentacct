@@ -1692,6 +1692,88 @@ def _write_user_claude_mcp_config(
     return config_path, action
 
 
+def _write_kimi_code_mcp_config_at(
+    config_path: Path, config_store_dir: Path | str, *, command: str = "agentacct"
+) -> tuple[Path, str]:
+    """Merge the agentacct server into Kimi Code's user-level ``mcp.json``.
+
+    Kimi Code declares MCP servers as ``mcpServers`` entries in a plain JSON file
+    (``$KIMI_CODE_HOME/mcp.json``, default ``~/.kimi-code/mcp.json``), never in
+    ``config.toml`` — that TOML file carries provider credentials and has no MCP
+    section. We merge into the top-level ``mcpServers`` object, PRESERVE every
+    other top-level key, every other server, and every extra key on an existing
+    ``agentacct`` entry, setting only ``command``/``args`` (the generated shape
+    carries no ``type``, so a ``type`` the user set is left alone). Idempotent:
+    an entry already identical to the generated one — with no stale sibling to
+    drop — is left byte-untouched (``unchanged``, no write). The write is atomic
+    and 0600 because a running Kimi Code session may rewrite this file.
+
+    A file agentacct cannot read as a JSON object raises ``typer.BadParameter``
+    rather than being rewritten: a best-effort parse of a broken file would
+    silently drop the user's other servers.
+    """
+    generated = _mcp_server_config(config_store_dir, command=command)
+    existing: dict[str, object] = {}
+    mode = 0o600
+    if config_path.exists():
+        mode = (config_path.stat().st_mode & 0o777) or 0o600
+        try:
+            loaded = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise typer.BadParameter(
+                f"{config_path} could not be read as JSON ({type(exc).__name__}); refusing to overwrite it. "
+                "Fix or move the file, then re-run."
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise typer.BadParameter(f"{config_path} is not a JSON object; refusing to modify it.")
+        existing = loaded
+    servers = existing.setdefault("mcpServers", {})
+    if not isinstance(servers, dict):
+        raise typer.BadParameter(f"{config_path} has a non-object mcpServers; refusing to modify it.")
+
+    # Collapse this tool's own prior name (always safe to replace); carry env.
+    # A CUSTOM pre-rename (old-name) entry is the user's — leave it + warn rather
+    # than clobber it, exactly like the Claude Code / Codex user-scope writers:
+    # the new-name registration is still written alongside it.
+    carried_env: dict[str, str] = {}
+    stale_collapsed = False
+    prior_own = servers.pop("agent-chronicle", None)
+    if prior_own is not None:
+        carried_env.update(_registration_env(prior_own))
+        stale_collapsed = True
+    old_sentinel = servers.get("agent-sentinel")
+    if old_sentinel is not None:
+        if _pre_rename_registration_matches_generated(old_sentinel, generated):
+            carried_env.update(_registration_env(servers.pop("agent-sentinel")))
+            stale_collapsed = True
+        else:
+            console.print(_PRE_RENAME_CUSTOM_SETTINGS_NOTE)
+
+    entry_obj = servers.get("agentacct")
+    entry: dict[str, object] = dict(entry_obj) if isinstance(entry_obj, dict) else {}
+    merged_env = {**carried_env, **_registration_env(entry)}
+    entry["command"] = command
+    entry["args"] = generated["args"]
+    if merged_env:
+        entry["env"] = merged_env
+    if isinstance(entry_obj, dict) and entry == entry_obj and not stale_collapsed:
+        # Byte-identical to what we would write and no stale key to drop.
+        return config_path, "unchanged"
+    action = "updated" if isinstance(entry_obj, dict) else "wrote"
+    servers["agentacct"] = entry
+    _atomic_write_text(config_path, json.dumps(existing, indent=2) + "\n", mode=mode)
+    return config_path, action
+
+
+def _write_kimi_code_home_mcp(store_dir: Path, command: str) -> tuple[Path, str]:
+    """Register agentacct in Kimi Code's USER-level mcp.json ($KIMI_CODE_HOME).
+
+    The env override is honored (``_kimi_code_home_dir``), so the server lands in
+    the same home Kimi Code itself and the usage importer read.
+    """
+    return _write_kimi_code_mcp_config_at(_kimi_code_home_dir() / "mcp.json", store_dir, command=command)
+
+
 def _opencode_mcp_entry(store_dir: Path | str, *, command: str = "agentacct") -> dict[str, object]:
     """OpenCode's local-MCP server shape: a ``type: "local"`` entry whose
     ``command`` is a single argv ARRAY (binary + args), plus ``enabled: true``.
@@ -2080,13 +2162,29 @@ def _print_codex_mcp_setup(config_store_dir: Path | str, *, command: str = "agen
 
 
 def _print_stale_registration_remediation(agent: str) -> None:
-    """Tell the user to remove any leftover pre-rename server before adding agentacct.
+    """Tell the user that any leftover pre-rename server must go before agentacct's.
 
     A registration left over from the ``agent-sentinel`` / ``agent-chronicle``
     era points at a command name that no longer ships (only ``agentacct`` does),
     so the host tries to launch a missing binary — an ENOENT that reads to the
-    client as a crashed MCP server. Removing the dead entry first is the fix.
+    client as a crashed MCP server. For a client agentacct writes itself
+    (kimi-code) its writer collapses that entry, so there is nothing to run.
     """
+    if agent == "kimi-code":
+        # No `kimi-code mcp remove` verb exists, and none is needed: agentacct
+        # writes mcp.json itself, and that writer collapses a standard
+        # pre-rename entry into `agentacct` (carrying env) the same way the
+        # Claude Code / Codex user-scope writers do. Only a CUSTOM
+        # 'agent-sentinel' server is left for the user, since it may be a second
+        # server they still run.
+        console.print(
+            "agentacct's writer handles the stale pre-rename server itself: a standard "
+            "agent-sentinel/agent-chronicle entry is replaced (env carried over) by the 'agentacct' "
+            "registration it merges into mcp.json, so no leftover entry keeps launching a command that no "
+            "longer exists. A custom 'agent-sentinel' server is left alone — delete that one yourself if "
+            "you no longer use it."
+        )
+        return
     console.print(
         "First remove any stale pre-rename server — a leftover agent-sentinel/agent-chronicle "
         "entry launches a command that no longer exists (ENOENT), which the client reports as a crash:"
@@ -2095,13 +2193,6 @@ def _print_stale_registration_remediation(agent: str) -> None:
         console.print(
             "In the agent's MCP config, delete any server named 'agent-sentinel' or 'agent-chronicle' "
             "(only 'agentacct' ships now), then add the definition below."
-        )
-        return
-    if agent == "kimi-code":
-        # No `kimi-code mcp remove` exists: mcp.json is edited by hand.
-        console.print(
-            "In mcp.json, delete any server named 'agent-sentinel' or 'agent-chronicle' from mcpServers "
-            "(only 'agentacct' ships now), then add the entry below."
         )
         return
     print(f"{agent} mcp remove agent-sentinel")
@@ -2167,12 +2258,15 @@ def _print_agent_mcp_preview(agent: str, config_store_dir: Path | str, *, comman
         # Kimi Code declares MCP servers in mcp.json (user level:
         # $KIMI_CODE_HOME/mcp.json, default ~/.kimi-code/mcp.json), never in
         # config.toml — that TOML file carries provider credentials and has no
-        # MCP section. It has no MCP command either, so this is a manual
-        # registration: agentacct previews the entry and never writes the file.
+        # MCP section. agentacct merges the entry into that user-level file
+        # (_write_kimi_code_mcp_config_at), so this preview shows a managed
+        # write, not a block to paste by hand.
         console.print(
             "Kimi Code registers MCP servers in mcp.json (user level: $KIMI_CODE_HOME/mcp.json, default "
-            "~/.kimi-code/mcp.json; project level: .kimi-code/mcp.json), not in config.toml. Add this entry to "
-            "the user-level mcp.json by hand (or hand it to /mcp-config) — agentacct has no mcp.json writer:"
+            "~/.kimi-code/mcp.json; project level: .kimi-code/mcp.json), not in config.toml. agentacct merges the "
+            "entry below into that user-level file — `agentacct setup mcp --agent kimi-code --write`, or "
+            "machine-wide with `agentacct onboard --scope global --agent kimi-code` — preserving every other "
+            "mcpServers entry and every other key in the file:"
         )
         print(_claude_mcp_json(config_store_dir, command=command).rstrip())
         console.print(
@@ -2384,7 +2478,17 @@ def init_project(
                     console.print("Preview only. Re-run with --write-mcp to create/update project .codex/config.toml.")
             else:
                 _print_agent_mcp_preview(name, config_store_dir, command=mcp_command)
-                if write_mcp:
+                if write_mcp and name == "kimi-code":
+                    # kimi-code HAS a writer, just not a project-local one: its
+                    # registration is the user-level $KIMI_CODE_HOME/mcp.json, which
+                    # `init` (a project-scoped command) must not touch. Point at the
+                    # command that does instead of claiming no write exists.
+                    console.print(
+                        "kimi-code: MCP config is user-level, not project-local. Apply it with "
+                        "`agentacct setup mcp --agent kimi-code --write` or install machine-wide with "
+                        "`agentacct onboard --scope global --agent kimi-code`."
+                    )
+                elif write_mcp:
                     console.print(f"{name}: project-local MCP config write is not available; use the preview command above.")
                 else:
                     console.print("Preview only. agentacct will not modify global/profile agent config.")
@@ -2733,6 +2837,47 @@ def _onboard_global_dsh(store_dir: Path, command: str) -> str:
     return "wired"
 
 
+def _onboard_global_kimi_code(store_dir: Path, command: str) -> str:
+    """Configure Kimi Code at USER scope (zero repo files).
+
+    Both legs are written at Kimi Code's user level: the agentacct MCP server goes
+    into ``$KIMI_CODE_HOME/mcp.json`` (the file Kimi Code declares servers in —
+    never ``config.toml``, which carries provider credentials and has no MCP
+    section) and the standing 'record your work' directive goes into
+    ``$KIMI_CODE_HOME/AGENTS.md``, which Kimi Code loads on every session.
+
+    Returns ``wired`` when the MCP registration was written (or was already
+    registered) and the directive written, or ``tools-pending`` when only the
+    directive could be installed — an mcp.json agentacct refuses to overwrite
+    (not a JSON object) or a write error. Never claims a write it did not make.
+    """
+    home = _kimi_code_home_dir()
+    # 1. standing "record your work" instructions -> $KIMI_CODE_HOME/AGENTS.md
+    setup_instructions(
+        agent="kimi-code", user=True, path=None, remove=False, dry_run=False, store_dir=store_dir
+    )
+    # 2. user-level MCP registration -> $KIMI_CODE_HOME/mcp.json
+    try:
+        path, action = _write_kimi_code_home_mcp(store_dir, command)
+    except (typer.BadParameter, OSError, UnicodeError) as exc:
+        console.print(f"Kimi Code instructions written, but the MCP registration could not be written ({exc}).")
+        console.print(
+            f"Left {home / 'mcp.json'} as it is. Add the agentacct entry to its mcpServers yourself so Kimi "
+            "Code loads the server:"
+        )
+        print(_claude_mcp_json(store_dir, command=command).rstrip())
+        return "tools-pending"
+    if action == "unchanged":
+        console.print(f"Left {path} unchanged: the agentacct MCP server is already registered.")
+    else:
+        verb = "Updated" if action == "updated" else "Wrote"
+        console.print(f"{verb} the agentacct MCP server in {path} (user level — every Kimi Code session).")
+    console.print(
+        "Start a NEW Kimi Code session so it loads the server + $KIMI_CODE_HOME/AGENTS.md instructions."
+    )
+    return "wired"
+
+
 def _warn_global_store_mismatches(store_dir: Path, command: str) -> None:
     """Warn when a surface agentacct does NOT rewrite still points elsewhere.
 
@@ -2851,6 +2996,12 @@ def _resync_integration(
                 resynced.append("dsh")
         except Exception:  # noqa: BLE001
             errored.append("dsh")
+    if "kimi-code" in client_set:
+        try:
+            if _onboard_global_kimi_code(store_dir, command):
+                resynced.append("kimi-code")
+        except Exception:  # noqa: BLE001
+            errored.append("kimi-code")
     return resynced, errored
 
 
@@ -2931,15 +3082,17 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
     # full semantic recording (MCP + an always-on global instruction file); hermes
     # has no always-on global instruction slot, so its hook adapter injects the same
     # standing 'record your work' directive on each session's first turn (pre_llm_call)
-    # — so hermes records too, once its one-time hook consent is granted.
-    configurable = ("claude-code", "codex", "opencode", "hermes", "dsh")
+    # — so hermes records too, once its one-time hook consent is granted. dsh and
+    # kimi-code each get a user-level MCP registration plus an always-on instruction
+    # file ($DSH_HOME/AGENTS.md, $KIMI_CODE_HOME/AGENTS.md).
+    configurable = ("claude-code", "codex", "opencode", "hermes", "dsh", "kimi-code")
     if agent in {"auto", "all"}:
         targets = [client for client in configurable if client in found] or ["claude-code", "codex"]
     elif agent in configurable:
         targets = [agent]
     else:
         raise typer.BadParameter(
-            "global scope configures claude-code, codex, opencode, hermes, or dsh. "
+            "global scope configures claude-code, codex, opencode, hermes, dsh, or kimi-code. "
             "Use --scope project for other clients."
         )
 
@@ -2983,6 +3136,16 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
         # machine-wide now' claim.
         if _onboard_global_dsh(store_dir, command) in {"wired", "tools-pending"}:
             configured_experimental_clients.append("dsh")
+    if mcp and "kimi-code" in targets:
+        # kimi-code reads $KIMI_CODE_HOME/AGENTS.md on every session AND loads the
+        # user-level mcp.json server, so once both legs are written it should
+        # record over MCP like codex/opencode. No live Kimi Code session has been
+        # observed recording over MCP yet (registration writes are covered by
+        # tests, recording is not), so a configured kimi-code is tracked for
+        # resync but reported as EXPERIMENTAL — never folded into the unqualified
+        # 'recording is machine-wide now' claim.
+        if _onboard_global_kimi_code(store_dir, command) == "wired":
+            configured_experimental_clients.append("kimi-code")
 
     imported = _local_usage_import_payload(
         store_dir=store_dir,
@@ -3040,11 +3203,22 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
             "client's hook adapter (installed separately)."
         )
     if configured_experimental_clients:
-        console.print(
-            f"{', '.join(configured_experimental_clients)}: agentacct MCP server + $DSH_HOME/AGENTS.md written "
-            "(experimental). Start a NEW dsh session and confirm the @deepseek-ai/dsh-mcp-client plugin loads "
-            "for your profile — recording is not yet verified end-to-end."
-        )
+        # Per client: each experimental client is wired differently and carries a
+        # different unverified boundary, so one shared sentence would be wrong for
+        # at least one of them.
+        for experimental in configured_experimental_clients:
+            if experimental == "kimi-code":
+                console.print(
+                    "kimi-code: agentacct MCP server + $KIMI_CODE_HOME/AGENTS.md written (experimental). Start a "
+                    "NEW Kimi Code session so it loads the server — no live Kimi Code session has been observed "
+                    "recording over MCP yet, so recording is not yet verified end-to-end."
+                )
+            else:
+                console.print(
+                    "dsh: agentacct MCP server + $DSH_HOME/AGENTS.md written "
+                    "(experimental). Start a NEW dsh session and confirm the @deepseek-ai/dsh-mcp-client plugin "
+                    "loads for your profile — recording is not yet verified end-to-end."
+                )
     if recording_clients:
         console.print("Ready. Open a NEW agent session (in ANY repo) — recording is machine-wide now.")
     elif not tools_only_clients and not configured_experimental_clients:
@@ -3253,11 +3427,28 @@ def onboard(
     manual_recording_clients = [
         client for client in requested_agents if client not in {"codex", "claude-code"}
     ]
+    # kimi-code is not "unavailable": agentacct has a writer for its user-level
+    # mcp.json — but project-scope onboarding promises project-local changes only,
+    # so it does not write that user-level file here. Say which command does,
+    # instead of lumping it in with the clients that have no writer at all.
+    user_scope_mcp_clients = [client for client in manual_recording_clients if client == "kimi-code"]
+    manual_recording_clients = [client for client in manual_recording_clients if client != "kimi-code"]
     if manual_recording_clients:
         console.print(
             "One-command work recording is not available for: "
             f"{', '.join(manual_recording_clients)}. agentacct installed local instructions and usage capture only; "
             "use the advanced manual setup for that client."
+        )
+    if user_scope_mcp_clients:
+        console.print(
+            "Kimi Code registers MCP servers in its USER-level $KIMI_CODE_HOME/mcp.json, which project-scope "
+            "onboarding does not write (it changes this repo only). Install that registration once — it covers "
+            "every Kimi Code session:"
+        )
+        print("agentacct setup mcp --agent kimi-code --write")
+        console.print(
+            "or install machine-wide with `agentacct onboard --scope global --agent kimi-code`, which also writes "
+            "the $KIMI_CODE_HOME/AGENTS.md directive (this project's AGENTS.md instruction is already installed)."
         )
     if recording_clients:
         try:
@@ -3323,6 +3514,10 @@ def onboard(
         console.print("Local usage capture is ready; semantic work recording is not configured.")
         if manual_recording_clients:
             console.print("Next: complete that client's advanced manual recording setup, then open a NEW agent session.")
+        elif user_scope_mcp_clients:
+            console.print(
+                "Next: register the Kimi Code MCP server as above, then open a NEW Kimi Code session."
+            )
         elif adapter_recovery_steps:
             for step in adapter_recovery_steps:
                 console.print(f"Next: {step}.")
@@ -5787,7 +5982,7 @@ def setup_mcp(
         Optional[str],
         typer.Option(help="Command path to write/print in MCP config. Use when agentacct is not on the agent's PATH."),
     ] = None,
-    write: Annotated[bool, typer.Option(help="Write supported project-local configuration files. Default only previews safe copy/paste instructions.")] = False,
+    write: Annotated[bool, typer.Option(help="Write supported configuration files (the project .mcp.json / .codex/config.toml, or Kimi Code's user-level mcp.json). Default only previews safe copy/paste instructions.")] = False,
     relative_store_path: Annotated[
         bool,
         typer.Option(
@@ -5832,13 +6027,48 @@ def setup_mcp(
             # owner store for committed config.
             _print_claude_worktree_store_hint(project_dir, command=mcp_command)
 
-    if agent in {"generic", "hermes", "opencode", "openclaw", "dsh", "kimi-code"}:
+    # Agents whose MCP config `setup mcp --write` does not touch: theirs lives in
+    # a client-owned profile/global location (openclaw writes it through its own
+    # CLI; dsh/hermes/opencode are wired by their global onboarding path), so this
+    # command only previews. kimi-code is NOT here: agentacct writes its
+    # user-level mcp.json directly, so --write applies it.
+    if agent in {"generic", "hermes", "opencode", "openclaw", "dsh"}:
         _print_agent_mcp_preview(agent, config_store_dir, command=mcp_command)
         if write:
             console.print("--write is not available for this agent because its MCP config is profile/global or client-specific.")
             console.print("Use the preview command above, then run: agentacct mcp doctor")
             raise typer.Exit(1)
         console.print("Preview only. agentacct will not modify global/profile agent config.")
+        return
+
+    if agent == "kimi-code":
+        # The registration target is the USER-level $KIMI_CODE_HOME/mcp.json, not a
+        # repo file, and it is written with an ABSOLUTE store path: a relative one
+        # would resolve against whatever cwd a Kimi Code session launches the server
+        # in. --relative-store-path exists for committed, shared config, which this
+        # user-level file is not.
+        if relative_store_path:
+            raise typer.BadParameter(
+                "--relative-store-path cannot be used with kimi-code: the registration goes into the user-level "
+                "$KIMI_CODE_HOME/mcp.json, whose relative store path would resolve against each session's launch "
+                "cwd instead of this project."
+            )
+        config_path = _kimi_code_home_dir() / "mcp.json"
+        _print_agent_mcp_preview(agent, config_store_dir, command=mcp_command)
+        if not write:
+            console.print(
+                f"Preview only. Re-run with --write to merge it into {config_path} — the USER-level Kimi Code MCP "
+                "config, so the server applies to every Kimi Code session, not just this project."
+            )
+            return
+        path, action = _write_kimi_code_mcp_config_at(config_path, config_store_dir, command=mcp_command)
+        if action == "unchanged":
+            console.print(f"Already registered: {path} already carries this agentacct MCP server unchanged.")
+        else:
+            console.print(
+                f"{action.capitalize()} the agentacct MCP server in {path} (user level — every Kimi Code session)."
+            )
+        console.print("Then run: agentacct mcp doctor. Start a NEW Kimi Code session so it loads the server.")
         return
 
     if agent == "claude-code":

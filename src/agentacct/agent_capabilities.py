@@ -339,6 +339,16 @@ _KIMI_CODE_REAL_CAPTURE = _verification_record(
         "docs/adapter-capability-evidence.md#2026-09-23-kimi-code-real-capture-fixture-and-live-smoke",
     ),
 )
+_KIMI_CODE_MCP_WRITE_FIXTURE = _verification_record(
+    "synthetic_fixture",
+    verified_at="2026-09-23",
+    evidence_refs=(
+        "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_fresh_file_uses_the_documented_shape",
+        "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_is_idempotent_and_does_not_rewrite",
+        "tests/test_onboard_global.py::test_onboard_global_agent_kimi_code_writes_user_level_mcp_json_and_instructions",
+        "tests/test_mcp_onboarding.py::test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json",
+    ),
+)
 _CURSOR_LIVE = _verification_record(
     "live_smoke",
     verified_at="2026-07-17",
@@ -919,7 +929,16 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 cost_basis="estimated_from_tokens",
             ),
             "mechanical_capture": _unavailable_capability("No typed Kimi Code plugin-hook adapter is implemented."),
-            "mcp_semantics": _unavailable_capability("No Kimi Code MCP registration is implemented and no smoke has been recorded."),
+            "mcp_semantics": _capability_record(
+                "experimental",
+                "agentacct writes the user-level MCP registration for Kimi Code rather than previewing it: `agentacct setup mcp --agent kimi-code --write` merges the `mcpServers.agentacct` entry into $KIMI_CODE_HOME/mcp.json (default ~/.kimi-code/mcp.json), and `agentacct onboard --scope global --agent kimi-code` also writes the record-your-work directive into the $KIMI_CODE_HOME/AGENTS.md file Kimi Code loads on every session.",
+                activation="one_command_global",
+                verification=_KIMI_CODE_MCP_WRITE_FIXTURE,
+                limitations=(
+                    "The registration write is fixture evidence only: no real Kimi Code session has been observed loading the written server or recording over MCP, so recording itself is not claimed.",
+                    "Only the user-level $KIMI_CODE_HOME/mcp.json is written; the project-level .kimi-code/mcp.json Kimi Code also reads is never touched.",
+                ),
+            ),
             "model_attribution": _capability_record(
                 "verified_partial",
                 "Model id from the model field on usage.record events within one session.",
@@ -950,10 +969,18 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 ),
                 usage_basis="client_reported",
             ),
-            "automatic_install": _unavailable_capability("agentacct does not write Kimi Code client config or install hooks."),
+            "automatic_install": _capability_record(
+                "experimental",
+                "`agentacct onboard --scope global --agent kimi-code` writes the agentacct MCP registration into the user-level $KIMI_CODE_HOME/mcp.json (default ~/.kimi-code/mcp.json) and the record-your-work directive into $KIMI_CODE_HOME/AGENTS.md, with zero files left in the repository. It installs no hook, because no typed Kimi Code hook adapter exists.",
+                activation="one_command_global",
+                verification=_KIMI_CODE_MCP_WRITE_FIXTURE,
+                limitations=(
+                    "Fixture evidence only: the one-command install is covered by tests against temp homes, and no real Kimi Code session has been observed picking the written registration up.",
+                ),
+            ),
         },
         "limitations": [
-            "Session-discovery, usage-import, model, and cache-read lanes carry dated real-capture evidence from one machine and one client build; cache-write, zero-usage observation, namespace hardening, multi-version stability, and automatic installation are not claimed.",
+            "Session-discovery, usage-import, model, and cache-read lanes carry dated real-capture evidence from one machine and one client build; the MCP registration write and the one-command install that wraps it are fixture evidence only, with no real Kimi Code session observed loading the server or recording over MCP, and cache-write, zero-usage observation, namespace hardening, and multi-version stability remain unclaimed.",
             "Cost on the usage lane is agentacct's own estimate from the client-reported tokens against the local pricing table, so it follows that table's coverage of the labels Kimi Code reports and stays an equivalent-cost estimate, never Moonshot billing.",
         ],
     },
