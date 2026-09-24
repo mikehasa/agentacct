@@ -370,8 +370,10 @@ new offsets (and re-derive its record hash) so a from-zero replay still
 interleaves both spools in arrival order.
 
 Compaction is therefore what makes an earlier `evidence prune` durable: after
-it, a rebuild from the compacted spool reproduces the live projection, instead
-of replaying the pruned versions back in. The projection's own receipt
+it, a rebuild from the compacted spool no longer replays the pruned versions
+back in. It is not a byte-for-byte copy of the live projection: rows the guards
+keep — a guarded twin of a pruned version, a `client_hook` row — still replay
+into it, exactly as they did before the compaction. The projection's own receipt
 `spool_offset` values deliberately keep their pre-compaction coordinates — they
 are arrival metadata of the row as it was received, no read path resolves them
 against the spool, and rewriting them would bump the projection's destructive
@@ -397,21 +399,77 @@ change a conclusion:
   re-bound to the new end. A verification mismatch, a failed archive, or a
   failed replay aborts with the live spool byte-for-byte as it was.
 
-**Blocking verification.** Before the swap the store rebuilds the projection
-from the candidate spool files in a scratch directory and compares it with the
-live projection: twenty counts — evidence versions (including conflicts),
+**Blocking verification.** Before the swap the store rebuilds the projection from
+zero out of the *compacted candidate* in a scratch directory, and requires the
+rebuild to still carry everything the live projection answers for: every row of
+every table a reader can reach — versions (including conflict flags),
 dimensions, acknowledgements, receipts by disposition, claimed-link versions and
-receipts, refreshable-usage batch receipts, revisions (including current), heads
-(including tombstoned), conflicts and transitions, and `spool_errors` — plus the
-entire arrival order (a digest and its row count, exact) and the invalid-record
-count the rebuild saw. Anything that differs blocks the swap, leaves the live
-spool untouched, and is reported. If an archive was requested, its bytes are
-also read back and compared with the snapshot byte-for-byte and line-for-line
-before the snapshot link is released. The command reports that comparison as the
-`verification` mapping — `equivalent`, `mismatches`, a per-count
-`current`/`rebuilt` pair, and the `outcome` (`dry_run`, `nothing_to_do`,
-`swapped`, or `aborted`, with an `abort_reason`); a real run that reports
-`swapped: true` is one whose verification passed.
+receipts, refreshable-usage batch receipts, revisions, heads, conflicts,
+transitions, and `spool_errors` — as identities and facts, plus the relative
+arrival order of every live evidence id (a digest, exact). Anything missing
+blocks the swap, leaves the live spool untouched, and is reported. The candidate
+must also be the snapshot's own remainder: its byte count has to equal what the
+scan measured for the kept rows, and its row count has to equal `kept_rows`,
+because a kept row is copied verbatim. Identities a writer appended *after* the
+snapshot are excluded from the comparison: they are copied to the candidate
+verbatim at swap time, so they cannot read as rows the compaction lost.
+
+The comparison is a *containment* rather than an equality, and that is the one
+subtlety worth spelling out. `prune_versions` deletes versions, receipts,
+dimensions, and acknowledgements for rows the append-only spool still holds —
+conflict and duplicate versions included — while replay only ever moves forward
+from the EOF cursor, so a from-zero rebuild of a spool *legitimately* carries
+rows the live projection no longer has. Comparing a rebuild with the live
+projection for equality therefore reports a correct compaction as lossy on any
+store that has ever been pruned; measured on the 22.8 GB store this way, four
+conflict versions and two refreshable transitions differed for that reason
+alone, and the swap was refused. Comparing the *other* direction cannot be
+invalidated that way — prune only ever removes rows — and two properties of the
+drop rule make it exact rather than merely suggestive:
+
+- a dropped row's `idempotency_key` is absent from the live projection, which is
+  what "droppable" means, so no live version, receipt, dimension, or
+  acknowledgement shares its key: removing it cannot change a live row's facts,
+  its receipt disposition, or its conflict flags;
+- every row sharing a live key is kept, so the rebuild replays each live key's
+  whole group, in order, and reproduces those facts exactly.
+
+A same-basis baseline — replaying the spool as it is and comparing two from-zero
+rebuilds — sounds stricter, but it is neither sound nor affordable: dropping a
+record changes its own from-zero replay by exactly that record, so the two sides
+can never be equal once anything is dropped, and on the 22.8 GB store a from-zero
+replay of the 3 M row spool runs at roughly 137 rows/s (the replay opens a
+database connection per row), which is about six hours. The rebuild that is
+compared here is bounded by the *kept* rows instead — a minute, on a store that
+drops three million rows to keep sixty thousand — and it is opened *without
+durability* (`EvidenceStore(..., durable=False)`), because a scratch projection
+has nothing to lose and a live store's per-row fsync costs orders of magnitude
+more than the replay itself.
+
+The counts the store reports for both sides (`live` and `rebuilt`) are context,
+not the comparison: the rebuilt side normally carries more rows, because it
+resurrects the ones prune removed.
+
+One boundary makes that containment exact instead of merely strict. The drop
+rule only ever removes *main-spool* rows, so a live evidence row that no kept
+main-spool row answers for — the refreshable-usage lane projects its own
+evidence from its own file, and a row an older code path left behind has no
+record anywhere — cannot have been removed by this command, and the check does
+not require the rebuild to carry it. The identities the kept rows do carry are
+required in full; every eligibility decision is recorded as
+`verification.live_rows_checked`. On the 22.8 GB store this is exactly what the
+four surviving `v1_compat` usage rows need: the live projection has them, no
+main-spool row answers for them, and a from-zero rebuild of the spool has never
+produced them.
+
+If an archive was requested, its bytes are also read back and compared with the
+snapshot byte-for-byte and line-for-line before the snapshot link is released.
+The command reports the comparison as the `verification` mapping —
+`equivalent`, `mismatches`, `live_rows_checked`, `arrival_order_equal`, a
+per-count `live`/`rebuilt` pair, and the
+`outcome` (`dry_run`, `nothing_to_do`, `swapped`, or `aborted`, with an
+`abort_reason`); a real run that reports `swapped: true` is one whose
+verification passed.
 
 **Archive and result.** With the default `--archive`, the pre-compaction bytes
 are kept in an `archive/` directory inside the store:
@@ -435,17 +493,22 @@ dataclass: `dry_run`, `spool_bytes_before`, `spool_bytes_after`, `rows_before`,
 `rows_after`, `dropped_rows`, `kept_rows`, `dropped_bytes`, `archived_path`,
 `archive_bytes`, `swapped`, `generation`, `verification`, `warnings`.
 
-**Dry-run semantics.** The default is a dry run: it counts, builds the candidate
-outside the store and runs the same blocking verification, but writes nothing —
-every file in the store stays exactly as it was found, and `spool_bytes_after`,
-`rows_after`, `dropped_rows`, and `dropped_bytes` describe what a real run would
-produce. `archived_path` stays empty because no archive is written. A real
-compaction needs both `--write` and `--yes`, so a stray keystroke cannot rewrite
-the evidence log; `--write` without `--yes` exits with an error instead of
-asking an interactive question. Neither mode changes evidence semantics:
-envelopes, receipts, acknowledgements, conflicts, current facts, and the query
-answers of the projection are unchanged, and the command says so in its own
-output.
+**Dry-run semantics.** The default is a dry run, and it is deliberately cheap:
+it scans the spool, classifies every row with the same drop rule, and reports
+what a real run would drop, keep, and archive — no candidate file, no scratch
+workspace, and no rebuild, because rebuilding the candidate projection is the
+heaviest part of the write path. Every file in the store stays exactly as it was
+found, and `spool_bytes_after`, `rows_after`, `dropped_rows`, and
+`dropped_bytes` describe what a real run would produce (a kept row is copied
+verbatim, so the projected size is arithmetic). Its `verification` reports
+`outcome=dry_run`, `equivalent=null`, and a reason stating that the blocking
+comparison runs only with `--write`. `archived_path` stays empty because no
+archive is written. A real compaction needs both `--write` and `--yes`, so a
+stray keystroke cannot rewrite the evidence log; `--write` without `--yes` exits
+with an error instead of asking an interactive question. Neither mode changes
+evidence semantics: envelopes, receipts, acknowledgements, conflicts, current
+facts, and the query answers of the projection are unchanged, and the command
+says so in its own output.
 
 **Preventing the next 20 GiB (follow-up work, not implemented here).** A one-off
 compaction only resets the clock, and the same log will grow again as pruned

@@ -269,6 +269,14 @@ def test_evidence_compact_spool_is_a_dry_run_by_default(tmp_path) -> None:
     assert payload["dropped_rows"] == 2
     assert payload["kept_rows"] == 1
     assert payload["dropped_bytes"] > 0
+    # A dry run rebuilds nothing, and its report says so instead of claiming an
+    # equivalence it never established.
+    assert payload["verification"]["outcome"] == "dry_run"
+    assert payload["verification"]["equivalent"] is None
+    assert payload["verification"]["candidate_rows"] == payload["kept_rows"]
+    assert payload["verification"]["candidate_bytes"] == payload["spool_bytes_after"]
+    assert "counts" not in payload["verification"]
+    assert "--write" in payload["verification"]["reason"]
     # A dry run may name the archive it would write, but must never create one.
     assert not list(evidence_root.rglob("*archive*"))
     assert (
@@ -280,6 +288,9 @@ def test_evidence_compact_spool_is_a_dry_run_by_default(tmp_path) -> None:
     human = runner.invoke(app, ["evidence", "compact-spool", "--store-dir", str(store)])
     assert human.exit_code == 0, human.output
     assert human.output.startswith("DRY RUN")
+    assert "Blocking verification:" in human.output
+    assert "not run" in human.output
+    assert "--write" in human.output
     assert "Nothing was removed. Re-run with --write --yes to compact the spool." in human.output
 
 
@@ -328,6 +339,19 @@ def test_evidence_compact_spool_write_compacts_and_keeps_the_projection(tmp_path
     assert archive.is_file()
     assert payload["archive_bytes"] == archive.stat().st_size > 0
 
+    # The gate rebuilt the compacted candidate from zero and checked that every
+    # row the live projection answers for is still there, in the same order.
+    verification = payload["verification"]
+    assert verification["outcome"] == "swapped"
+    assert verification["equivalent"] is True
+    assert verification["mismatches"] == {}
+    assert verification["live_rows_checked"] > 0
+    assert verification["arrival_order_equal"] is True
+    # The counts are reported for both sides and are *not* the comparison: the
+    # rebuild legitimately carries the rows prune removed.
+    assert verification["counts"]["evidence_versions"]["live"] == 1
+    assert verification["counts"]["evidence_versions"]["rebuilt"] == 1
+
     # Queries, receipts, and the reopened store see exactly what they saw before.
     listing_after = runner.invoke(app, ["evidence", "list", "--store-dir", str(store), "--json"])
     assert listing_after.exit_code == 0, listing_after.output
@@ -342,6 +366,32 @@ def test_evidence_compact_spool_write_compacts_and_keeps_the_projection(tmp_path
     assert human.output.startswith("Nothing to compact —")
     assert "Drop: nothing" in human.output
     assert "This is local storage maintenance:" in human.output
+
+
+def test_evidence_compact_spool_reports_both_sides_of_every_count(tmp_path) -> None:
+    store = tmp_path / "state"
+    _seed_compaction_store(store, unreachable=2)
+
+    result = runner.invoke(
+        app,
+        ["evidence", "compact-spool", "--store-dir", str(store), "--write", "--yes", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    counts = json.loads(result.output)["verification"]["counts"]
+    # Every count carries both sides, named for what they are: the live
+    # projection and the rebuild of the compacted candidate.
+    assert counts
+    for entry in counts.values():
+        assert set(entry) == {"live", "rebuilt"}
+
+    human = runner.invoke(
+        app,
+        ["evidence", "compact-spool", "--store-dir", str(store), "--write", "--yes"],
+    )
+    assert human.exit_code == 0, human.output
+    assert "Nothing to compact —" in human.output
+    assert "Blocking verification:" in human.output
+    assert "outcome=nothing_to_do" in human.output
 
 
 def test_evidence_compact_spool_no_archive_leaves_no_archive_file(tmp_path) -> None:
