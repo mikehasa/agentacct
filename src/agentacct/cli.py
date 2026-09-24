@@ -7267,10 +7267,15 @@ def evidence_compact_spool(
     """
 
     if write and not yes:
-        raise typer.BadParameter(
+        # Print through this module's console rather than raising BadParameter:
+        # Typer's usage-error panel renders to stderr under newer Click/Typer
+        # resolutions, so the refusal has to be on stdout to be part of the
+        # command's own output (and to stay assertion-stable across versions).
+        console.print(
             "--write replaces the live spool, so it also needs --yes. Run it without --write first to see "
             "exactly what would be dropped, kept, and archived"
         )
+        raise typer.Exit(code=2)
     from .evidence_store import EvidenceStore
 
     resolved = _resolve_cli_store_dir(store_dir).path

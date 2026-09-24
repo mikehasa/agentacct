@@ -292,7 +292,9 @@ def test_evidence_compact_spool_write_requires_yes(tmp_path) -> None:
     result = runner.invoke(app, ["evidence", "compact-spool", "--store-dir", str(store), "--write"])
 
     assert result.exit_code != 0
-    assert "--yes" in result.output
+    # The console wraps to the terminal width, so assert on whitespace-collapsed
+    # output: at 80 columns the refusal text wraps after "Run".
+    assert "--yes" in " ".join(result.output.split())
     assert spool.read_bytes() == before
 
 
