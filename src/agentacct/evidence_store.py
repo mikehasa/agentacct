@@ -23,16 +23,25 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
+import tempfile
 import time
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import IO, Any, Iterator, Mapping, Sequence
 
-from .evidence import ClaimedLink, EvidenceEnvelope, canonical_digest, canonical_json_bytes, normalize_timestamp
+from .evidence import (
+    EVIDENCE_SCHEMA_VERSION,
+    ClaimedLink,
+    EvidenceEnvelope,
+    canonical_digest,
+    canonical_json_bytes,
+    normalize_timestamp,
+)
 from .refreshable_usage import refreshable_usage_usage_material_digest_from_material
 
 
@@ -55,6 +64,67 @@ _PRUNE_DENYLISTED_SOURCE_TYPES = frozenset({"client_hook", "local_client_log"})
 _PRUNE_DEFAULT_SOURCE_TYPES = ("mcp_agent_reported",)
 _PRUNE_DEFAULT_EVENT_TYPES = ("tool_activity_observed",)
 _AUTO_PRUNE_METADATA_KEY = "last_auto_prune_at"
+
+# Spool compaction (cold storage). The append-only spool is never trimmed by
+# prune, so the bytes of a pruned shadow row stay on disk forever even though
+# replay only moves forward and no query can reach them again. Dropping them is
+# only safe under the same guards prune uses, plus a blocking verification that
+# rebuilds the projection from the candidate spool before the swap.
+_COMPACTION_GENERATION_KEY = "spool_compaction_generation"
+_COMPACTION_TIMESTAMP_KEY = "last_compacted_at"
+_COMPACTION_ARCHIVE_DIRNAME = "archive"
+_COMPACTION_ARCHIVE_LEVEL = 12
+_COMPACTION_COPY_CHUNK = 4 * 1024 * 1024
+_COMPACTION_VERIFY_PREFIX = "agentacct-spool-compaction-verify-"
+_COMPACTION_DROP = "drop"
+_COMPACTION_KEEP = "keep"
+_COMPACTION_UNCLASSIFIED = "unclassified"
+
+# Every compared count of the blocking verification. Each entry is one
+# ``SELECT COUNT(*)``; the names are the verification's report keys.
+_COMPACTION_COUNT_QUERIES: tuple[tuple[str, str], ...] = (
+    ("evidence_versions", "SELECT COUNT(*) FROM evidence_versions"),
+    ("evidence_versions_conflict", "SELECT COUNT(*) FROM evidence_versions WHERE is_conflict = 1"),
+    ("evidence_dimensions", "SELECT COUNT(*) FROM evidence_dimensions"),
+    ("evidence_acknowledgements", "SELECT COUNT(*) FROM evidence_acknowledgements"),
+    ("evidence_receipts", "SELECT COUNT(*) FROM evidence_receipts"),
+    (
+        "evidence_receipts_inserted",
+        "SELECT COUNT(*) FROM evidence_receipts WHERE disposition = 'inserted'",
+    ),
+    (
+        "evidence_receipts_duplicate",
+        "SELECT COUNT(*) FROM evidence_receipts WHERE disposition = 'duplicate'",
+    ),
+    (
+        "evidence_receipts_conflict",
+        "SELECT COUNT(*) FROM evidence_receipts WHERE disposition = 'conflict'",
+    ),
+    ("claimed_link_versions", "SELECT COUNT(*) FROM claimed_link_versions"),
+    ("claimed_link_versions_conflict", "SELECT COUNT(*) FROM claimed_link_versions WHERE is_conflict = 1"),
+    (
+        "claimed_link_receipts_inserted",
+        "SELECT COUNT(*) FROM claimed_link_receipts WHERE disposition = 'inserted'",
+    ),
+    (
+        "claimed_link_receipts_duplicate",
+        "SELECT COUNT(*) FROM claimed_link_receipts WHERE disposition = 'duplicate'",
+    ),
+    ("refreshable_usage_batch_receipts", "SELECT COUNT(*) FROM refreshable_usage_batch_receipts"),
+    ("refreshable_usage_revisions", "SELECT COUNT(*) FROM refreshable_usage_revisions"),
+    (
+        "refreshable_usage_revisions_current",
+        "SELECT COUNT(*) FROM refreshable_usage_revisions WHERE status = 'current'",
+    ),
+    ("refreshable_usage_heads", "SELECT COUNT(*) FROM refreshable_usage_heads"),
+    (
+        "refreshable_usage_heads_tombstoned",
+        "SELECT COUNT(*) FROM refreshable_usage_heads WHERE tombstoned = 1",
+    ),
+    ("refreshable_usage_conflicts", "SELECT COUNT(*) FROM refreshable_usage_conflicts"),
+    ("refreshable_usage_transitions", "SELECT COUNT(*) FROM refreshable_usage_transitions"),
+    ("spool_errors", "SELECT COUNT(*) FROM spool_errors"),
+)
 
 
 @dataclass(frozen=True)
@@ -370,6 +440,101 @@ class EvidencePruneResult:
             "bytes_reclaimed": self.bytes_reclaimed(),
             "vacuumed": self.vacuumed,
         }
+
+
+@dataclass(frozen=True)
+class EvidenceSpoolCompactionResult:
+    """Outcome of ``EvidenceStore.compact_spool``.
+
+    ``kept_rows`` counts the snapshot rows that survived the drop rule, while
+    ``rows_after`` is the final live spool row count: a concurrent writer that
+    appends between the snapshot and the swap adds rows, and those are copied
+    verbatim rather than filtered. ``dropped_bytes`` is the exact byte count
+    removed, ``archive_bytes`` is the verified archive size (0 when no archive
+    was written), and ``verification`` carries the blocking comparison that
+    gated the swap: the per-count ``current``/``rebuilt`` values plus the
+    equality flags.
+    """
+
+    dry_run: bool
+    spool_bytes_before: int
+    spool_bytes_after: int
+    rows_before: int
+    rows_after: int
+    dropped_rows: int
+    kept_rows: int
+    dropped_bytes: int
+    archived_path: str | None
+    archive_bytes: int | None
+    swapped: bool
+    generation: int
+    verification: dict[str, Any]
+    warnings: tuple[str, ...]
+
+    def bytes_reclaimed(self) -> int:
+        return max(0, self.spool_bytes_before - self.spool_bytes_after)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "dry_run": self.dry_run,
+            "spool_bytes_before": self.spool_bytes_before,
+            "spool_bytes_after": self.spool_bytes_after,
+            "rows_before": self.rows_before,
+            "rows_after": self.rows_after,
+            "dropped_rows": self.dropped_rows,
+            "kept_rows": self.kept_rows,
+            "dropped_bytes": self.dropped_bytes,
+            "archived_path": self.archived_path,
+            "archive_bytes": self.archive_bytes,
+            "swapped": self.swapped,
+            "generation": self.generation,
+            "verification": dict(self.verification),
+            "warnings": list(self.warnings),
+            "bytes_reclaimed": self.bytes_reclaimed(),
+        }
+
+
+@dataclass(frozen=True)
+class _SpoolCompactionPlan:
+    """What a filtered candidate spool holds, before anything is swapped."""
+
+    rows_before: int
+    rows_kept: int
+    rows_dropped: int
+    unclassified_rows: int
+    dropped_bytes: int
+    candidate_main_bytes: int
+    candidate_refreshable_bytes: int
+    refreshable_rows: int
+    fences_remapped: int
+
+
+@dataclass(frozen=True)
+class _SpoolCompactionPreparation:
+    """The locked read of a compaction: snapshots, guards, and the baseline.
+
+    ``main_identity``/``refreshable_identity`` are the ``(st_dev, st_ino)`` of
+    the spools the snapshots were linked from. They are re-checked under the
+    retaken lock, because the unlocked phase must not swap a candidate onto a
+    spool file that another actor replaced meanwhile.
+    """
+
+    dry_run: bool
+    generation: int
+    spool_bytes_before: int
+    refreshable_bytes_before: int
+    surviving_keys: frozenset[str]
+    guarded_ids: frozenset[str]
+    current: Mapping[str, Any]
+    main_source: Path
+    refreshable_source: Path
+    main_identity: tuple[int, int] | None
+    refreshable_identity: tuple[int, int] | None
+    snapshot_main: Path | None
+    snapshot_refreshable: Path | None
+    candidate_main: Path
+    candidate_refreshable: Path
+    workspace: Path | None
 
 
 def _owner_only(path: Path, mode: int) -> None:
@@ -2771,6 +2936,1159 @@ class EvidenceStore:
         self._set_stored_replay_offset(_AUTO_PRUNE_METADATA_KEY, int(now))
         return result
 
+    def compact_spool(
+        self,
+        *,
+        dry_run: bool = True,
+        archive: bool = True,
+        now: float | None = None,
+    ) -> EvidenceSpoolCompactionResult:
+        """Drop the spool rows the projection can no longer reach.
+
+        ``prune_versions`` trims the projection and never the append-only
+        ``spool.jsonl``, so a pruned shadow row's bytes stay on disk forever
+        even though ``recover`` only ever replays FORWARD from the EOF cursor
+        and no query can reach them again. This rewrites the spool without
+        exactly those rows:
+
+        * Droppable = the default prune target (``mcp_agent_reported`` /
+          ``tool_activity_observed``) whose ``idempotency_key`` no longer
+          appears in ``evidence_versions``, whose ``evidence_id`` is not
+          referenced by the refreshable-usage or claimed-link lanes (the
+          exclusion subqueries ``prune_versions`` uses), and whose record still
+          validates. ``client_hook`` and ``local_client_log`` are never
+          dropped, and every other row is rewritten byte for byte, in order,
+          so duplicate receipts stay visible exactly as before.
+        * The refreshable-usage spool is rewritten with re-mapped
+          ``main_spool_fence`` values and re-derived ``record_hash`` digests,
+          so a from-zero replay still interleaves both spools in arrival order.
+        * The swap only happens after a blocking verification rebuilds the
+          projection from the candidate files in a scratch directory and finds
+          every compared count, the whole arrival order, and the spool-error
+          count identical to the live projection. A mismatch, an archive
+          failure, or a replay failure aborts with the original spool
+          untouched.
+        * A single ``os.link`` snapshot keeps the original bytes alive — never a
+          second copy of the spool. With ``archive`` the snapshot is compressed
+          to ``<store dir>/archive/spool-<UTC date>-gen<generation>.jsonl.zst``
+          (zstandard level 12) and read back before the snapshot link is
+          released.
+
+        Only ``dry_run=False`` writes. A dry run counts, builds the candidate in
+        a scratch directory, runs the same blocking verification, and leaves
+        every file in the store exactly as it found it. A run that finds nothing
+        droppable rewrites nothing.
+
+        Receipt ``spool_offset`` values in the projection keep their
+        pre-compaction coordinates: they are arrival metadata for the row as it
+        was received, no read path resolves them against the spool, and
+        rewriting them would bump the projection's destructive revision and
+        invalidate served snapshots for a metadata-only change.
+        """
+
+        moment = time.time() if now is None else float(now)
+        preparation: _SpoolCompactionPreparation | None = None
+        try:
+            # The snapshot, the drop rule's inputs, and the compared projection
+            # are read under the lock; the 20 GB scan, the verification rebuild
+            # and the archive then run unlocked so a live watcher keeps
+            # appending, and the lock is retaken only to append those receipts
+            # and to exchange the files.
+            with self._locked():
+                preparation = self._prepare_spool_compaction(dry_run=dry_run)
+            return self._run_spool_compaction(preparation, archive=archive, now=moment)
+        finally:
+            if preparation is not None:
+                self._discard_spool_compaction_files(preparation)
+
+    def _prepare_spool_compaction(self, *, dry_run: bool) -> _SpoolCompactionPreparation:
+        """Read everything that only holds still while no writer can move it."""
+
+        generation = self._compaction_generation() + 1
+        spool_bytes_before = self._path_size(self.spool_path)
+        refreshable_bytes_before = self._path_size(self.refreshable_usage_spool_path)
+        if not dry_run:
+            # Project every durable receipt before comparing, so the blocking
+            # verification compares like with like even after a crash that left
+            # spool records unprojected.
+            self._recover_unlocked()
+        surviving_keys, guarded_ids = self._compaction_protected_identities()
+        current = self._projection_compaction_summary()
+
+        token = uuid.uuid4().hex[:16]
+        if dry_run:
+            # Nothing in the store may change, so the candidate (and the
+            # verification store) live outside it.
+            workspace = Path(tempfile.mkdtemp(prefix=_COMPACTION_VERIFY_PREFIX))
+            return _SpoolCompactionPreparation(
+                dry_run=True,
+                generation=generation,
+                spool_bytes_before=spool_bytes_before,
+                refreshable_bytes_before=refreshable_bytes_before,
+                surviving_keys=surviving_keys,
+                guarded_ids=guarded_ids,
+                current=current,
+                main_source=self.spool_path,
+                refreshable_source=self.refreshable_usage_spool_path,
+                main_identity=None,
+                refreshable_identity=None,
+                snapshot_main=None,
+                snapshot_refreshable=None,
+                candidate_main=workspace / EVIDENCE_SPOOL_FILENAME,
+                candidate_refreshable=workspace / REFRESHABLE_USAGE_SPOOL_FILENAME,
+                workspace=workspace,
+            )
+
+        snapshot_main = self.evidence_root / f".spool-compaction-{token}.source.jsonl"
+        snapshot_refreshable = self.evidence_root / f".spool-compaction-{token}.source-refreshable.jsonl"
+        candidate_main = self.evidence_root / f".spool-compaction-{token}.jsonl"
+        candidate_refreshable = self.evidence_root / f".spool-compaction-{token}.refreshable.jsonl"
+        main_identity = self._spool_identity(self.spool_path)
+        refreshable_identity = self._spool_identity(self.refreshable_usage_spool_path)
+        if spool_bytes_before:
+            os.link(self.spool_path, snapshot_main)
+        else:
+            snapshot_main = None
+        if refreshable_bytes_before:
+            os.link(self.refreshable_usage_spool_path, snapshot_refreshable)
+        else:
+            snapshot_refreshable = None
+        return _SpoolCompactionPreparation(
+            dry_run=False,
+            generation=generation,
+            spool_bytes_before=spool_bytes_before,
+            refreshable_bytes_before=refreshable_bytes_before,
+            surviving_keys=surviving_keys,
+            guarded_ids=guarded_ids,
+            current=current,
+            main_source=snapshot_main if snapshot_main is not None else self.spool_path,
+            refreshable_source=(
+                snapshot_refreshable
+                if snapshot_refreshable is not None
+                else self.refreshable_usage_spool_path
+            ),
+            main_identity=main_identity,
+            refreshable_identity=refreshable_identity,
+            snapshot_main=snapshot_main,
+            snapshot_refreshable=snapshot_refreshable,
+            candidate_main=candidate_main,
+            candidate_refreshable=candidate_refreshable,
+            workspace=None,
+        )
+
+    def _run_spool_compaction(
+        self,
+        preparation: _SpoolCompactionPreparation,
+        *,
+        archive: bool,
+        now: float,
+    ) -> EvidenceSpoolCompactionResult:
+        dry_run = preparation.dry_run
+        generation = preparation.generation
+        spool_bytes_before = preparation.spool_bytes_before
+        refreshable_bytes_before = preparation.refreshable_bytes_before
+        main_limit = preparation.spool_bytes_before
+        refreshable_limit = preparation.refreshable_bytes_before
+        candidate_main = preparation.candidate_main
+        candidate_refreshable = preparation.candidate_refreshable
+        warnings: list[str] = []
+        archived_path: Path | None = None
+        archive_bytes = 0
+        verification: dict[str, Any] = {}
+        plan = self._filter_spool_snapshot(
+            main_source=preparation.main_source,
+            main_limit=main_limit,
+            refreshable_source=preparation.refreshable_source,
+            refreshable_limit=refreshable_limit,
+            candidate_main=candidate_main,
+            candidate_refreshable=candidate_refreshable,
+            surviving_keys=preparation.surviving_keys,
+            guarded_ids=preparation.guarded_ids,
+            warnings=warnings,
+        )
+        if plan.unclassified_rows:
+            warnings.append(
+                f"{plan.unclassified_rows} spool record(s) could not be classified as the default "
+                "prune target; they are retained verbatim rather than dropped"
+            )
+        if plan.rows_dropped == 0:
+            return self._compaction_result(
+                dry_run=dry_run,
+                plan=plan,
+                spool_bytes_before=spool_bytes_before,
+                spool_bytes_after=spool_bytes_before,
+                rows_after=plan.rows_before,
+                archived_path=None,
+                archive_bytes=0,
+                swapped=False,
+                generation=generation,
+                verification=self._compaction_nothing_to_do(preparation.current),
+                warnings=warnings,
+            )
+
+        verification = self._verify_compaction_candidate(
+            candidate_main=candidate_main,
+            candidate_refreshable=candidate_refreshable,
+            current=preparation.current,
+            warnings=warnings,
+        )
+        verification["candidate_rows"] = plan.rows_kept
+        verification["candidate_bytes"] = plan.candidate_main_bytes
+        verification["refreshable_records"] = plan.refreshable_rows
+        verification["refreshable_fences_remapped"] = plan.fences_remapped
+        if verification.get("equivalent") is not True:
+            verification["outcome"] = "aborted"
+            verification["abort_reason"] = (
+                "the rebuilt projection did not match the live projection; the spool was left untouched"
+            )
+            warnings.append(
+                "blocking verification failed, so nothing was swapped: "
+                f"{sorted(verification.get('mismatches', {}))}"
+            )
+            return self._compaction_result(
+                dry_run=dry_run,
+                plan=plan,
+                spool_bytes_before=spool_bytes_before,
+                spool_bytes_after=spool_bytes_before,
+                rows_after=plan.rows_before,
+                archived_path=None,
+                archive_bytes=0,
+                swapped=False,
+                generation=generation,
+                verification=verification,
+                warnings=warnings,
+            )
+
+        if archive and not dry_run:
+            try:
+                archived_path, archive_bytes = self._archive_compaction_snapshot(
+                    snapshot=(
+                        preparation.snapshot_main
+                        if preparation.snapshot_main is not None
+                        else preparation.main_source
+                    ),
+                    generation=generation,
+                    now=now,
+                )
+            except Exception as exc:  # archive failures must abort the swap
+                verification["outcome"] = "aborted"
+                verification["abort_reason"] = f"the cold archive failed: {type(exc).__name__}: {exc}"
+                warnings.append(
+                    "the cold archive could not be written and read back, so nothing was swapped: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return self._compaction_result(
+                    dry_run=dry_run,
+                    plan=plan,
+                    spool_bytes_before=spool_bytes_before,
+                    spool_bytes_after=spool_bytes_before,
+                    rows_after=plan.rows_before,
+                    archived_path=None,
+                    archive_bytes=0,
+                    swapped=False,
+                    generation=generation,
+                    verification=verification,
+                    warnings=warnings,
+                )
+            if preparation.snapshot_main is not None:
+                # The verified archive is the copy of record for the exact
+                # pre-compaction bytes; release the hard link now. (The cleanup
+                # pass unlinks again, which is a no-op.)
+                preparation.snapshot_main.unlink(missing_ok=True)
+
+        if dry_run:
+            verification["outcome"] = "dry_run"
+            return self._compaction_result(
+                dry_run=True,
+                plan=plan,
+                spool_bytes_before=spool_bytes_before,
+                spool_bytes_after=plan.candidate_main_bytes,
+                rows_after=plan.rows_kept,
+                archived_path=None,
+                archive_bytes=0,
+                swapped=False,
+                generation=generation,
+                verification=verification,
+                warnings=warnings,
+            )
+
+        with self._locked():
+            if not self._compaction_swap_is_safe(preparation):
+                verification["outcome"] = "aborted"
+                verification["abort_reason"] = (
+                    "the live spools were replaced or truncated while the candidate was built; "
+                    "the spool was left untouched"
+                )
+                warnings.append(
+                    "the live spools changed identity while the candidate was built, so nothing was swapped"
+                )
+                self._discard_compaction_archive(archived_path, warnings)
+                return self._compaction_result(
+                    dry_run=False,
+                    plan=plan,
+                    spool_bytes_before=spool_bytes_before,
+                    spool_bytes_after=spool_bytes_before,
+                    rows_after=plan.rows_before,
+                    archived_path=None,
+                    archive_bytes=0,
+                    swapped=False,
+                    generation=generation,
+                    verification=verification,
+                    warnings=warnings,
+                )
+            swapped, new_main_size, _ = self._apply_compaction_swap(
+                plan=plan,
+                candidate_main=candidate_main,
+                candidate_refreshable=candidate_refreshable,
+                snapshot_main_size=main_limit,
+                snapshot_refreshable_size=refreshable_limit,
+                generation=generation,
+                now=now,
+                warnings=warnings,
+            )
+        if not swapped:
+            verification["outcome"] = "aborted"
+            verification["abort_reason"] = (
+                "the spool changed while the candidate was built; the live spool was left untouched"
+            )
+            self._discard_compaction_archive(archived_path, warnings)
+            return self._compaction_result(
+                dry_run=False,
+                plan=plan,
+                spool_bytes_before=spool_bytes_before,
+                spool_bytes_after=spool_bytes_before,
+                rows_after=plan.rows_before,
+                archived_path=None,
+                archive_bytes=0,
+                swapped=False,
+                generation=generation,
+                verification=verification,
+                warnings=warnings,
+            )
+        verification["outcome"] = "swapped"
+        if archived_path is None:
+            warnings.append(
+                "no archive was written, so the dropped rows exist only as the compacted spool's absence"
+            )
+        return self._compaction_result(
+            dry_run=False,
+            plan=plan,
+            spool_bytes_before=spool_bytes_before,
+            spool_bytes_after=new_main_size,
+            rows_after=self._count_spool_rows(self.spool_path),
+            archived_path=archived_path,
+            archive_bytes=archive_bytes,
+            swapped=True,
+            generation=generation,
+            verification=verification,
+            warnings=warnings,
+        )
+
+    @staticmethod
+    def _spool_identity(path: Path) -> tuple[int, int] | None:
+        try:
+            info = path.stat()
+        except OSError:
+            return None
+        return (info.st_dev, info.st_ino)
+
+    @staticmethod
+    def _discard_compaction_archive(archived_path: Path | None, warnings: list[str]) -> None:
+        """Drop an archive whose swap never happened.
+
+        The archive exists to keep rows the compaction removed. When the swap
+        aborts the spool still holds them, so the file is redundant — and
+        leaving it would make the next run collide with a generation that was
+        never recorded.
+        """
+
+        if archived_path is None:
+            return
+        try:
+            archived_path.unlink(missing_ok=True)
+        except OSError as exc:  # pragma: no cover - cleanup is best effort
+            warnings.append(f"the archive for an aborted swap could not be removed: {exc}")
+            return
+        warnings.append(
+            f"the swap was aborted, so the archive of the unchanged spool was removed: {archived_path}"
+        )
+
+    def _compaction_swap_is_safe(self, preparation: _SpoolCompactionPreparation) -> bool:
+        """The snapshots must still describe the live spools to swap at all.
+
+        A matching device/inode pair proves the live path still names the very
+        inode that was snapshotted, so the bytes before the snapshot boundary
+        are untouched (the store only ever appends) and the post-snapshot bytes
+        really are this snapshot's extension. Any other store replacing or
+        truncating a spool fails this check and nothing is swapped.
+        """
+
+        if self._spool_identity(self.spool_path) != preparation.main_identity:
+            return False
+        if self._spool_identity(self.refreshable_usage_spool_path) != preparation.refreshable_identity:
+            return False
+        if self._path_size(self.spool_path) < preparation.spool_bytes_before:
+            return False
+        return self._path_size(self.refreshable_usage_spool_path) >= preparation.refreshable_bytes_before
+
+    def _discard_spool_compaction_files(self, preparation: _SpoolCompactionPreparation) -> None:
+        """Remove every temporary the compaction created, swapped or not."""
+
+        for temporary in (
+            preparation.candidate_main,
+            preparation.candidate_refreshable,
+            preparation.snapshot_main,
+            preparation.snapshot_refreshable,
+        ):
+            if temporary is None:
+                continue
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:  # pragma: no cover - cleanup is best effort
+                pass
+        if preparation.workspace is not None:
+            shutil.rmtree(preparation.workspace, ignore_errors=True)
+
+    def _compaction_result(
+        self,
+        *,
+        dry_run: bool,
+        plan: _SpoolCompactionPlan,
+        spool_bytes_before: int,
+        spool_bytes_after: int,
+        rows_after: int,
+        archived_path: Path | None,
+        archive_bytes: int,
+        swapped: bool,
+        generation: int,
+        verification: dict[str, Any],
+        warnings: list[str],
+    ) -> EvidenceSpoolCompactionResult:
+        return EvidenceSpoolCompactionResult(
+            dry_run=dry_run,
+            spool_bytes_before=spool_bytes_before,
+            spool_bytes_after=spool_bytes_after,
+            rows_before=plan.rows_before,
+            rows_after=rows_after,
+            dropped_rows=plan.rows_dropped,
+            kept_rows=plan.rows_kept,
+            dropped_bytes=plan.dropped_bytes,
+            archived_path=str(archived_path) if archived_path is not None else None,
+            archive_bytes=archive_bytes,
+            swapped=swapped,
+            generation=generation,
+            verification=verification,
+            warnings=tuple(warnings),
+        )
+
+    @staticmethod
+    def _count_spool_rows(path: Path) -> int:
+        rows = 0
+        if not path.is_file():
+            return 0
+        with path.open("rb") as handle:
+            while True:
+                raw = handle.readline()
+                if not raw:
+                    break
+                rows += 1
+        return rows
+
+    @staticmethod
+    def _path_size(path: Path | None) -> int:
+        if path is None:
+            return 0
+        try:
+            return path.stat().st_size if path.is_file() else 0
+        except OSError:
+            return 0
+
+    def _compaction_generation(self) -> int:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM store_metadata WHERE key = ?",
+                (_COMPACTION_GENERATION_KEY,),
+            ).fetchone()
+        if row is None:
+            return 0
+        try:
+            return max(0, int(row["value"]))
+        except (TypeError, ValueError):
+            return 0
+
+    def _set_store_metadata(self, key: str, value: str) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                "INSERT INTO store_metadata(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+
+    def _compaction_protected_identities(self) -> tuple[frozenset[str], frozenset[str]]:
+        """Live idempotency keys plus the evidence ids prune never touches.
+
+        A row may only be dropped when its idempotency key answers to nothing in
+        the projection; the id set reuses ``prune_versions``' exclusion
+        subqueries verbatim so a row referenced by the refreshable-usage or
+        claimed-link lanes is never dropped, even if its own version row were
+        ever missing.
+        """
+
+        guarded: set[str] = set()
+        with self._connection() as connection:
+            surviving_keys = frozenset(
+                str(row[0])
+                for row in connection.execute("SELECT DISTINCT idempotency_key FROM evidence_versions")
+            )
+            for sql in (
+                "SELECT evidence_id FROM refreshable_usage_revisions",
+                "SELECT evidence_id FROM refreshable_usage_heads",
+                "SELECT evidence_id FROM refreshable_usage_transitions WHERE evidence_id IS NOT NULL",
+                "SELECT candidate_evidence_id FROM refreshable_usage_conflicts",
+                "SELECT claimed_evidence_id FROM claimed_link_versions",
+                "SELECT observed_evidence_id FROM claimed_link_versions",
+            ):
+                guarded.update(str(row[0]) for row in connection.execute(sql))
+        return surviving_keys, frozenset(guarded)
+
+    def _projection_compaction_summary(self) -> dict[str, Any]:
+        """The compared projection state: counts, arrival order, spool errors.
+
+        The arrival digest walks ``evidence_versions`` in exactly the order
+        ``query(order_by="arrival")`` returns (``first_receipt_sequence`` then
+        ``evidence_id``) without the public method's 10k row cap, so the
+        comparison stays constant-memory on a multi-million row projection.
+        """
+
+        counts: dict[str, int] = {}
+        digest = hashlib.sha256()
+        arrival_rows = 0
+        with self._connection() as connection:
+            for name, sql in _COMPACTION_COUNT_QUERIES:
+                counts[name] = int(connection.execute(sql).fetchone()[0])
+            cursor = connection.execute(
+                "SELECT evidence_id FROM evidence_versions "
+                "ORDER BY first_receipt_sequence ASC, evidence_id ASC"
+            )
+            while True:
+                batch = cursor.fetchmany(20_000)
+                if not batch:
+                    break
+                digest.update("\n".join(str(row[0]) for row in batch).encode("utf-8") + b"\n")
+                arrival_rows += len(batch)
+        return {
+            "counts": counts,
+            "arrival_digest": digest.hexdigest(),
+            "arrival_rows": arrival_rows,
+            "spool_errors": counts["spool_errors"],
+        }
+
+    @staticmethod
+    def _compaction_nothing_to_do(current: Mapping[str, Any]) -> dict[str, Any]:
+        """Verification report for a run with no droppable rows.
+
+        Nothing can differ: with no row dropped the spool bytes are identical,
+        so the projection a rebuild would produce is the projection that is
+        already there.
+        """
+
+        return {
+            "outcome": "nothing_to_do",
+            "equivalent": True,
+            "reason": "no spool row was droppable, so the spool bytes are unchanged",
+            "mismatches": {},
+            "counts": {
+                name: {"current": value} for name, value in dict(current["counts"]).items()
+            },
+            "arrival_order_rows": int(current["arrival_rows"]),
+            "arrival_order_equal": True,
+            "spool_errors_rebuilt": int(current["spool_errors"]),
+            "spool_errors_equal": True,
+        }
+
+    @staticmethod
+    def _compare_compaction_summaries(
+        current: Mapping[str, Any],
+        rebuilt: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        mismatches: dict[str, Any] = {}
+        counts: dict[str, Any] = {}
+        for name, before in dict(current["counts"]).items():
+            after = dict(rebuilt["counts"]).get(name)
+            counts[name] = {"current": before, "rebuilt": after}
+            if before != after:
+                mismatches[name] = {"current": before, "rebuilt": after}
+        arrival_equal = bool(
+            current["arrival_digest"] == rebuilt["arrival_digest"]
+            and current["arrival_rows"] == rebuilt["arrival_rows"]
+        )
+        if not arrival_equal:
+            mismatches["arrival_order"] = {
+                "current_rows": current["arrival_rows"],
+                "rebuilt_rows": rebuilt["arrival_rows"],
+            }
+        spool_errors_equal = bool(current["spool_errors"] == rebuilt["spool_errors"])
+        if not spool_errors_equal:
+            mismatches["spool_errors"] = {
+                "current": current["spool_errors"],
+                "rebuilt": rebuilt["spool_errors"],
+            }
+        verification = {
+            "equivalent": not mismatches,
+            "mismatches": mismatches,
+            "counts": counts,
+            "arrival_order_rows": int(rebuilt["arrival_rows"]),
+            "arrival_order_equal": arrival_equal,
+            "spool_errors_rebuilt": int(rebuilt["spool_errors"]),
+            "spool_errors_equal": spool_errors_equal,
+        }
+        return verification, mismatches
+
+    def _verify_compaction_candidate(
+        self,
+        *,
+        candidate_main: Path,
+        candidate_refreshable: Path | None,
+        current: Mapping[str, Any],
+        warnings: list[str],
+    ) -> dict[str, Any]:
+        """Rebuild the projection from the candidate spools in a scratch store.
+
+        This is the blocking gate: the swap happens only when every compared
+        count, the whole arrival order, and the spool-error count equal the live
+        projection's. A mismatch, a replay failure, or an unusable candidate
+        leaves the original spool in place.
+        """
+
+        try:
+            with tempfile.TemporaryDirectory(prefix=_COMPACTION_VERIFY_PREFIX) as scratch:
+                scratch_store = EvidenceStore(Path(scratch))
+                os.link(candidate_main, scratch_store.spool_path)
+                if candidate_refreshable is not None and candidate_refreshable.is_file():
+                    os.link(candidate_refreshable, scratch_store.refreshable_usage_spool_path)
+                replay = scratch_store.recover()
+                rebuilt = scratch_store._projection_compaction_summary()
+        except Exception as exc:  # noqa: BLE001 - a failed rebuild must abort, not raise
+            warnings.append(
+                "blocking verification could not rebuild the candidate projection, so nothing was swapped: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return {
+                "equivalent": False,
+                "mismatches": {"replay": f"{type(exc).__name__}: {exc}"},
+                "counts": {
+                    name: {"current": value, "rebuilt": None}
+                    for name, value in dict(current["counts"]).items()
+                },
+                "arrival_order_rows": 0,
+                "arrival_order_equal": False,
+                "spool_errors_rebuilt": None,
+                "spool_errors_equal": False,
+            }
+        verification, mismatches = self._compare_compaction_summaries(current, rebuilt)
+        verification["rebuilt_invalid_records"] = int(replay.invalid_records)
+        if mismatches:
+            warnings.append(
+                "the rebuilt projection differs from the live projection, so nothing was swapped: "
+                f"{sorted(mismatches)}"
+            )
+        return verification
+
+    def _filter_spool_snapshot(
+        self,
+        *,
+        main_source: Path,
+        main_limit: int,
+        refreshable_source: Path,
+        refreshable_limit: int,
+        candidate_main: Path,
+        candidate_refreshable: Path,
+        surviving_keys: frozenset[str],
+        guarded_ids: frozenset[str],
+        warnings: list[str],
+    ) -> _SpoolCompactionPlan:
+        """Rewrite the snapshot without the unreachable rows.
+
+        Reads only the snapshot's first ``main_limit`` bytes and tracks the byte
+        offset every kept row lands on, which is what re-maps the refreshable
+        fences. The candidate file is created lazily at the first dropped row,
+        so a spool with nothing to drop is never rewritten at all.
+        """
+
+        refreshable_records, refreshable_fences = self._refreshable_rewrite_plan(
+            refreshable_source, refreshable_limit, warnings
+        )
+        fence_targets = [0] * len(refreshable_fences)
+        fence_index = 0
+        rows_before = rows_kept = rows_dropped = unclassified = dropped_bytes = 0
+        output = None
+        source = (
+            main_source.open("rb")
+            if (main_source is not None and main_limit > 0 and main_source.is_file())
+            else None
+        )
+        try:
+            # The snapshot is a hard link, so a writer appending during this pass
+            # grows the very inode being read: read exactly the prefix that
+            # existed when it was taken and never a byte past it, or the copy of
+            # the post-snapshot bytes would be doubled.
+            buffer = b""
+            consumed = 0
+            offset = 0
+            while source is not None:
+                while b"\n" not in buffer and consumed < main_limit:
+                    chunk = source.read(min(_COMPACTION_COPY_CHUNK, main_limit - consumed))
+                    if not chunk:
+                        break
+                    buffer += chunk
+                    consumed += len(chunk)
+                if not buffer:
+                    break
+                boundary = buffer.find(b"\n")
+                if boundary == -1:
+                    raw, buffer = buffer, b""
+                else:
+                    raw, buffer = buffer[: boundary + 1], buffer[boundary + 1 :]
+                record_start = offset
+                offset += len(raw)
+                rows_before += 1
+                verdict = self._compaction_row_verdict(raw, surviving_keys, guarded_ids)
+                new_offset = record_start - dropped_bytes
+                # A fence names a record boundary and the kept rows keep their
+                # order, so the first kept row at-or-after it becomes the fence.
+                # Records without a readable fence are replayed as invalid
+                # records and never claim a boundary.
+                while fence_index < len(refreshable_fences):
+                    declared = refreshable_fences[fence_index]
+                    if declared is None:
+                        fence_index += 1
+                        continue
+                    if declared > record_start:
+                        break
+                    fence_targets[fence_index] = new_offset
+                    fence_index += 1
+                if verdict == _COMPACTION_DROP:
+                    if output is None:
+                        output = candidate_main.open("xb")
+                        _owner_only(candidate_main, 0o600)
+                        self._copy_spool_prefix(source, output, record_start)
+                        source.seek(consumed)
+                    rows_dropped += 1
+                    dropped_bytes += len(raw)
+                    continue
+                if verdict == _COMPACTION_UNCLASSIFIED:
+                    unclassified += 1
+                rows_kept += 1
+                if output is not None:
+                    output.write(raw)
+            if output is None:
+                candidate_main_bytes = max(0, main_limit)
+            else:
+                candidate_main_bytes = max(0, offset - dropped_bytes)
+            while fence_index < len(refreshable_fences):
+                if refreshable_fences[fence_index] is not None:
+                    fence_targets[fence_index] = candidate_main_bytes
+                fence_index += 1
+        finally:
+            if source is not None:
+                source.close()
+            if output is not None:
+                output.flush()
+                os.fsync(output.fileno())
+                output.close()
+
+        # With nothing dropped the fence mapping is the identity, so there is no
+        # refreshable candidate to write at all: the spool stays untouched.
+        candidate_refreshable_bytes = refreshable_limit
+        fences_remapped = 0
+        if refreshable_records is not None and rows_dropped > 0:
+            with candidate_refreshable.open("xb") as target:
+                _owner_only(candidate_refreshable, 0o600)
+                for raw, fence, target_offset in zip(
+                    refreshable_records, refreshable_fences, fence_targets
+                ):
+                    if fence is None or fence == target_offset:
+                        target.write(raw)
+                        continue
+                    rewritten = self._refreshable_record_with_fence(raw, target_offset)
+                    if rewritten is None:
+                        target.write(raw)
+                        warnings.append(
+                            "a refreshable usage spool record could not be re-encoded with its new fence; "
+                            "it is kept verbatim"
+                        )
+                        continue
+                    target.write(rewritten)
+                    fences_remapped += 1
+                target.flush()
+                os.fsync(target.fileno())
+            candidate_refreshable_bytes = self._path_size(candidate_refreshable)
+        return _SpoolCompactionPlan(
+            rows_before=rows_before,
+            rows_kept=rows_kept,
+            rows_dropped=rows_dropped,
+            unclassified_rows=unclassified,
+            dropped_bytes=dropped_bytes,
+            candidate_main_bytes=candidate_main_bytes,
+            candidate_refreshable_bytes=candidate_refreshable_bytes,
+            refreshable_rows=len(refreshable_records) if refreshable_records is not None else 0,
+            fences_remapped=fences_remapped,
+        )
+
+    @staticmethod
+    def _copy_spool_prefix(source: IO[bytes], target: IO[bytes], length: int) -> None:
+        """Copy exactly ``length`` bytes from the start of an open snapshot."""
+
+        source.seek(0)
+        remaining = length
+        while remaining > 0:
+            chunk = source.read(min(_COMPACTION_COPY_CHUNK, remaining))
+            if not chunk:
+                raise OSError("the spool snapshot ended before the first dropped row")
+            target.write(chunk)
+            remaining -= len(chunk)
+
+    def _compaction_row_verdict(
+        self,
+        raw: bytes,
+        surviving_keys: frozenset[str],
+        guarded_ids: frozenset[str],
+    ) -> str:
+        """Classify one spool line: drop, keep, or unclassified (keep verbatim).
+
+        Unclassified means the line cannot be shown to be the default prune
+        target, so it is always kept: a malformed or unreadable record still
+        replays as the invalid record it always was rather than disappearing.
+        """
+
+        if not raw.strip():
+            return _COMPACTION_KEEP
+        try:
+            record = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return _COMPACTION_UNCLASSIFIED
+        if not isinstance(record, Mapping) or record.get("kind") != "evidence":
+            return _COMPACTION_KEEP
+        payload = record.get("payload")
+        if not isinstance(payload, Mapping):
+            return _COMPACTION_UNCLASSIFIED
+        if payload.get("source_type") not in _PRUNE_DEFAULT_SOURCE_TYPES:
+            return _COMPACTION_KEEP
+        if payload.get("event_type") not in _PRUNE_DEFAULT_EVENT_TYPES:
+            return _COMPACTION_KEEP
+        if payload.get("source_type") in _PRUNE_DENYLISTED_SOURCE_TYPES:
+            return _COMPACTION_KEEP
+        if payload.get("schema_version") != EVIDENCE_SCHEMA_VERSION:
+            return _COMPACTION_UNCLASSIFIED
+        idempotency_key = payload.get("idempotency_key")
+        evidence_id = payload.get("evidence_id")
+        if not isinstance(idempotency_key, str) or not isinstance(evidence_id, str):
+            return _COMPACTION_UNCLASSIFIED
+        if idempotency_key in surviving_keys or evidence_id in guarded_ids:
+            return _COMPACTION_KEEP
+        try:
+            kind, _ = self._validate_spool_record(record)
+        except (TypeError, ValueError, KeyError):
+            return _COMPACTION_UNCLASSIFIED
+        if kind != "evidence":
+            return _COMPACTION_KEEP
+        return _COMPACTION_DROP
+
+    def _refreshable_rewrite_plan(
+        self,
+        source: Path,
+        limit: int,
+        warnings: list[str],
+    ) -> tuple[list[bytes] | None, list[int | None]]:
+        """Read the refreshable snapshot and note each record's fence."""
+
+        if source is None or limit <= 0 or not source.is_file():
+            return None, []
+        records: list[bytes] = []
+        fences: list[int | None] = []
+        previous = 0
+        unreadable = 0
+        unordered = 0
+        with source.open("rb") as handle:
+            offset = 0
+            while offset < limit:
+                raw = handle.readline()
+                if not raw:
+                    break
+                offset += len(raw)
+                records.append(raw)
+                try:
+                    record = json.loads(raw)
+                    _, fence = self._validate_refreshable_usage_spool_record(record)
+                except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError, KeyError):
+                    fences.append(None)
+                    unreadable += 1
+                    continue
+                if fence < previous:
+                    unordered += 1
+                previous = fence
+                fences.append(fence)
+        if unreadable:
+            warnings.append(
+                f"{unreadable} refreshable usage spool record(s) did not validate; they are kept verbatim "
+                "and still replay as invalid records exactly as before"
+            )
+        if unordered:
+            warnings.append(
+                f"{unordered} refreshable usage spool record(s) carry a fence below the previous record's; "
+                "fences are re-mapped in file order"
+            )
+        return records, fences
+
+    @staticmethod
+    def _refreshable_record_with_fence(raw: bytes, fence: int) -> bytes | None:
+        """Re-serialize one refreshable record with a re-mapped fence.
+
+        The record hash covers the fence, so it is re-derived from the same
+        canonical body. Returns None when the line cannot be re-encoded.
+        """
+
+        try:
+            record = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        if not isinstance(record, Mapping):
+            return None
+        body = {key: value for key, value in record.items() if key != "record_hash"}
+        body["main_spool_fence"] = int(fence)
+        return canonical_json_bytes({**body, "record_hash": canonical_digest(body)}) + b"\n"
+
+    def _apply_compaction_swap(
+        self,
+        *,
+        plan: _SpoolCompactionPlan,
+        candidate_main: Path,
+        candidate_refreshable: Path | None,
+        snapshot_main_size: int,
+        snapshot_refreshable_size: int,
+        generation: int,
+        now: float,
+        warnings: list[str],
+    ) -> tuple[bool, int, int]:
+        """Append the post-snapshot receipts, then exchange both spool files.
+
+        Returns ``(swapped, main_bytes, refreshable_bytes)``. The hard link
+        snapshot is never written to, so the bytes recovered here are the ones
+        committed after the snapshot: they are copied verbatim, and their
+        refreshable fences are translated by the same offset delta.
+        """
+
+        current_main_size = self._path_size(self.spool_path)
+        if current_main_size < snapshot_main_size:
+            warnings.append("the spool shrank while the candidate was built; refusing to swap")
+            return False, 0, 0
+        current_refreshable_size = self._path_size(self.refreshable_usage_spool_path)
+        if current_refreshable_size < snapshot_refreshable_size:
+            warnings.append(
+                "the refreshable usage spool shrank while the candidate was built; refusing to swap"
+            )
+            return False, 0, 0
+        if not candidate_main.is_file():
+            warnings.append("the compacted spool candidate is missing; refusing to swap")
+            return False, 0, 0
+
+        delta_start = plan.candidate_main_bytes
+        with self.spool_path.open("rb") as source, candidate_main.open("ab") as target:
+            try:
+                os.fchmod(target.fileno(), 0o600)
+            except OSError:
+                pass
+            source.seek(snapshot_main_size)
+            shutil.copyfileobj(source, target, _COMPACTION_COPY_CHUNK)
+            target.flush()
+            os.fsync(target.fileno())
+        new_main_size = self._path_size(candidate_main)
+
+        new_refreshable_size = plan.candidate_refreshable_bytes
+        if current_refreshable_size > snapshot_refreshable_size:
+            if candidate_refreshable is None:
+                warnings.append("the refreshable usage spool grew but has no candidate; refusing to swap")
+                return False, 0, 0
+            new_refreshable_size = self._append_refreshable_compaction_delta(
+                candidate=candidate_refreshable,
+                snapshot_size=snapshot_refreshable_size,
+                current_size=current_refreshable_size,
+                shift=delta_start - snapshot_main_size,
+                snapshot_main_size=snapshot_main_size,
+                warnings=warnings,
+            )
+
+        # The refreshable file goes first: its fences already name offsets in
+        # the new main spool, and a crash between the two renames can only leave
+        # fences that point into a longer original file (harmless) rather than
+        # past the end of a shorter one (a hard replay failure).
+        if candidate_refreshable is not None and candidate_refreshable.is_file():
+            os.replace(candidate_refreshable, self.refreshable_usage_spool_path)
+            _owner_only(self.refreshable_usage_spool_path, 0o600)
+        os.replace(candidate_main, self.spool_path)
+        _owner_only(self.spool_path, 0o600)
+        self._set_replay_offset(new_main_size)
+        self._set_refreshable_usage_replay_offset(new_refreshable_size)
+        self._set_store_metadata(_COMPACTION_GENERATION_KEY, str(generation))
+        self._set_store_metadata(
+            _COMPACTION_TIMESTAMP_KEY,
+            datetime.fromtimestamp(now, timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z"),
+        )
+        self._fsync_directory(self.evidence_root)
+        return True, new_main_size, new_refreshable_size
+
+    def _append_refreshable_compaction_delta(
+        self,
+        *,
+        candidate: Path,
+        snapshot_size: int,
+        current_size: int,
+        shift: int,
+        snapshot_main_size: int,
+        warnings: list[str],
+    ) -> int:
+        """Copy the refreshable records written after the snapshot, re-fenced."""
+
+        with self.refreshable_usage_spool_path.open("rb") as source, candidate.open("ab") as target:
+            source.seek(snapshot_size)
+            while True:
+                offset = source.tell()
+                if offset >= current_size:
+                    break
+                raw = source.readline()
+                if not raw:
+                    break
+                if offset + len(raw) > current_size:
+                    # A torn tail is not a record; its bytes are preserved.
+                    target.write(raw)
+                    continue
+                fence: int | None = None
+                try:
+                    record = json.loads(raw)
+                    _, fence = self._validate_refreshable_usage_spool_record(record)
+                except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError, KeyError):
+                    fence = None
+                if fence is None:
+                    warnings.append(
+                        "a refreshable usage record written during the compaction could not be re-encoded "
+                        "with its new fence; it is kept verbatim"
+                    )
+                    target.write(raw)
+                    continue
+                if fence < snapshot_main_size:
+                    warnings.append(
+                        "a refreshable usage record written during the compaction points before the "
+                        "snapshot boundary; it is kept verbatim"
+                    )
+                    target.write(raw)
+                    continue
+                new_fence = fence + shift
+                if new_fence == fence:
+                    target.write(raw)
+                    continue
+                rewritten = self._refreshable_record_with_fence(raw, new_fence)
+                if rewritten is None:
+                    warnings.append(
+                        "a refreshable usage record written during the compaction could not be re-encoded "
+                        "with its new fence; it is kept verbatim"
+                    )
+                    target.write(raw)
+                    continue
+                target.write(rewritten)
+            target.flush()
+            os.fsync(target.fileno())
+        return self._path_size(candidate)
+
+    def _archive_compaction_snapshot(
+        self,
+        *,
+        snapshot: Path,
+        generation: int,
+        now: float,
+    ) -> tuple[Path, int]:
+        """Compress the pre-compaction snapshot and read it back before trusting it.
+
+        The archive lands in ``<store dir>/archive`` — beside the store's
+        ``evidence-v2`` tree rather than beside the store dir, so two stores
+        under one parent cannot collide on ``spool-<date>-gen<N>`` and a store
+        copy carries its archive with it. An existing target is never
+        overwritten: the compression is the only copy of the dropped rows, so a
+        name collision aborts instead of destroying it.
+
+        The whole point of the archive is that the removed rows stay
+        recoverable, so the compressed copy is streamed back and compared byte
+        for byte and line for line. Any failure removes the partial file and
+        raises, which aborts the swap upstream.
+        """
+
+        try:
+            import zstandard
+        except ImportError as exc:  # pragma: no cover - declared runtime dependency
+            raise RuntimeError("zstandard is required to archive a compacted spool") from exc
+
+        archive_dir = self.root / _COMPACTION_ARCHIVE_DIRNAME
+        archive_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _owner_only(archive_dir, 0o700)
+        stamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y%m%d")
+        target = archive_dir / f"spool-{stamp}-gen{generation}.jsonl.zst"
+        if target.exists():
+            raise RuntimeError(f"refusing to overwrite the existing archive at {target}")
+
+        source_bytes = 0
+        source_lines = 0
+        source_digest = hashlib.sha256()
+        restored_bytes = 0
+        restored_lines = 0
+        restored_digest = hashlib.sha256()
+        try:
+            # A content checksum travels inside the frame, so a later read of the
+            # archive detects corruption long after this run.
+            compressor = zstandard.ZstdCompressor(
+                level=_COMPACTION_ARCHIVE_LEVEL,
+                write_checksum=True,
+            )
+            with snapshot.open("rb") as handle, target.open("xb") as destination:
+                _owner_only(target, 0o600)
+                with compressor.stream_writer(destination, closefd=False) as writer:
+                    while True:
+                        chunk = handle.read(_COMPACTION_COPY_CHUNK)
+                        if not chunk:
+                            break
+                        source_bytes += len(chunk)
+                        source_lines += chunk.count(b"\n")
+                        source_digest.update(chunk)
+                        writer.write(chunk)
+                destination.flush()
+                os.fsync(destination.fileno())
+            with target.open("rb") as handle:
+                with zstandard.ZstdDecompressor().stream_reader(handle) as reader:
+                    while True:
+                        chunk = reader.read(_COMPACTION_COPY_CHUNK)
+                        if not chunk:
+                            break
+                        restored_bytes += len(chunk)
+                        restored_lines += chunk.count(b"\n")
+                        restored_digest.update(chunk)
+            if (
+                restored_bytes != source_bytes
+                or restored_lines != source_lines
+                or restored_digest.digest() != source_digest.digest()
+            ):
+                raise RuntimeError(
+                    "the archived spool did not read back identically: "
+                    f"{restored_bytes}/{restored_lines} vs {source_bytes}/{source_lines}"
+                )
+        except BaseException:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:  # pragma: no cover - cleanup is best effort
+                pass
+            raise
+        self._fsync_directory(archive_dir)
+        return target, self._path_size(target)
+
     def get(self, evidence_id: str) -> EvidenceEnvelope | None:
         with self._connection() as connection:
             row = connection.execute("SELECT envelope_json FROM evidence_versions WHERE evidence_id = ?", (evidence_id,)).fetchone()
@@ -3287,6 +4605,7 @@ __all__ = [
     "EvidenceRecord",
     "EvidenceSnapshotState",
     "read_evidence_snapshot_state",
+    "EvidenceSpoolCompactionResult",
     "EvidenceStore",
     "EvidenceStoreStats",
     "LinkAppendResult",

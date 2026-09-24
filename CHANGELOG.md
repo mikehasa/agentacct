@@ -48,6 +48,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with the echo saying so, exactly as the model filter already did — never a
   guessed or nearby provider — while an unparseable date or a `start` after
   `end` is rejected with `422`.
+- `agentacct evidence compact-spool` reclaims the append-only evidence spool's
+  historical shadow rows: a ~20 GiB-scale win on the machine that motivated it,
+  where `evidence-v2/spool.jsonl` had reached 21.24 GiB against a 277 MB
+  projection (99 of 100 sampled byte positions were old `tool_activity_observed`
+  rows). `evidence prune` trims only the derived projection, so the log had kept
+  every row it ever received. The new command drops only rows no query can reach
+  any more: the `tool_activity_observed`/`mcp_agent_reported` shadow copies whose
+  logical event has already left the projection and that the refreshable-usage
+  and claimed-link lanes do not reference — which makes an earlier prune durable
+  instead of replayable. The default is a dry run that counts and runs the same
+  blocking verification but writes nothing; a real run needs both `--write` and
+  `--yes`, rebuilds the projection from the candidate spool and compares twenty
+  counts plus the exact arrival order before the atomic swap (aborting without
+  touching anything on a mismatch), and keeps the pre-compaction bytes as a
+  read-back-verified zstd archive at
+  `<store>/archive/spool-<date>-gen<N>.jsonl.zst` unless `--no-archive` says to
+  release them instead. Envelopes, receipts, acknowledgements, conflicts,
+  current facts, and every evidence conclusion are unchanged — this is local
+  disk maintenance, not a retention decision about what the evidence means.
 
 ### Changed
 

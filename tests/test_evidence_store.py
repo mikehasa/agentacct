@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import threading
@@ -11,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agentacct.evidence import ClaimedLink, EvidenceEnvelope, SubjectRefs, canonical_digest
+from agentacct.evidence import ClaimedLink, EvidenceEnvelope, SubjectRefs, canonical_digest, canonical_json_bytes
 from agentacct.evidence_runtime import EvidenceRuntime
 from agentacct.evidence_store import (
     EVIDENCE_STORE_DIRNAME,
@@ -1481,3 +1482,651 @@ def test_auto_prune_throttles(tmp_path: Path) -> None:
         min_interval_seconds=3600, older_than_seconds=0, max_rows=100, now=1060.0
     )
     assert second is None
+
+
+def _spool_lines(path: Path) -> list[bytes]:
+    return path.read_bytes().splitlines(keepends=True)
+
+
+def _spool_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _lines_for(path: Path, evidence_ids: set[str]) -> list[bytes]:
+    return [
+        line
+        for line in _spool_lines(path)
+        if json.loads(line).get("payload", {}).get("evidence_id") in evidence_ids
+    ]
+
+
+def _readable_projection(store: EvidenceStore) -> dict[str, object]:
+    """Everything a reader can see, in one comparable value.
+
+    The compaction's contract is that none of it moves: the compared counts, the
+    arrival order, every receipt with its disposition, dimensions,
+    acknowledgements, refreshable heads and revisions, and claimed links.
+    """
+
+    summary = store._projection_compaction_summary()
+    records = store.query(order_by="arrival", limit=10_000)
+    return {
+        "counts": dict(summary["counts"]),
+        "arrival_rows": summary["arrival_rows"],
+        "arrival": [record.evidence_id for record in records],
+        "receipts": {
+            record.evidence_id: [
+                (receipt["receipt_id"], receipt["disposition"])
+                for receipt in store.receipts(record.evidence_id)
+            ]
+            for record in records
+        },
+        "heads": [
+            (head.slot_key, head.last_revision_id, head.evidence_id, head.tombstoned)
+            for head in store.refreshable_usage_heads()
+        ],
+        "refreshable": {
+            key: value
+            for key, value in store.refreshable_usage_stats().to_dict().items()
+            # spool_bytes is a size of the rewritten file, not projection state.
+            if key != "spool_bytes"
+        },
+        "links": [
+            (link.link_id, link.validation_state) for link in store.query_claimed_links(limit=1000)
+        ],
+    }
+
+
+def _reopen_from_zero(tmp_path: Path) -> EvidenceStore:
+    """Discard the projection so opening the store replays both spools."""
+
+    projection = tmp_path / EVIDENCE_STORE_DIRNAME / "projection.sqlite3"
+    projection.unlink()
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{projection}{suffix}")
+        if sidecar.exists():
+            sidecar.unlink()
+    return EvidenceStore(tmp_path)
+
+
+def _compactable_store(tmp_path: Path, *, shadows: int = 6) -> tuple[EvidenceStore, list[str]]:
+    """A store whose pruned shadow rows are still sitting in its spool.
+
+    ``prune_versions`` deletes those versions and their receipts yet leaves the
+    append-only bytes behind, and replay only ever moves forward from the EOF
+    cursor — exactly the unreachable bloat a spool compaction reclaims. The
+    client_hook and refreshable-usage lanes are the honesty-critical rows it has
+    to keep.
+    """
+
+    store = EvidenceStore(tmp_path)
+    dropped = [
+        store.append(_tool_activity_shadow(f"ta-{i}")).evidence_id for i in range(shadows - 1)
+    ]
+    store.append(_evidence("check-1", assertion="observed"))
+    store.reconcile_refreshable_usage(
+        (_refreshable_usage_item("slot-a", value=10, source_order=1),)
+    )
+    # One shadow row after the refreshable receipt, so its fence has to be
+    # re-mapped past a dropped record.
+    dropped.append(store.append(_tool_activity_shadow("ta-tail")).evidence_id)
+    pruned = store.prune_versions(dry_run=False, vacuum=False)
+    assert pruned.deleted_versions == shadows
+    return store, dropped
+
+
+def _spool_line_for(store: EvidenceStore, envelope: EvidenceEnvelope) -> bytes:
+    record = store._spool_record(kind="evidence", payload=envelope.to_dict())
+    return canonical_json_bytes(record) + b"\n"
+
+
+def test_compact_spool_replays_to_the_same_projection(tmp_path: Path) -> None:
+    store, dropped_ids = _compactable_store(tmp_path)
+    before = _readable_projection(store)
+    original_lines = _spool_lines(store.spool_path)
+    dropped_set = set(dropped_ids)
+    expected_kept_lines = [
+        line for line in original_lines if json.loads(line)["payload"]["evidence_id"] not in dropped_set
+    ]
+    assert len(expected_kept_lines) < len(original_lines)
+
+    result = store.compact_spool(dry_run=False, archive=False)
+
+    assert result.dry_run is False
+    assert result.swapped is True
+    assert result.dropped_rows == len(dropped_ids)
+    assert result.kept_rows == result.rows_before - len(dropped_ids)
+    assert result.rows_after == result.kept_rows
+    assert result.spool_bytes_after == store.spool_path.stat().st_size < result.spool_bytes_before
+    assert result.bytes_reclaimed() == result.spool_bytes_before - result.spool_bytes_after
+    assert result.verification["equivalent"] is True
+    assert result.verification["outcome"] == "swapped"
+    # Every kept row is rewritten byte for byte in the original order; only the
+    # dropped rows are gone, and no surviving receipt lost its visibility.
+    assert store.spool_path.read_bytes() == b"".join(expected_kept_lines)
+    for evidence_id in dropped_ids:
+        assert store.get(evidence_id) is None
+        assert store.receipts(evidence_id) == []
+
+    assert _readable_projection(store) == before
+    rebuilt = _reopen_from_zero(tmp_path)
+    assert _readable_projection(rebuilt) == before
+    assert rebuilt.recover().projected_receipts == 0
+
+
+def _fenced_store(tmp_path: Path) -> tuple[EvidenceStore, list[int]]:
+    """A pruned store whose refreshable receipts carry stale spool fences."""
+
+    store = EvidenceStore(tmp_path)
+    store.append(_evidence("fence-before"))
+    store.reconcile_refreshable_usage(
+        (_refreshable_usage_item("slot-a", value=10, source_order=1),)
+    )
+    for i in range(4):
+        store.append(_tool_activity_shadow(f"ta-{i}"))
+    store.reconcile_refreshable_usage(
+        (_refreshable_usage_item("slot-a", value=20, source_order=2),)
+    )
+    store.append(_evidence("fence-after"))
+    store.prune_versions(dry_run=False, vacuum=False)
+    fences = [
+        json.loads(line)["main_spool_fence"]
+        for line in store.refreshable_usage_spool_path.read_text(encoding="utf-8").splitlines()
+    ]
+    return store, fences
+
+
+def test_compact_spool_remaps_refreshable_fences_and_replays_from_zero(tmp_path: Path) -> None:
+    store, fences_before = _fenced_store(tmp_path)
+    before = _readable_projection(store)
+    expected_arrival = [record.evidence_id for record in store.query(order_by="arrival", limit=100)]
+
+    result = store.compact_spool(dry_run=False, archive=False)
+
+    assert result.swapped is True
+    assert result.verification["equivalent"] is True
+    assert result.verification["refreshable_fences_remapped"] >= 1
+    records = [
+        json.loads(line)
+        for line in store.refreshable_usage_spool_path.read_text(encoding="utf-8").splitlines()
+    ]
+    raw_spool = store.spool_path.read_bytes()
+    assert len(records) == len(fences_before)
+    for newer, older in zip(records, fences_before):
+        # The record hash covers the fence, so it has to be re-derived.
+        assert newer["record_hash"] == canonical_digest(
+            {key: value for key, value in newer.items() if key != "record_hash"}
+        )
+        fence = newer["main_spool_fence"]
+        # A fence has to name a record boundary inside the rewritten spool.
+        assert 0 <= fence <= len(raw_spool)
+        assert fence == 0 or raw_spool[fence - 1 : fence] == b"\n"
+        assert fence <= older
+    assert records[-1]["main_spool_fence"] < fences_before[-1]
+
+    rebuilt = _reopen_from_zero(tmp_path)
+    assert _readable_projection(rebuilt) == before
+    assert [record.evidence_id for record in rebuilt.query(order_by="arrival", limit=100)] == (
+        expected_arrival
+    )
+    # Both lanes keep working on top of the rewritten spools.
+    rebuilt.append(_evidence("fence-after-compaction"))
+    rebuilt.reconcile_refreshable_usage(
+        (_refreshable_usage_item("slot-a", value=30, source_order=3),)
+    )
+    rebuilt.reconcile_refreshable_usage(
+        (_refreshable_usage_item("slot-b", value=1, source_order=1),)
+    )
+    assert [head.slot_key for head in rebuilt.refreshable_usage_heads()] == ["slot-a", "slot-b"]
+    latest_arrival = [record.evidence_id for record in rebuilt.query(order_by="arrival", limit=100)]
+    again = _reopen_from_zero(tmp_path)
+    assert [record.evidence_id for record in again.query(order_by="arrival", limit=100)] == (
+        latest_arrival
+    )
+    assert again.refreshable_usage_stats().heads == 2
+
+
+def test_compact_spool_fence_remap_is_what_keeps_the_from_zero_replay_working(
+    tmp_path: Path,
+) -> None:
+    # Negative control: put the pre-compaction fences back and the from-zero
+    # replay fails exactly the way an unmapped fence would make it fail.
+    store, fences_before = _fenced_store(tmp_path)
+    result = store.compact_spool(dry_run=False, archive=False)
+    assert result.swapped is True
+    assert result.verification["refreshable_fences_remapped"] >= 1
+
+    lines = store.refreshable_usage_spool_path.read_bytes().splitlines(keepends=True)
+    stale = json.loads(lines[-1])
+    body = {key: value for key, value in stale.items() if key != "record_hash"}
+    body["main_spool_fence"] = fences_before[-1]
+    lines[-1] = canonical_json_bytes({**body, "record_hash": canonical_digest(body)}) + b"\n"
+    store.refreshable_usage_spool_path.write_bytes(b"".join(lines))
+
+    with pytest.raises(
+        RuntimeError,
+        match="refreshable usage spool requires missing legacy spool bytes",
+    ):
+        _reopen_from_zero(tmp_path)
+
+
+def test_compact_spool_row_verdict_keeps_every_guarded_lane(tmp_path: Path) -> None:
+    # Classifier-level guards, with deliberately empty protection sets: a row is
+    # only droppable when it is the default prune target, it still validates, and
+    # nothing in the projection answers for its identity.
+    store = EvidenceStore(tmp_path)
+    shadow = _tool_activity_shadow("ta-1")
+    hook = _evidence(
+        "hook-ta",
+        assertion="observed",
+        source_type="client_hook",
+        event_type="tool_activity_observed",
+        dimension="tool_activity",
+    )
+    local_log = _evidence(
+        "log-ta",
+        assertion="observed",
+        source_type="local_client_log",
+        event_type="tool_activity_observed",
+        dimension="tool_activity",
+    )
+    nothing: frozenset[str] = frozenset()
+
+    assert store._compaction_row_verdict(_spool_line_for(store, shadow), nothing, nothing) == "drop"
+    assert store._compaction_row_verdict(_spool_line_for(store, hook), nothing, nothing) == "keep"
+    assert store._compaction_row_verdict(_spool_line_for(store, local_log), nothing, nothing) == "keep"
+    assert (
+        store._compaction_row_verdict(
+            _spool_line_for(store, shadow), frozenset({shadow.idempotency_key}), nothing
+        )
+        == "keep"
+    )
+    assert (
+        store._compaction_row_verdict(
+            _spool_line_for(store, shadow), nothing, frozenset({shadow.evidence_id})
+        )
+        == "keep"
+    )
+    # Unreadable, blank, and tampered lines are never dropped.
+    assert store._compaction_row_verdict(b'{"torn":\n', nothing, nothing) == "unclassified"
+    assert store._compaction_row_verdict(b"", nothing, nothing) == "keep"
+    assert store._compaction_row_verdict(b"\n", nothing, nothing) == "keep"
+    tampered = store._spool_record(kind="evidence", payload=shadow.to_dict())
+    tampered["received_at"] = "2026-07-13T00:00:00.000000Z"
+    assert (
+        store._compaction_row_verdict(canonical_json_bytes(tampered) + b"\n", nothing, nothing)
+        == "unclassified"
+    )
+    claimed_link = store._spool_record(
+        kind="claimed_link",
+        payload={"claimed_evidence_id": shadow.evidence_id},
+    )
+    assert (
+        store._compaction_row_verdict(canonical_json_bytes(claimed_link) + b"\n", nothing, nothing)
+        == "keep"
+    )
+
+
+def test_compact_spool_keeps_client_log_and_referenced_rows(tmp_path: Path) -> None:
+    store = EvidenceStore(tmp_path)
+    # A shadow-shaped row the claimed-link lane answers for: prune_versions
+    # excludes it from its target set, and so must the spool compaction.
+    observed = store.append(
+        _evidence("hook-observed", assertion="observed", dimension="tool_activity")
+    ).evidence_id
+    for i in range(3):
+        store.append(_tool_activity_shadow(f"ta-{i}"))
+    referenced = store.append(_tool_activity_shadow("ta-referenced")).evidence_id
+    link = store.append_claimed_link(
+        ClaimedLink.create(
+            claimed_evidence_id=referenced,
+            observed_evidence_id=observed,
+            relationship="corroborates",
+            dimensions=("tool_activity",),
+            created_at="2026-07-13T00:00:01Z",
+            created_by="joiner.v1",
+        )
+    )
+    assert link.validation_state == "valid"
+    # Rows whose source type is honesty-critical, carrying the default target's
+    # very event type: they are no more droppable than any other client_hook row.
+    client_hook = store.append(
+        _evidence(
+            "hook-ta",
+            assertion="observed",
+            source_type="client_hook",
+            event_type="tool_activity_observed",
+            dimension="tool_activity",
+        )
+    ).evidence_id
+    local_log = store.append(
+        _evidence(
+            "log-ta",
+            assertion="observed",
+            source_type="local_client_log",
+            event_type="tool_activity_observed",
+            dimension="tool_activity",
+        )
+    ).evidence_id
+    pruned = store.prune_versions(dry_run=False, vacuum=False)
+    assert pruned.deleted_versions == 3
+    surviving_ids = {client_hook, local_log, referenced, observed}
+    assert referenced in store._compaction_protected_identities()[1]
+    before = _readable_projection(store)
+    kept_lines_before = _lines_for(store.spool_path, surviving_ids)
+
+    result = store.compact_spool(dry_run=False, archive=False)
+
+    assert result.swapped is True
+    assert result.dropped_rows == 3
+    assert _lines_for(store.spool_path, surviving_ids) == kept_lines_before
+    assert len(kept_lines_before) == len(surviving_ids) == 4
+    for evidence_id in surviving_ids:
+        assert store.get(evidence_id) is not None
+    assert store.query(source_type="client_hook")
+    assert store.query(source_type="local_client_log")
+    assert store.query_claimed_links()[0].validation_state == "valid"
+    assert _readable_projection(store) == before
+
+
+def test_compact_spool_dry_run_reports_exactly_and_writes_nothing(tmp_path: Path) -> None:
+    store, dropped_ids = _compactable_store(tmp_path)
+    spool = store.spool_path
+    refreshable = store.refreshable_usage_spool_path
+    dropped_bytes = sum(len(line) for line in _lines_for(spool, set(dropped_ids)))
+    before = (
+        spool.stat().st_size,
+        spool.stat().st_mtime_ns,
+        _spool_sha256(spool),
+        refreshable.stat().st_size,
+        refreshable.stat().st_mtime_ns,
+        _spool_sha256(refreshable),
+        sorted(path.name for path in store.evidence_root.iterdir()),
+    )
+    before_state = _readable_projection(store)
+
+    result = store.compact_spool()
+
+    assert result.dry_run is True
+    assert result.swapped is False
+    assert result.archived_path is None
+    assert result.archive_bytes == 0
+    assert result.dropped_rows == len(dropped_ids)
+    assert result.kept_rows == result.rows_before - len(dropped_ids)
+    assert result.dropped_bytes == dropped_bytes > 0
+    assert result.spool_bytes_after == result.spool_bytes_before - dropped_bytes
+    assert result.verification["equivalent"] is True
+    assert result.verification["outcome"] == "dry_run"
+    assert result.verification["candidate_rows"] == result.kept_rows
+    assert (
+        spool.stat().st_size,
+        spool.stat().st_mtime_ns,
+        _spool_sha256(spool),
+        refreshable.stat().st_size,
+        refreshable.stat().st_mtime_ns,
+        _spool_sha256(refreshable),
+        sorted(path.name for path in store.evidence_root.iterdir()),
+    ) == before
+    assert not (tmp_path / "archive").exists()
+    assert _readable_projection(store) == before_state
+
+
+def test_compact_spool_second_run_changes_nothing(tmp_path: Path) -> None:
+    store, dropped_ids = _compactable_store(tmp_path)
+    assert store._compaction_generation() == 0
+    assert store.compact_spool().dry_run is True
+    # A dry run reports the generation a real run would use and stores none.
+    assert store._compaction_generation() == 0
+    first = store.compact_spool(dry_run=False, archive=False)
+    assert first.swapped is True
+    assert first.dropped_rows == len(dropped_ids)
+    assert first.generation == 1
+    assert store._compaction_generation() == first.generation
+    spool = store.spool_path
+    after_first = (spool.stat().st_size, spool.stat().st_mtime_ns, _spool_sha256(spool))
+    state = _readable_projection(store)
+    listing = sorted(path.name for path in store.evidence_root.iterdir())
+
+    second = store.compact_spool(dry_run=False, archive=True)
+
+    assert second.dry_run is False
+    assert second.swapped is False
+    assert second.dropped_rows == 0
+    assert second.kept_rows == second.rows_before == second.rows_after
+    assert second.spool_bytes_after == second.spool_bytes_before
+    assert second.archived_path is None
+    assert second.archive_bytes == 0
+    assert second.verification["outcome"] == "nothing_to_do"
+    assert second.verification["equivalent"] is True
+    assert (spool.stat().st_size, spool.stat().st_mtime_ns, _spool_sha256(spool)) == after_first
+    assert sorted(path.name for path in store.evidence_root.iterdir()) == listing
+    assert not (tmp_path / "archive").exists()
+    assert _readable_projection(store) == state
+    assert store.compact_spool().dropped_rows == 0
+    # A run that writes nothing advances neither the stored generation nor the
+    # generation a later run would establish.
+    assert second.generation == first.generation + 1
+    assert store._compaction_generation() == first.generation
+    assert store.compact_spool().generation == second.generation
+
+
+def test_compact_spool_aborts_without_swapping_when_verification_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, dropped_ids = _compactable_store(tmp_path)
+    spool = store.spool_path
+    original = spool.read_bytes()
+    stamp = spool.stat().st_mtime_ns
+    listing = sorted(path.name for path in store.evidence_root.iterdir())
+
+    def failing_verification(
+        self,
+        *,
+        candidate_main: Path,
+        candidate_refreshable: Path | None,
+        current: object,
+        warnings: list[str],
+    ) -> dict[str, object]:
+        warnings.append("injected verification failure")
+        return {
+            "equivalent": False,
+            "mismatches": {"evidence_versions": {"current": 1, "rebuilt": 2}},
+            "counts": {},
+            "arrival_order_rows": 0,
+            "arrival_order_equal": False,
+            "spool_errors_rebuilt": 0,
+            "spool_errors_equal": True,
+        }
+
+    monkeypatch.setattr(EvidenceStore, "_verify_compaction_candidate", failing_verification)
+
+    result = store.compact_spool(dry_run=False, archive=True)
+
+    assert result.swapped is False
+    assert result.dropped_rows == len(dropped_ids)
+    assert result.spool_bytes_after == result.spool_bytes_before
+    assert result.verification["equivalent"] is False
+    assert result.verification["outcome"] == "aborted"
+    assert any("injected verification failure" in warning for warning in result.warnings)
+    assert spool.read_bytes() == original
+    assert spool.stat().st_mtime_ns == stamp
+    assert sorted(path.name for path in store.evidence_root.iterdir()) == listing
+    assert not (tmp_path / "archive").exists()
+    assert store.query(source_type="client_hook")
+
+
+def test_compact_spool_aborts_when_a_kept_row_would_outlive_its_pruned_version(
+    tmp_path: Path,
+) -> None:
+    # A referenced row is kept even though its version already left the
+    # projection. Keeping it means a rebuilt projection would resurrect that
+    # version, so the blocking verification must refuse the swap and leave the
+    # spool exactly as it was.
+    store = EvidenceStore(tmp_path)
+    for i in range(2):
+        store.append(_tool_activity_shadow(f"ta-{i}"))
+    referenced = store.append(_tool_activity_shadow("ta-referenced")).evidence_id
+    store.prune_versions(dry_run=False, vacuum=False)
+    with store._connection() as connection:
+        connection.execute(
+            "INSERT INTO claimed_link_versions(link_id, idempotency_key, integrity_hash, "
+            "claimed_evidence_id, observed_evidence_id, dimensions_json, link_json, validation_state) "
+            "VALUES('lnk-1','idem-1','hash-1',?,?,'[]','{}','pending')",
+            (referenced, referenced),
+        )
+    spool = store.spool_path
+    original = spool.read_bytes()
+    listing = sorted(path.name for path in store.evidence_root.iterdir())
+
+    result = store.compact_spool(dry_run=False, archive=False)
+
+    assert result.swapped is False
+    assert result.verification["equivalent"] is False
+    assert result.verification["outcome"] == "aborted"
+    assert "evidence_versions" in result.verification["mismatches"]
+    assert spool.read_bytes() == original
+    assert sorted(path.name for path in store.evidence_root.iterdir()) == listing
+
+
+def test_compact_spool_archives_the_pre_compaction_spool(tmp_path: Path) -> None:
+    import zstandard
+
+    store, _ = _compactable_store(tmp_path)
+    original = store.spool_path.read_bytes()
+    moment = 1_771_000_000.0
+
+    result = store.compact_spool(dry_run=False, archive=True, now=moment)
+
+    assert result.swapped is True
+    assert result.archived_path is not None
+    archive = Path(result.archived_path)
+    assert archive == tmp_path / "archive" / f"spool-20260213-gen{result.generation}.jsonl.zst"
+    assert archive.is_file()
+    assert result.archive_bytes == archive.stat().st_size > 0
+    assert oct(archive.stat().st_mode)[-3:] == "600"
+    with archive.open("rb") as handle:
+        restored = zstandard.ZstdDecompressor().stream_reader(handle).read()
+    assert restored == original
+    assert oct(store.spool_path.stat().st_mode)[-3:] == "600"
+    assert oct(store.refreshable_usage_spool_path.stat().st_mode)[-3:] == "600"
+    assert oct(archive.stat().st_mode)[-3:] == "600"
+
+    next_run = store.compact_spool(dry_run=False, archive=True, now=moment + 86_400)
+    assert next_run.swapped is False
+    assert next_run.generation == result.generation + 1
+    assert next_run.archived_path is None
+
+
+def test_compact_spool_never_overwrites_an_existing_archive(tmp_path: Path) -> None:
+    store, _ = _compactable_store(tmp_path)
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    occupied = archive_dir / f"spool-20260213-gen{store._compaction_generation() + 1}.jsonl.zst"
+    occupied.write_bytes(b"previous archive")
+    spool = store.spool_path
+    original = spool.read_bytes()
+
+    result = store.compact_spool(dry_run=False, archive=True, now=1_771_000_000.0)
+
+    assert result.swapped is False
+    assert result.verification["outcome"] == "aborted"
+    assert "the cold archive failed" in result.verification["abort_reason"]
+    assert occupied.read_bytes() == b"previous archive"
+    assert spool.read_bytes() == original
+
+
+def test_compact_spool_carries_receipts_written_during_the_offline_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The scan, the verification rebuild, and the archive run without the lock,
+    # so a live watcher keeps appending. Those receipts are not part of the
+    # snapshot and must be copied verbatim onto the compacted spool.
+    store, dropped_ids = _compactable_store(tmp_path)
+    late = _evidence("late-arrival")
+    original_filter = EvidenceStore._filter_spool_snapshot
+
+    def filter_then_append(self: EvidenceStore, **kwargs: object) -> object:
+        plan = original_filter(self, **kwargs)
+        record = self._spool_record(kind="evidence", payload=late.to_dict())
+        offset = self._append_spool_record(record)
+        self._project_evidence_record(record, offset)
+        self._set_replay_offset(self.spool_path.stat().st_size)
+        return plan
+
+    monkeypatch.setattr(EvidenceStore, "_filter_spool_snapshot", filter_then_append)
+
+    result = store.compact_spool(dry_run=False, archive=False)
+
+    assert result.swapped is True
+    assert result.dropped_rows == len(dropped_ids)
+    assert result.rows_after == result.kept_rows + 1
+    assert store.get(late.evidence_id) is not None
+    expected_arrival = [record.evidence_id for record in store.query(order_by="arrival", limit=100)]
+    assert expected_arrival[-1] == late.evidence_id
+
+    rebuilt = _reopen_from_zero(tmp_path)
+    assert [record.evidence_id for record in rebuilt.query(order_by="arrival", limit=100)] == (
+        expected_arrival
+    )
+    assert rebuilt.get(late.evidence_id) is not None
+
+
+def test_compact_spool_refuses_to_swap_when_the_spool_was_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Another actor replacing the spool while the candidate is built must abort
+    # the swap: the post-snapshot bytes would no longer be this snapshot's tail.
+    store, _ = _compactable_store(tmp_path)
+    spool = store.spool_path
+    original_filter = EvidenceStore._filter_spool_snapshot
+
+    def filter_then_replace(self: EvidenceStore, **kwargs: object) -> object:
+        plan = original_filter(self, **kwargs)
+        replacement = self.evidence_root / "replacement.jsonl"
+        replacement.write_bytes(b'{"torn":\n')
+        os.replace(replacement, self.spool_path)
+        return plan
+
+    monkeypatch.setattr(EvidenceStore, "_filter_spool_snapshot", filter_then_replace)
+
+    result = store.compact_spool(dry_run=False, archive=True)
+
+    assert result.swapped is False
+    assert result.verification["outcome"] == "aborted"
+    assert spool.read_bytes() == b'{"torn":\n'
+    assert any("changed identity" in warning for warning in result.warnings)
+    # An archive of a spool that was never replaced would collide with the next
+    # attempt at the same generation, so the abort removes it again.
+    assert result.archived_path is None
+    assert result.archive_bytes == 0
+    assert not list((tmp_path / "archive").glob("*"))
+
+
+def test_compact_spool_preserves_a_torn_tail_and_its_error_row(tmp_path: Path) -> None:
+    # A torn tail is invalid on both sides of the compaction, so its bytes and
+    # its spool-error row survive the rewrite unchanged.
+    store = EvidenceStore(tmp_path)
+    for i in range(2):
+        store.append(_tool_activity_shadow(f"ta-{i}"))
+    store.append(_evidence("check-1", assertion="observed"))
+    store.prune_versions(dry_run=False, vacuum=False)
+    with store.spool_path.open("ab") as handle:
+        handle.write(b'{"torn":')
+    store.recover()
+    assert store.stats().invalid_spool_records == 1
+    before = _readable_projection(store)
+
+    result = store.compact_spool(dry_run=False, archive=False)
+
+    assert result.swapped is True
+    assert result.dropped_rows == 2
+    assert any("could not be classified" in warning for warning in result.warnings)
+    assert store.spool_path.read_bytes().endswith(b'{"torn":')
+    assert store.stats().invalid_spool_records == 1
+    rebuilt = _reopen_from_zero(tmp_path)
+    assert rebuilt.stats().invalid_spool_records == 1
+    assert _readable_projection(rebuilt) == before
+    assert store.spool_path.read_bytes() == rebuilt.spool_path.read_bytes()
