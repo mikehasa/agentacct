@@ -11,7 +11,11 @@ from typer.testing import CliRunner
 
 from agentacct.api import create_local_api_app
 from agentacct.cli import app
-from agentacct.client_usage import ClientUsageEvent, build_stored_unknown_cost_reprice_batch
+from agentacct.client_usage import (
+    ClientUsageEvent,
+    apply_pricing_estimate_to_event,
+    build_stored_unknown_cost_reprice_batch,
+)
 from agentacct.cost import pricing_catalog_scope
 from agentacct.pricing_catalog import PricingCatalog, PricingCatalogEntry, default_pricing_catalog_snapshot_path
 from agentacct.refreshable_usage import refreshable_usage_truth_digest
@@ -33,9 +37,11 @@ def _event(session_id="historical", *, client="codex", model="gpt-6-astra"):
     return mark_trusted_local_usage_import_event(event)
 
 
-def _catalog(*, cache_read=1.0):
+def _catalog(*, cache_read=1.0, cache_write_5m=None, cache_write_1h=None):
     return PricingCatalog([
-        PricingCatalogEntry("openai", "gpt-6-astra", 10, 50, cache_read_cost_per_1m=cache_read),
+        PricingCatalogEntry("openai", "gpt-6-astra", 10, 50, cache_read_cost_per_1m=cache_read,
+                            cache_write_5m_cost_per_1m=cache_write_5m,
+                            cache_write_1h_cost_per_1m=cache_write_1h),
     ], provider_aliases={"codex": "openai"})
 
 
@@ -121,11 +127,19 @@ def test_history_reprice_requires_both_flags(tmp_path, flags):
 
 @pytest.mark.parametrize("change", [
     "already_priced", "client_reported", "unclear_amount", "held", "legacy_child",
-    "unknown_model", "other_client", "untrusted", "missing_cache_read_rate",
-    "missing_cache_write_rate", "missing_cache_1h_rate", "duplicate_identity",
+    "unknown_model", "other_client", "untrusted", "duplicate_identity",
     "namespace_conflict", "missing_input_counter", "missing_output_counter", "total_only_zero",
 ])
-def test_history_reprice_preserves_rows_without_safe_complete_pricing(change):
+def test_history_reprice_preserves_rows_outside_safe_pricing_eligibility(change):
+    """Every non-rate safety gate still withholds the row.
+
+    A row is only ours to reprice when it is trusted, additive, unique for its
+    identity, unknown-cost, unredacted and complete on both reported counters.
+    Missing category rates are deliberately NOT one of those gates: they now
+    price through the same fallbacks a fresh import uses, covered by
+    ``test_history_reprice_prices_missing_category_rates_with_the_same_fallbacks_as_fresh_imports``.
+    """
+
     event = _event()
     rows = [event]
     catalog = _catalog()
@@ -146,12 +160,6 @@ def test_history_reprice_preserves_rows_without_safe_complete_pricing(change):
         event["metadata"]["client"] = "claude-code"
     elif change == "untrusted":
         event["metadata"].pop("usage_provenance")
-    elif change == "missing_cache_read_rate":
-        catalog = _catalog(cache_read=None)
-    elif change == "missing_cache_write_rate":
-        event["metadata"]["cache_creation_input_tokens"] = 20
-    elif change == "missing_cache_1h_rate":
-        event["metadata"].update(cache_creation_input_tokens=20, cache_creation_1h_input_tokens=20)
     elif change in {"missing_input_counter", "missing_output_counter", "total_only_zero"}:
         event["metadata"]["input_tokens_reported" if change == "missing_input_counter" else "output_tokens_reported"] = False
         if change == "total_only_zero":
@@ -169,6 +177,53 @@ def test_history_reprice_preserves_rows_without_safe_complete_pricing(change):
     with pricing_catalog_scope(catalog):
         assert _batch(rows)[0] == []
     assert rows == before
+
+
+@pytest.mark.parametrize("change", ["missing_cache_read_rate", "missing_cache_write_rate", "missing_cache_1h_rate"])
+def test_history_reprice_prices_missing_category_rates_with_the_same_fallbacks_as_fresh_imports(change):
+    """A category rate the catalog omits no longer vetoes a historical reprice.
+
+    A fresh import prices the same row through ``apply_pricing_estimate_to_event``
+    -> ``estimate_model_cost_breakdown_usd``, which substitutes 0.1x the input
+    price for a missing cache-read rate and the input price for a missing
+    cache-write rate. Repricing must land on that identical row, so the expected
+    amount is the fresh-import result instead of a frozen constant."""
+
+    event = _event()
+    catalog = _catalog()
+    if change == "missing_cache_read_rate":
+        catalog = _catalog(cache_read=None)
+        spelled_out = _catalog(cache_read=1.0)  # 0.1 x the 10/1M input price
+    elif change == "missing_cache_write_rate":
+        event["metadata"]["cache_creation_input_tokens"] = 20
+        spelled_out = _catalog(cache_write_5m=10.0)  # the input price
+    else:
+        assert change == "missing_cache_1h_rate"
+        event["metadata"].update(cache_creation_input_tokens=20, cache_creation_1h_input_tokens=20)
+        spelled_out = _catalog(cache_write_1h=10.0)  # the input price
+    stored = deepcopy(event)
+
+    with pricing_catalog_scope(catalog):
+        fresh_import = deepcopy(stored)
+        assert apply_pricing_estimate_to_event(fresh_import) is True
+        repriced = _batch([stored])[0]
+    with pricing_catalog_scope(spelled_out):
+        explicit_rate = deepcopy(stored)
+        assert apply_pricing_estimate_to_event(explicit_rate) is True
+
+    # Same row, same dollars, same provenance: import timing is not a factor.
+    assert [row["event_id"] for row in repriced] == [stored["event_id"]]
+    row = repriced[0]
+    assert row == fresh_import
+    assert row["estimated_cost_usd"] == fresh_import["estimated_cost_usd"]
+    assert row["cost_confidence"] == fresh_import["cost_confidence"] == "estimated_from_tokens"
+    assert row["cost_basis"] == fresh_import["cost_basis"] == "pricing_table"
+    assert row["metadata"]["pricing_source"] == fresh_import["metadata"]["pricing_source"]
+    # Priced under the documented fallback rather than skipped: writing the
+    # fallback rate out explicitly yields the same amount.
+    assert row["estimated_cost_usd"] == pytest.approx(explicit_rate["estimated_cost_usd"])
+    # Planning never mutates the stored row it read.
+    assert stored["estimated_cost_usd"] is None and stored["cost_confidence"] == "unknown"
 
 
 def test_history_reprice_leaves_scanned_bases_to_normal_importer():

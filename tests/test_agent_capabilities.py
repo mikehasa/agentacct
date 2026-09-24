@@ -200,6 +200,32 @@ def test_kimi_code_usage_cost_is_a_local_pricing_estimate_never_a_stored_cost() 
     assert any("Moonshot billing" in limitation for limitation in kimi["limitations"])
 
 
+def test_stored_cost_free_clients_report_the_local_pricing_estimate() -> None:
+    """Claude Code, Codex, hermes, and dsh store no cost, so priced rows are local pricing-table estimates."""
+    rows = _client_rows()
+    for client in ("claude-code", "codex", "hermes", "dsh"):
+        usage = rows[client]["capabilities"]["usage_import"]
+        assert usage["usage_basis"] == "client_reported", client
+        assert usage["cost_basis"] == "estimated_from_tokens", client
+        limitations = " ".join(usage["limitations"])
+        assert "local pricing-table estimate" in limitations, client
+        assert "never a client- or provider-reported cost" in limitations, client
+        assert "an unpriced id stays cost-unknown" in limitations, client
+        assert any("never provider" in limitation or "never subscription billing" in limitation for limitation in rows[client]["limitations"]), client
+
+    # Codex additionally has to say that a real import leaves some rows unpriced.
+    codex_limitations = " ".join(rows["codex"]["capabilities"]["usage_import"]["limitations"])
+    assert "Real imports price only the rows the local pricing table can resolve" in codex_limitations
+    assert "keeps cost-unknown" in codex_limitations
+
+    # Hermes can store its own cost; that one is preserved, not repriced.
+    hermes_limitations = " ".join(rows["hermes"]["capabilities"]["usage_import"]["limitations"])
+    assert "is kept as client_reported" in hermes_limitations
+
+    # Untouched neighbours keep their own bases: OpenClaw reports a stored cost.
+    assert rows["openclaw"]["capabilities"]["usage_import"]["cost_basis"] == "client_reported"
+
+
 def test_claude_one_command_install_is_scoped_to_onboard_and_fixture_only() -> None:
     """Claude Code's auto-install is experimental (fixture), scoped to onboard, one command."""
     rows = _client_rows()

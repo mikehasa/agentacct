@@ -35,7 +35,8 @@ agentacct usage truth-table --json
 - Current local usage truth rows include both `metadata.usage_source=local_client_session_store` and `metadata.usage_provenance=agent_sentinel_local_usage_import`. Ordinary event writes and MCP `agentacct_record_event` cannot create this trusted provenance.
 - Pricing-table estimates are equivalent-cost estimates, not provider invoices.
 - Subscription tools such as Claude Code and Codex may expose useful per-session token data without exposing exact marginal subscription billing.
-- Current local Codex and Claude Code subscription samples expose token/cache fields but do not expose provider-billed cost fields to agentacct.
+- Current local Codex and Claude Code subscription samples expose token/cache fields but do not expose provider-billed cost fields to agentacct. The same holds for Hermes and DeepSeek Harness: Claude Code, Codex, and dsh records carry no cost figure at all, so a row priced by `--estimate-costs` (enabled by default on the daemon and first-sync import paths) is `estimated_from_tokens`, computed by agentacct's local pricing table from the client-reported tokens. That number is an equivalent-cost estimate, never a client-reported cost and never a bill, and a model id the table does not cover stays unknown rather than taking a nearby price; Codex imports additionally leave rows without a model label or a covered id unpriced.
+- A cost Hermes itself stores is kept as `client_reported` and is never repriced; only its costless rows take the local pricing-table estimate described above.
 - Kimi Code records no cost figure either: its rows stay cost-unknown until `--estimate-costs` prices them from the local pricing table, which maps the labels Kimi Code reports (K3, DeepSeek Flash) onto its Moonshot and DeepSeek rows. A model id the table does not cover stays unknown rather than taking a nearby price, and the result is an estimate, never a Moonshot invoice.
 - Ingestion receipts prove what agentacct attempted and parsed from each configured local source. They do not upgrade client-reported usage to provider billing or prove that a stopped watcher will capture future sessions.
 
@@ -160,11 +161,14 @@ the unknown→priced transition: a `--refresh --estimate-costs` scan also fills
 missing estimates for previously imported usage from the selected client(s),
 including history outside `--limit-sessions`. Historical rows use their stored
 token counts and source provenance; no old transcript is reread. A trusted,
-additive row with unknown cost and complete catalog rates for its recorded
-cache buckets receives an estimate and `pricing_source` provenance, with its
-event id reissued once. Already priced and `client_reported` costs remain
-unchanged. Unknown models, explicitly unreported input/output counters, missing
-cache rates, held usage, ambiguous source identities, and previously
+additive row with unknown cost whose (provider, model) has an active catalog
+entry receives an estimate and `pricing_source` provenance, with its event id
+reissued once; category rates missing from that entry take the same fallbacks
+a fresh import uses (cache read at 0.1× input, cache write 5m/1h at the input
+rate), so the same row prices identically whether a scan or the historical
+repair priced it. Already priced and `client_reported` costs remain
+unchanged. Unknown models, explicitly unreported input/output counters, held
+usage, ambiguous source identities, and previously
 value-redacted rows remain untouched. `--dry-run` previews these repairs, and
 `historical_repriced_events` reports the part outside the discovery window.
 
