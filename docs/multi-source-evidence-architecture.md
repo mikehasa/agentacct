@@ -332,6 +332,133 @@ Neither the inflated refresh history nor the SQLite projection is promoted to
 source truth merely because it is large; both old spools remain immutable
 archives until an owner accepts the rebuilt store.
 
+### Spool compaction (`evidence compact-spool`)
+
+The spool is append-only and the projection is derived, and `evidence prune`
+deliberately trims only the projection: its deletions are replayed back by a
+full rebuild and its guard rails are the honesty-critical lanes, not the disk.
+Nothing in the write path ever rewrites or releases a spool byte, so the live
+store keeps every row it ever received. On the machine that motivated this
+command that log reached 22.8 GB (21.24 GiB) — 99 of 100 sampled byte positions
+were old `tool_activity_observed` shadow rows — while the projection that
+answers queries was 277 MB. See `PERFORMANCE-2026-09-23.local.md` for the
+measurements.
+
+`agentacct evidence compact-spool` reclaims that difference as cold storage
+maintenance. It is deliberately narrow: it drops spool rows that no query can
+reach any more, and nothing else.
+
+**Drop rule.** A row is dropped only when the store can show, from the
+projection alone, that nothing answers to it any more:
+
+- the record is a valid `evidence` record of the `prune_versions` default
+  target — `source_type=mcp_agent_reported` with
+  `event_type=tool_activity_observed` — the redundant high-cardinality shadow
+  copies of a ledger row, never the mechanical-check or usage lane;
+- its `idempotency_key` appears in no `evidence_versions` row, so no indexed
+  query can return that logical event and the projection a rebuild produces is
+  the projection that is already there; and
+- its `evidence_id` is referenced by none of the refreshable-usage revision,
+  head, transition, or conflict tables and no claimed link — the same exclusion
+  subqueries `prune_versions` uses.
+
+Every other row is written to the new spool byte for byte, in order: duplicate
+receipts, conflicts, links, transition records, `client_hook`/`local_client_log`
+rows, and unknown kinds all survive exactly as they were. The refreshable-usage
+spool is rewritten only to re-map each transition's `main_spool_fence` onto the
+new offsets (and re-derive its record hash) so a from-zero replay still
+interleaves both spools in arrival order.
+
+Compaction is therefore what makes an earlier `evidence prune` durable: after
+it, a rebuild from the compacted spool reproduces the live projection, instead
+of replaying the pruned versions back in. The projection's own receipt
+`spool_offset` values deliberately keep their pre-compaction coordinates — they
+are arrival metadata of the row as it was received, no read path resolves them
+against the spool, and rewriting them would bump the projection's destructive
+revision and invalidate served snapshots for a metadata-only change.
+
+**Hard guard rails.** A run refuses to touch the lanes whose absence would
+change a conclusion:
+
+- `client_hook` mechanical checks and the `local_client_log` trusted usage lane
+  are never dropped, matching the `prune_versions` denylist;
+- a row whose idempotency key still answers to a projection version, or whose
+  evidence id is referenced by the refreshable-usage or claimed-link lanes, is
+  kept;
+- a row that cannot be *shown* to be the drop target — torn or unreadable JSON,
+  an unknown schema version, missing ids — is kept verbatim and counted in
+  `warnings`, never silently discarded or replaced with a rewrite;
+- a run that finds nothing droppable rewrites nothing at all, and reports
+  `outcome=nothing_to_do` with `equivalent=true`;
+- the live spool is only replaced by an atomic rename under the store lock, and
+  only after the verification below passes. If the spool shrank while the
+  candidate was built, the swap is refused; rows appended after the snapshot are
+  copied verbatim (with their fences translated) and the replay cursor is
+  re-bound to the new end. A verification mismatch, a failed archive, or a
+  failed replay aborts with the live spool byte-for-byte as it was.
+
+**Blocking verification.** Before the swap the store rebuilds the projection
+from the candidate spool files in a scratch directory and compares it with the
+live projection: twenty counts — evidence versions (including conflicts),
+dimensions, acknowledgements, receipts by disposition, claimed-link versions and
+receipts, refreshable-usage batch receipts, revisions (including current), heads
+(including tombstoned), conflicts and transitions, and `spool_errors` — plus the
+entire arrival order (a digest and its row count, exact) and the invalid-record
+count the rebuild saw. Anything that differs blocks the swap, leaves the live
+spool untouched, and is reported. If an archive was requested, its bytes are
+also read back and compared with the snapshot byte-for-byte and line-for-line
+before the snapshot link is released. The command reports that comparison as the
+`verification` mapping — `equivalent`, `mismatches`, a per-count
+`current`/`rebuilt` pair, and the `outcome` (`dry_run`, `nothing_to_do`,
+`swapped`, or `aborted`, with an `abort_reason`); a real run that reports
+`swapped: true` is one whose verification passed.
+
+**Archive and result.** With the default `--archive`, the pre-compaction bytes
+are kept in an `archive/` directory inside the store:
+
+```
+<store dir>/archive/spool-<YYYYMMDD>-gen<generation>.jsonl.zst
+```
+
+The snapshot is a hard link to the original file — never a second copy — which
+is then compressed at zstd level 12 into that archive and verified by streaming
+it back. Its path and compressed size are the `archived_path` and
+`archive_bytes` fields of the result. The archive stays on this machine:
+compaction never uploads, transmits, or rotates evidence off the disk.
+`--no-archive` releases the snapshot link instead, so the dropped rows exist
+only as the compacted spool's absence and cannot be recovered locally; the
+result then carries no archive and warns about exactly that. `generation` is a
+monotonic counter in the projection's store metadata
+(`spool_compaction_generation`) that every real swap bumps; `last_compacted_at`
+records the timestamp. The JSON result is the `EvidenceSpoolCompactionResult`
+dataclass: `dry_run`, `spool_bytes_before`, `spool_bytes_after`, `rows_before`,
+`rows_after`, `dropped_rows`, `kept_rows`, `dropped_bytes`, `archived_path`,
+`archive_bytes`, `swapped`, `generation`, `verification`, `warnings`.
+
+**Dry-run semantics.** The default is a dry run: it counts, builds the candidate
+outside the store and runs the same blocking verification, but writes nothing —
+every file in the store stays exactly as it was found, and `spool_bytes_after`,
+`rows_after`, `dropped_rows`, and `dropped_bytes` describe what a real run would
+produce. `archived_path` stays empty because no archive is written. A real
+compaction needs both `--write` and `--yes`, so a stray keystroke cannot rewrite
+the evidence log; `--write` without `--yes` exits with an error instead of
+asking an interactive question. Neither mode changes evidence semantics:
+envelopes, receipts, acknowledgements, conflicts, current facts, and the query
+answers of the projection are unchanged, and the command says so in its own
+output.
+
+**Preventing the next 20 GiB (follow-up work, not implemented here).** A one-off
+compaction only resets the clock, and the same log will grow again as pruned
+versions accumulate. The intended follow-up is a throttled checkpoint in the
+managed watcher loop, mirroring `EvidenceStore.auto_prune_if_due` (which
+throttles on `last_auto_prune_at`): run `compact_spool` when the droppable bytes
+exceed a threshold (for example 2 GiB) or when `last_compacted_at` is older than
+seven days, whichever comes first, never prompting, and never after a failed
+verification. It must reuse the same checks as the manual path — the guard
+rails, the blocking verification, and the archive-by-default rule — and it
+should report each checkpoint's `dropped_bytes` so the growth rate stays visible
+instead of silently hidden.
+
 ## Unified product views
 
 The v2 product adds four evidence-specific views rather than cloning upstream

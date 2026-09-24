@@ -7126,6 +7126,230 @@ def evidence_prune(
     print("spool.jsonl left intact — the evidence log is preserved and recoverable.")
 
 
+_EVIDENCE_SPOOL_COMPACTION_FIELDS = (
+    "dry_run",
+    "spool_bytes_before",
+    "spool_bytes_after",
+    "rows_before",
+    "rows_after",
+    "dropped_rows",
+    "kept_rows",
+    "dropped_bytes",
+    "archived_path",
+    "archive_bytes",
+    "swapped",
+    "generation",
+    "verification",
+    "warnings",
+)
+
+
+def _human_byte_size(value: Any) -> str:
+    """Render a byte count exactly, with a human-scaled hint where it helps."""
+
+    if not isinstance(value, int) or isinstance(value, bool):
+        return str(value)
+    text = f"{value} bytes"
+    if value >= 1024**3:
+        return f"{text} ({value / 1024**3:.2f} GiB)"
+    if value >= 1024**2:
+        return f"{text} ({value / 1024**2:.1f} MiB)"
+    return text
+
+
+def _jsonable_evidence_value(value: Any) -> Any:
+    """Make compaction result values JSON-safe without adding or dropping keys."""
+
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable_evidence_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_jsonable_evidence_value(item) for item in value]
+    return value
+
+
+def _evidence_spool_compaction_payload(result: Any) -> dict[str, Any]:
+    """Serialize a compact-spool result under its documented dataclass fields."""
+
+    missing = [field for field in _EVIDENCE_SPOOL_COMPACTION_FIELDS if not hasattr(result, field)]
+    if missing:
+        raise typer.BadParameter(
+            "the evidence store returned a compact-spool result without the documented field(s) "
+            f"{', '.join(missing)}; the installed CLI and store versions are out of sync"
+        )
+    return {
+        field: _jsonable_evidence_value(getattr(result, field))
+        for field in _EVIDENCE_SPOOL_COMPACTION_FIELDS
+    }
+
+
+def _evidence_spool_verification(value: Any) -> tuple[list[str], bool | None]:
+    """Summarize the compact-spool blocking verification for the human output.
+
+    The first line is the headline (how many compared counts are equal); the
+    rest are the store's own detail fields. Anything the store reports under a
+    name this does not recognize is still printed rather than dropped, so a
+    changed report shape degrades into a longer summary, never into silence.
+    Returns the lines and the store's own verdict when it reports one.
+    """
+
+    if not isinstance(value, Mapping) or not value:
+        return [], None
+
+    lines: list[str] = []
+    counts = value.get("counts")
+    if isinstance(counts, Mapping) and counts:
+        differing = [
+            (name, entry)
+            for name, entry in counts.items()
+            if not isinstance(entry, Mapping) or entry.get("current") != entry.get("rebuilt")
+        ]
+        if differing:
+            for name, entry in differing:
+                current = entry.get("current") if isinstance(entry, Mapping) else entry
+                rebuilt = entry.get("rebuilt") if isinstance(entry, Mapping) else None
+                lines.append(f"{name}: {_jsonable_evidence_value(current)} -> {_jsonable_evidence_value(rebuilt)}")
+            lines.insert(0, f"{count_noun(len(differing), 'compared count')} differ")
+        else:
+            lines.append(f"all {count_noun(len(counts), 'compared count')} are equal")
+
+    details = [
+        f"{name}={_jsonable_evidence_value(entry)}"
+        for name, entry in value.items()
+        if name not in {"counts", "equivalent"} and entry not in ({}, None, ())
+    ]
+    if details:
+        lines.append(", ".join(details))
+
+    equivalent = value.get("equivalent")
+    if isinstance(equivalent, bool):
+        return lines, equivalent
+    flags = [entry for entry in value.values() if isinstance(entry, bool)]
+    return lines, (all(flags) if flags else None)
+
+
+@evidence_app.command("compact-spool")
+def evidence_compact_spool(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    write: Annotated[
+        bool,
+        typer.Option("--write", help="Rewrite the spool. Requires --yes; without it this command only reports."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            help="Confirm replacing the live spool with the compacted one; the archive keeps the removed rows.",
+        ),
+    ] = False,
+    archive: Annotated[
+        bool,
+        typer.Option(
+            "--archive/--no-archive",
+            help="Keep a verified zstd copy of the pre-compaction spool in the store's archive/ directory (default). --no-archive releases those bytes instead.",
+        ),
+    ] = True,
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """Compact the append-only evidence spool (cold storage maintenance).
+
+    The spool only ever grows: `evidence prune` trims the projection and never
+    the log, so rows whose versions have already left the projection are dead
+    weight no query can reach. This command drops exactly those shadow rows.
+    Projections, receipts, acknowledgements, conflicts, and current facts are
+    untouched, and no evidence conclusion changes.
+
+    The default dry run counts and verifies only, leaving the spool, its
+    archive, and the projection untouched. A real compaction needs both
+    --write and --yes: it runs the blocking verification before the swap and
+    aborts without touching anything when a compared count differs.
+    """
+
+    if write and not yes:
+        # Print through this module's console rather than raising BadParameter:
+        # Typer's usage-error panel renders to stderr under newer Click/Typer
+        # resolutions, so the refusal has to be on stdout to be part of the
+        # command's own output (and to stay assertion-stable across versions).
+        console.print(
+            "--write replaces the live spool, so it also needs --yes. Run it without --write first to see "
+            "exactly what would be dropped, kept, and archived"
+        )
+        raise typer.Exit(code=2)
+    from .evidence_store import EvidenceStore
+
+    resolved = _resolve_cli_store_dir(store_dir).path
+    if not Path(resolved).expanduser().exists():
+        # A typo'd --store-dir must not read as "nothing to compact".
+        print(f"No agentacct store at {resolved}. Check --store-dir (this command never creates one).")
+        raise typer.Exit(1)
+    store = EvidenceStore(resolved)
+    result = store.compact_spool(dry_run=not write, archive=archive)
+    payload = _evidence_spool_compaction_payload(result)
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+        return
+
+    for warning in payload["warnings"] or ():
+        print(f"Warning: {warning}")
+    verification_lines, verdict = _evidence_spool_verification(result.verification)
+    if result.dry_run:
+        print("DRY RUN — nothing below was applied. The counts are what a compaction would do right now.")
+        print(f"Spool: {store.spool_path}")
+    elif result.swapped:
+        print(f"Compacted evidence spool: {store.spool_path}")
+    elif not result.dropped_rows:
+        print(
+            f"Nothing to compact — no row in {store.spool_path} is beyond every query "
+            f"({count_noun(int(result.rows_before), 'row')} in the spool)"
+        )
+    else:
+        print(f"NOTHING WAS SWAPPED — the spool at {store.spool_path} is unchanged.")
+    print(f"Rows: {result.rows_before} -> {result.rows_after}")
+    print(f"Bytes: {_human_byte_size(result.spool_bytes_before)} -> {_human_byte_size(result.spool_bytes_after)}")
+    drop_label = "Dropped" if result.swapped else "Would drop"
+    keep_label = "Kept" if result.swapped else "Would keep"
+    if result.dropped_rows:
+        print(
+            f"{drop_label}: {count_noun(int(result.dropped_rows), 'shadow row')}, "
+            f"{_human_byte_size(result.dropped_bytes)} — no query can reach them any more"
+        )
+    else:
+        print("Drop: nothing — every row in the spool can still be reached by a query")
+    print(f"{keep_label}: {count_noun(int(result.kept_rows), 'row')}, {_human_byte_size(result.spool_bytes_after)}")
+    if result.archived_path:
+        print(f"Archive: {result.archived_path} ({_human_byte_size(result.archive_bytes)})")
+        print("The archive is a local file on this machine; deleting it is a separate, explicit choice.")
+    elif not result.dropped_rows:
+        print("Archive: none — nothing was dropped")
+    elif not archive:
+        print("Archive: disabled (--no-archive) — the dropped bytes are released instead of kept")
+    elif result.dry_run:
+        print(f"Archive: would be written under {store.root / 'archive'} (a dry run writes nothing)")
+    else:
+        print("Archive: none written")
+    print("Blocking verification: " + (verification_lines[0] if verification_lines else "not reported"))
+    for line in verification_lines[1:]:
+        print(f"  {line}")
+    if verdict is True:
+        print("  the rebuilt projection matches the live one, which is the only state that allows the swap")
+    elif verdict is False:
+        print("  the rebuilt projection does NOT match — nothing was swapped; report this before retrying")
+    if result.dropped_rows:
+        print(
+            "Dropped rows were shadow rows with nothing left to answer for them: their versions already left "
+            "the projection, and replay only ever moves forward."
+        )
+    print(
+        "This is local storage maintenance: the projection, receipts, and acknowledgements are not touched, "
+        "and no evidence conclusion changes."
+    )
+    if result.swapped:
+        print(f"Spool generation: {result.generation} (recorded in the store metadata with last_compacted_at)")
+    if result.dry_run:
+        print("Nothing was removed. Re-run with --write --yes to compact the spool.")
+
+
 @evidence_app.command("list")
 def evidence_list(
     store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
