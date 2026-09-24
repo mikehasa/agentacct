@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -1549,6 +1550,25 @@ def _reopen_from_zero(tmp_path: Path) -> EvidenceStore:
     return EvidenceStore(tmp_path)
 
 
+def _projection_counts_after_a_rebuild(store: EvidenceStore) -> dict[str, int]:
+    """The counts a from-zero rebuild of these spools produces.
+
+    The rebuild reads hard links of the store's spool files in a scratch store,
+    so the live store and its projection are untouched. Once ``prune_versions``
+    has run this is deliberately *larger* than the live projection: the rebuild
+    resurrects every pruned version the append-only spool still holds, which is
+    exactly why the live projection cannot be the compaction's baseline.
+    """
+
+    with tempfile.TemporaryDirectory() as scratch:
+        rebuild = EvidenceStore(Path(scratch))
+        os.link(store.spool_path, rebuild.spool_path)
+        if store.refreshable_usage_spool_path.is_file():
+            os.link(store.refreshable_usage_spool_path, rebuild.refreshable_usage_spool_path)
+        rebuild._recover_unlocked()
+        return dict(rebuild._projection_compaction_summary()["counts"])
+
+
 def _compactable_store(tmp_path: Path, *, shadows: int = 6) -> tuple[EvidenceStore, list[str]]:
     """A store whose pruned shadow rows are still sitting in its spool.
 
@@ -1855,9 +1875,14 @@ def test_compact_spool_dry_run_reports_exactly_and_writes_nothing(tmp_path: Path
     assert result.kept_rows == result.rows_before - len(dropped_ids)
     assert result.dropped_bytes == dropped_bytes > 0
     assert result.spool_bytes_after == result.spool_bytes_before - dropped_bytes
-    assert result.verification["equivalent"] is True
+    # A dry run writes nothing and rebuilds nothing: it reports what a real run
+    # would drop, and says explicitly that no comparison ran.
     assert result.verification["outcome"] == "dry_run"
+    assert result.verification["equivalent"] is None
     assert result.verification["candidate_rows"] == result.kept_rows
+    assert result.verification["candidate_bytes"] == result.spool_bytes_after
+    assert "--write" in result.verification["reason"]
+    assert "counts" not in result.verification
     assert (
         spool.stat().st_size,
         spool.stat().st_mtime_ns,
@@ -1869,6 +1894,38 @@ def test_compact_spool_dry_run_reports_exactly_and_writes_nothing(tmp_path: Path
     ) == before
     assert not (tmp_path / "archive").exists()
     assert _readable_projection(store) == before_state
+
+
+def test_compact_spool_dry_run_never_replays_and_never_writes_a_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The two from-zero rebuilds are the heavy part of a compaction, and a
+    # candidate copy of a 20 GB spool is the other: a dry run must pay for
+    # neither. Both are made to fail loudly, and the dry run still reports exact
+    # numbers with every file left as it was.
+    store, dropped_ids = _compactable_store(tmp_path)
+    spool = store.spool_path
+    original = spool.read_bytes()
+    listing = sorted(path.name for path in store.evidence_root.iterdir())
+
+    def refuse_to_replay(self: EvidenceStore, **kwargs: object) -> None:
+        raise AssertionError("a dry run must not replay a spool")
+
+    def refuse_to_scratch(self: object, *args: object, **kwargs: object) -> None:
+        raise AssertionError("a dry run must not create a scratch workspace")
+
+    monkeypatch.setattr(EvidenceStore, "_recover_unlocked", refuse_to_replay)
+    monkeypatch.setattr(tempfile, "mkdtemp", refuse_to_scratch)
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", refuse_to_scratch)
+
+    result = store.compact_spool()
+
+    assert result.dry_run is True
+    assert result.dropped_rows == len(dropped_ids) > 0
+    assert result.verification["outcome"] == "dry_run"
+    assert spool.read_bytes() == original
+    assert sorted(path.name for path in store.evidence_root.iterdir()) == listing
 
 
 def test_compact_spool_second_run_changes_nothing(tmp_path: Path) -> None:
@@ -1923,20 +1980,21 @@ def test_compact_spool_aborts_without_swapping_when_verification_fails(
     def failing_verification(
         self,
         *,
+        plan: object,
         candidate_main: Path,
         candidate_refreshable: Path | None,
-        current: object,
+        main_limit: int,
+        refreshable_limit: int,
         warnings: list[str],
     ) -> dict[str, object]:
         warnings.append("injected verification failure")
         return {
             "equivalent": False,
-            "mismatches": {"evidence_versions": {"current": 1, "rebuilt": 2}},
+            "mismatches": {"evidence_versions": {"live_rows_missing_from_the_rebuild": 1}},
             "counts": {},
+            "live_rows_checked": 0,
             "arrival_order_rows": 0,
             "arrival_order_equal": False,
-            "spool_errors_rebuilt": 0,
-            "spool_errors_equal": True,
         }
 
     monkeypatch.setattr(EvidenceStore, "_verify_compaction_candidate", failing_verification)
@@ -1956,37 +2014,216 @@ def test_compact_spool_aborts_without_swapping_when_verification_fails(
     assert store.query(source_type="client_hook")
 
 
-def test_compact_spool_aborts_when_a_kept_row_would_outlive_its_pruned_version(
+def test_compact_spool_swaps_when_a_kept_row_outlives_its_pruned_version(
     tmp_path: Path,
 ) -> None:
-    # A referenced row is kept even though its version already left the
-    # projection. Keeping it means a rebuilt projection would resurrect that
-    # version, so the blocking verification must refuse the swap and leave the
-    # spool exactly as it was.
+    # Regression pin for the baseline. A referenced row is kept even though its
+    # version already left the projection, so a from-zero rebuild resurrects a
+    # version the live projection does not have. That is prune's doing, not the
+    # compaction's: the live projection is no longer the baseline, so the swap is
+    # allowed — the old live-vs-rebuild comparison misreported this store as
+    # lossy and aborted every compaction of it.
     store = EvidenceStore(tmp_path)
     for i in range(2):
         store.append(_tool_activity_shadow(f"ta-{i}"))
     referenced = store.append(_tool_activity_shadow("ta-referenced")).evidence_id
     store.prune_versions(dry_run=False, vacuum=False)
-    with store._connection() as connection:
-        connection.execute(
-            "INSERT INTO claimed_link_versions(link_id, idempotency_key, integrity_hash, "
-            "claimed_evidence_id, observed_evidence_id, dimensions_json, link_json, validation_state) "
-            "VALUES('lnk-1','idem-1','hash-1',?,?,'[]','{}','pending')",
-            (referenced, referenced),
-        )
-    spool = store.spool_path
-    original = spool.read_bytes()
-    listing = sorted(path.name for path in store.evidence_root.iterdir())
+    _link_after_the_prune(store, referenced)
+    live_versions = store.stats().evidence_versions
+    rebuild = _projection_counts_after_a_rebuild(store)
+    assert rebuild["evidence_versions"] > live_versions
 
     result = store.compact_spool(dry_run=False, archive=False)
+
+    assert result.swapped is True
+    assert result.dropped_rows == 2
+    assert result.verification["equivalent"] is True
+    assert result.verification["mismatches"] == {}
+    # The kept row is still in the spool (its version was already gone from the
+    # live projection, which the compaction does not re-project), and the
+    # rebuild carries it, so the containment holds.
+    assert _lines_for(store.spool_path, {referenced})
+    assert result.verification["live_rows_checked"] > 0
+    assert store.get(referenced) is None
+    # The comparison the old implementation used — the live projection against a
+    # rebuild of the result — differs right here (1 versus 0), which is why it
+    # refused this swap: prune deleted the version and the rebuild resurrects it.
+    assert _projection_counts_after_a_rebuild(store)["evidence_versions"] != live_versions
+    assert _reopen_from_zero(tmp_path).get(referenced) is not None
+
+
+def _link_after_the_prune(store: EvidenceStore, evidence_id: str) -> None:
+    """Pin a claimed link to an id whose evidence version prune already deleted.
+
+    The link is appended through the store's own spool path *after* the prune, so
+    the projection answers for it while the spool holds it: a from-zero rebuild
+    reproduces the link, and the compaction has to keep the row it references
+    even though the live projection no longer has that version.
+    """
+
+    observed = store.append(_tool_activity_shadow("ta-link-observed")).evidence_id
+    link = ClaimedLink.create(
+        claimed_evidence_id=evidence_id,
+        observed_evidence_id=observed,
+        relationship="corroborates",
+        dimensions=("tool_activity",),
+        created_at="2026-07-13T00:00:01Z",
+        created_by="joiner.v1",
+    )
+    record = store._spool_record(kind="claimed_link", payload=link.to_dict())
+    with store._locked():
+        offset = store._append_spool_record(record)
+        store._project_claimed_link_record(record, offset)
+        store._set_replay_offset(store.spool_path.stat().st_size)
+
+
+def test_compact_spool_swaps_when_prune_deleted_a_conflict_version(
+    tmp_path: Path,
+) -> None:
+    # The real-store shape: two versions of one logical event (same idempotency
+    # key, different content) are both pruned, and a claimed link appended before
+    # the compaction pins the second row's evidence id. The compaction drops the
+    # unreferenced twin and keeps the referenced one, so one key has a dropped row
+    # and a kept row at once; the old live-versus-rebuild comparison aborted here.
+    store = EvidenceStore(tmp_path)
+    first = store.append(_tool_activity_shadow("ta-conflict"))
+    second = store.append(
+        _evidence(
+            "ta-conflict",
+            payload_value=2,
+            timestamp="2026-07-13T00:00:01.000000Z",
+            assertion="claimed",
+            dimension="tool_activity",
+            source_type="mcp_agent_reported",
+            source_system="codex",
+            event_type="tool_activity_observed",
+        )
+    )
+    assert first.idempotency_key == second.idempotency_key
+    assert first.disposition == "inserted"
+    assert second.disposition == "conflict"
+    store.prune_versions(dry_run=False, vacuum=False)
+    assert store.get(first.evidence_id) is None
+    assert store.get(second.evidence_id) is None
+    _link_after_the_prune(store, second.evidence_id)
+    before = store.stats().evidence_versions
+
+    result = store.compact_spool(dry_run=False, archive=False)
+
+    assert result.swapped is True
+    assert result.dropped_rows == 1
+    assert result.kept_rows == 3
+    assert result.verification["equivalent"] is True
+    # The guarded twin survives in the spool and shadows the unreachable twin
+    # that was dropped; the live projection still answers for neither, because
+    # prune removed both versions and compaction never re-projects.
+    assert _lines_for(store.spool_path, {second.evidence_id})
+    assert store.get(second.evidence_id) is None
+    assert store.stats().evidence_versions == before
+    assert _projection_counts_after_a_rebuild(store)["evidence_versions"] == before + 1
+    # The live projection answers for neither twin while a rebuild of the result
+    # answers for the kept one: the old live-versus-rebuild baseline differed here
+    # too, and refused the swap.
+    assert before != _projection_counts_after_a_rebuild(store)["evidence_versions"]
+
+
+def test_compact_spool_aborts_when_the_candidate_is_not_the_snapshot_remainder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A kept row is copied byte for byte, so the candidate's size and row count
+    # are arithmetic. A filter that lost or duplicated rows fails that check —
+    # the identity comparison alone could read it as the compaction's own doing.
+    store, dropped_ids = _compactable_store(tmp_path)
+    spool = store.spool_path
+    original = spool.read_bytes()
+    original_filter = EvidenceStore._filter_spool_snapshot
+
+    def filter_then_duplicate(self: EvidenceStore, **kwargs: object) -> object:
+        plan = original_filter(self, **kwargs)
+        candidate = kwargs.get("candidate_main")
+        assert isinstance(candidate, Path)
+        with candidate.open("ab") as handle:
+            handle.write(b'{"kind":"evidence","payload":{}}\n')
+        return plan
+
+    monkeypatch.setattr(EvidenceStore, "_filter_spool_snapshot", filter_then_duplicate)
+
+    result = store.compact_spool(dry_run=False, archive=True)
 
     assert result.swapped is False
     assert result.verification["equivalent"] is False
     assert result.verification["outcome"] == "aborted"
-    assert "evidence_versions" in result.verification["mismatches"]
+    assert "candidate_rows" in result.verification["mismatches"]
+    assert "candidate_bytes" in result.verification["mismatches"]
+    assert result.archived_path is None
     assert spool.read_bytes() == original
-    assert sorted(path.name for path in store.evidence_root.iterdir()) == listing
+    assert store.get(dropped_ids[0]) is None
+    assert not list((tmp_path / "archive").glob("*"))
+
+
+def test_compact_spool_tolerates_a_live_evidence_row_the_spool_never_carried(
+    tmp_path: Path,
+) -> None:
+    # The real-store shape that motivated the accountability rule: the live
+    # projection can hold evidence versions no main-spool row answers for (the
+    # refreshable-usage lane projects its own evidence, and an older code path
+    # can leave rows behind), so no rebuild of this spool reproduces them. The
+    # compaction cannot have removed a row this spool never carried, so the swap
+    # goes ahead.
+    store, dropped_ids = _compactable_store(tmp_path)
+    with store._connection() as connection:
+        connection.execute(
+            "INSERT INTO evidence_versions(evidence_id, idempotency_key, integrity_hash, "
+            "schema_version, assertion, event_type, source_type, source_system, source_instance, "
+            "source_schema, adapter, event_timestamp, observed_at, dimensions_json, envelope_json, "
+            "is_conflict) VALUES('evd_' || printf('%064d', 7), 'idem_live_only', 'sha256:live_only', "
+            "'agent-chronicle.evidence.v2', 'observed', 'model_usage', 'local_client_log', 'codex', "
+            "'trusted-v1-current-usage', 'agent-chronicle.refreshable-usage-truth.v1', "
+            "'chronicle-refreshable-usage-adapter.v1', '2026-07-13T00:00:00.000000Z', "
+            "'2026-07-13T00:00:00.000000Z', '[\"usage\"]', '{}', 0)"
+        )
+
+    result = store.compact_spool(dry_run=False, archive=False)
+
+    assert result.swapped is True
+    assert result.dropped_rows == len(dropped_ids)
+    assert result.verification["equivalent"] is True
+    assert result.verification["mismatches"] == {}
+    # It was still counted in what the live projection carries, minus the
+    # unaccountable row.
+    assert result.verification["live_rows_checked"] > 0
+
+
+def test_compact_spool_aborts_when_live_holds_a_row_the_spool_cannot_answer_for(
+    tmp_path: Path,
+) -> None:
+    # A projection row in a lane the compaction never drops from, with no spool
+    # record behind it: the shape a hand-edited or half-migrated store has. That
+    # lane is supposed to be reproducible from the spool in full, so the gate
+    # refuses to swap over it.
+    store, dropped_ids = _compactable_store(tmp_path)
+    with store._connection() as connection:
+        connection.execute(
+            "INSERT INTO claimed_link_versions(link_id, idempotency_key, integrity_hash, "
+            "claimed_evidence_id, observed_evidence_id, dimensions_json, link_json, validation_state) "
+            "VALUES('lnk-orphan','idem-orphan','hash-orphan',?,?,'[]','{}','pending')",
+            (dropped_ids[0], dropped_ids[0]),
+        )
+    spool = store.spool_path
+    original = spool.read_bytes()
+
+    result = store.compact_spool(dry_run=False, archive=True)
+
+    assert result.swapped is False
+    assert result.verification["outcome"] == "aborted"
+    assert result.verification["equivalent"] is False
+    assert result.verification["mismatches"]["claimed_link_versions"][
+        "live_rows_missing_from_the_rebuild"
+    ] == 1
+    assert result.archived_path is None
+    assert spool.read_bytes() == original
+    assert not list((tmp_path / "archive").glob("*"))
 
 
 def test_compact_spool_archives_the_pre_compaction_spool(tmp_path: Path) -> None:

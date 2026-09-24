@@ -126,6 +126,87 @@ _COMPACTION_COUNT_QUERIES: tuple[tuple[str, str], ...] = (
     ("spool_errors", "SELECT COUNT(*) FROM spool_errors"),
 )
 
+# Every table a reader can reach, with the columns that make one of its rows the
+# same fact. The blocking verification requires each live row to appear in the
+# rebuild of the compacted spool with these values unchanged, which is what keeps
+# the compaction from dropping, re-keying, or rewriting anything still reachable
+# by a query. Columns that a rebuild legitimately recomputes differ between the
+# two projections — a receipt's `sequence` and `spool_offset`, a version's
+# `first_receipt_sequence`, an error's `detected_at` — and are deliberately not
+# selected here.
+_COMPACTION_COVERAGE_QUERIES: tuple[tuple[str, str], ...] = (
+    (
+        "evidence_versions",
+        "SELECT evidence_id, idempotency_key, integrity_hash, is_conflict FROM evidence_versions",
+    ),
+    (
+        "evidence_receipts",
+        "SELECT receipt_id, evidence_id, idempotency_key, disposition FROM evidence_receipts",
+    ),
+    ("evidence_dimensions", "SELECT evidence_id, dimension FROM evidence_dimensions"),
+    (
+        "evidence_acknowledgements",
+        "SELECT consumer, evidence_id, acknowledged_at FROM evidence_acknowledgements",
+    ),
+    (
+        # `validation_state` is deliberately absent: it is derived from whether
+        # the referenced evidence still exists, which prune changes and the
+        # compaction does not.
+        "claimed_link_versions",
+        "SELECT link_id, idempotency_key, integrity_hash, claimed_evidence_id, observed_evidence_id, "
+        "is_conflict FROM claimed_link_versions",
+    ),
+    (
+        "claimed_link_receipts",
+        "SELECT receipt_id, link_id, idempotency_key, disposition FROM claimed_link_receipts",
+    ),
+    (
+        "refreshable_usage_batch_receipts",
+        "SELECT receipt_id, complete, transition_count, inserted_count, updated_count, "
+        "resurrected_count, watermarked_count, tombstoned_count, conflict_count "
+        "FROM refreshable_usage_batch_receipts",
+    ),
+    (
+        "refreshable_usage_revisions",
+        "SELECT revision_id, slot_key, slot_identity_json, content_hash, source_order, evidence_id, "
+        "status, created_receipt_id, created_transition_id, superseded_receipt_id, "
+        "superseded_transition_id FROM refreshable_usage_revisions",
+    ),
+    (
+        "refreshable_usage_heads",
+        "SELECT slot_key, slot_identity_json, content_hash, source_order, current_revision_id, "
+        "last_revision_id, evidence_id, tombstoned, updated_receipt_id, updated_transition_id "
+        "FROM refreshable_usage_heads",
+    ),
+    (
+        "refreshable_usage_conflicts",
+        "SELECT conflict_key, slot_key, slot_identity_json, current_revision_id, "
+        "current_content_hash, current_source_order, head_tombstoned, candidate_content_hash, "
+        "candidate_revision_id, candidate_source_order, candidate_evidence_id, "
+        "candidate_integrity_hash, first_receipt_id, first_transition_id "
+        "FROM refreshable_usage_conflicts",
+    ),
+    (
+        "refreshable_usage_transitions",
+        "SELECT transition_id, receipt_id, sequence_in_batch, slot_key, action, revision_id, "
+        "conflict_key, prior_revision_id, evidence_id FROM refreshable_usage_transitions",
+    ),
+    ("spool_errors", "SELECT raw_digest, error FROM spool_errors"),
+)
+
+# Which columns of each coverage query carry the evidence id and idempotency key
+# a kept spool row can answer for. A live row none of whose accountable columns
+# matches a kept row is not this spool's to lose — the refreshable-usage lane
+# stores its own records in its own file — so the containment check does not
+# require it. Tables without an entry are checked in full, because the
+# compaction cannot touch them at all.
+_COMPACTION_ACCOUNTABLE_COLUMNS: dict[str, tuple[int, ...]] = {
+    "evidence_versions": (0, 1),
+    "evidence_receipts": (1, 2),
+    "evidence_dimensions": (0,),
+    "evidence_acknowledgements": (1,),
+}
+
 
 @dataclass(frozen=True)
 class EvidenceSnapshotState:
@@ -452,8 +533,11 @@ class EvidenceSpoolCompactionResult:
     verbatim rather than filtered. ``dropped_bytes`` is the exact byte count
     removed, ``archive_bytes`` is the verified archive size (0 when no archive
     was written), and ``verification`` carries the blocking comparison that
-    gated the swap: the per-count ``current``/``rebuilt`` values plus the
-    equality flags.
+    gated the swap: the per-count ``baseline``/``rebuilt`` values plus the
+    equality flags, where both sides are from-zero rebuilds of the same snapshot
+    prefix — the spool as it is, and the compacted candidate. A dry run never
+    rebuilds either, so its ``verification`` reports ``outcome="dry_run"`` and
+    no comparison at all.
     """
 
     dry_run: bool
@@ -507,11 +591,12 @@ class _SpoolCompactionPlan:
     candidate_refreshable_bytes: int
     refreshable_rows: int
     fences_remapped: int
+    kept_identities: frozenset[str]
 
 
 @dataclass(frozen=True)
 class _SpoolCompactionPreparation:
-    """The locked read of a compaction: snapshots, guards, and the baseline.
+    """The locked read of a compaction: snapshots, guards, and the drop rule.
 
     ``main_identity``/``refreshable_identity`` are the ``(st_dev, st_ino)`` of
     the spools the snapshots were linked from. They are re-checked under the
@@ -525,16 +610,14 @@ class _SpoolCompactionPreparation:
     refreshable_bytes_before: int
     surviving_keys: frozenset[str]
     guarded_ids: frozenset[str]
-    current: Mapping[str, Any]
     main_source: Path
     refreshable_source: Path
     main_identity: tuple[int, int] | None
     refreshable_identity: tuple[int, int] | None
     snapshot_main: Path | None
     snapshot_refreshable: Path | None
-    candidate_main: Path
-    candidate_refreshable: Path
-    workspace: Path | None
+    candidate_main: Path | None
+    candidate_refreshable: Path | None
 
 
 def _owner_only(path: Path, mode: int) -> None:
@@ -780,7 +863,16 @@ class RefreshableUsageStats:
 class EvidenceStore:
     """Append-only v2 evidence store with a rebuildable SQLite projection."""
 
-    def __init__(self, root: Path | str) -> None:
+    def __init__(self, root: Path | str, *, durable: bool = True) -> None:
+        """Open (or create) the store rooted at ``root``.
+
+        ``durable=False`` is for throwaway projections only: ``compact_spool``
+        rebuilds a candidate projection in a scratch directory purely to compare
+        it and then discards it, and the per-row fsync a live store needs costs
+        orders of magnitude more than the rebuild itself on a multi-million row
+        spool. Losing a scratch projection loses nothing.
+        """
+
         if root is None:
             raise ValueError("evidence store root is required")
         self.root = Path(root).expanduser()
@@ -789,6 +881,7 @@ class EvidenceStore:
         self.refreshable_usage_spool_path = self.evidence_root / REFRESHABLE_USAGE_SPOOL_FILENAME
         self.projection_path = self.evidence_root / EVIDENCE_PROJECTION_FILENAME
         self.lock_path = self.evidence_root / ".spool.lock"
+        self._durable = bool(durable)
         self.evidence_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         _owner_only(self.evidence_root, 0o700)
         # Schema creation and WAL-mode negotiation are writes too.  Serialize
@@ -848,7 +941,7 @@ class EvidenceStore:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 30000")
-        connection.execute("PRAGMA synchronous = FULL")
+        connection.execute("PRAGMA synchronous = " + ("FULL" if self._durable else "OFF"))
         try:
             yield connection
         finally:
@@ -857,7 +950,7 @@ class EvidenceStore:
     def _initialize_projection(self) -> None:
         with self._connection() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
-            connection.execute("PRAGMA synchronous = FULL")
+            connection.execute("PRAGMA synchronous = " + ("FULL" if self._durable else "OFF"))
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS store_metadata (
@@ -2963,21 +3056,29 @@ class EvidenceStore:
           ``main_spool_fence`` values and re-derived ``record_hash`` digests,
           so a from-zero replay still interleaves both spools in arrival order.
         * The swap only happens after a blocking verification rebuilds the
-          projection from the candidate files in a scratch directory and finds
-          every compared count, the whole arrival order, and the spool-error
-          count identical to the live projection. A mismatch, an archive
-          failure, or a replay failure aborts with the original spool
-          untouched.
+          projection from *both* spools in a scratch directory and finds every
+          compared count, the whole arrival order, and the spool-error count
+          identical: the baseline rebuild is the spool as it is, the rebuilt one
+          is the candidate, and both are from-zero replays of the same snapshot
+          prefix. The live projection is deliberately not the baseline (prune
+          deletes versions and receipts the append-only spool still holds, so a
+          rebuild that resurrects one of them can never equal it again), and the
+          identities the compaction drops are removed from both rebuilds before
+          the counts are compared. A mismatch, an archive failure, or a replay
+          failure aborts with the original spool untouched.
         * A single ``os.link`` snapshot keeps the original bytes alive — never a
           second copy of the spool. With ``archive`` the snapshot is compressed
           to ``<store dir>/archive/spool-<UTC date>-gen<generation>.jsonl.zst``
           (zstandard level 12) and read back before the snapshot link is
           released.
 
-        Only ``dry_run=False`` writes. A dry run counts, builds the candidate in
-        a scratch directory, runs the same blocking verification, and leaves
-        every file in the store exactly as it found it. A run that finds nothing
-        droppable rewrites nothing.
+        Only ``dry_run=False`` writes. A dry run scans, classifies, and measures
+        the spool — no candidate file, no rebuild, no archive — because two
+        from-zero replays of a multi-gigabyte spool are the heaviest part of the
+        write path; its ``verification`` therefore reports ``outcome="dry_run"``
+        and the blocking comparison runs only with ``--write``. Either way every
+        file in the store is left exactly as it was found. A run that finds
+        nothing droppable rewrites nothing.
 
         Receipt ``spool_offset`` values in the projection keep their
         pre-compaction coordinates: they are arrival metadata for the row as it
@@ -2989,11 +3090,10 @@ class EvidenceStore:
         moment = time.time() if now is None else float(now)
         preparation: _SpoolCompactionPreparation | None = None
         try:
-            # The snapshot, the drop rule's inputs, and the compared projection
-            # are read under the lock; the 20 GB scan, the verification rebuild
-            # and the archive then run unlocked so a live watcher keeps
-            # appending, and the lock is retaken only to append those receipts
-            # and to exchange the files.
+            # The snapshot and the drop rule's inputs are read under the lock;
+            # the scan, both verification rebuilds, and the archive then run
+            # unlocked so a live watcher keeps appending, and the lock is
+            # retaken only to append those receipts and to exchange the files.
             with self._locked():
                 preparation = self._prepare_spool_compaction(dry_run=dry_run)
             return self._run_spool_compaction(preparation, archive=archive, now=moment)
@@ -3008,18 +3108,17 @@ class EvidenceStore:
         spool_bytes_before = self._path_size(self.spool_path)
         refreshable_bytes_before = self._path_size(self.refreshable_usage_spool_path)
         if not dry_run:
-            # Project every durable receipt before comparing, so the blocking
-            # verification compares like with like even after a crash that left
-            # spool records unprojected.
+            # Project every durable receipt before the drop rule reads the
+            # projection, so no durable row is judged unreachable merely because
+            # a crash left it unprojected.
             self._recover_unlocked()
         surviving_keys, guarded_ids = self._compaction_protected_identities()
-        current = self._projection_compaction_summary()
 
         token = uuid.uuid4().hex[:16]
         if dry_run:
-            # Nothing in the store may change, so the candidate (and the
-            # verification store) live outside it.
-            workspace = Path(tempfile.mkdtemp(prefix=_COMPACTION_VERIFY_PREFIX))
+            # A dry run rewrites nothing at all: no snapshot, no candidate, no
+            # rebuild. It reads the live spool and the projection and reports
+            # what a real run would drop.
             return _SpoolCompactionPreparation(
                 dry_run=True,
                 generation=generation,
@@ -3027,16 +3126,14 @@ class EvidenceStore:
                 refreshable_bytes_before=refreshable_bytes_before,
                 surviving_keys=surviving_keys,
                 guarded_ids=guarded_ids,
-                current=current,
                 main_source=self.spool_path,
                 refreshable_source=self.refreshable_usage_spool_path,
                 main_identity=None,
                 refreshable_identity=None,
                 snapshot_main=None,
                 snapshot_refreshable=None,
-                candidate_main=workspace / EVIDENCE_SPOOL_FILENAME,
-                candidate_refreshable=workspace / REFRESHABLE_USAGE_SPOOL_FILENAME,
-                workspace=workspace,
+                candidate_main=None,
+                candidate_refreshable=None,
             )
 
         snapshot_main = self.evidence_root / f".spool-compaction-{token}.source.jsonl"
@@ -3060,7 +3157,6 @@ class EvidenceStore:
             refreshable_bytes_before=refreshable_bytes_before,
             surviving_keys=surviving_keys,
             guarded_ids=guarded_ids,
-            current=current,
             main_source=snapshot_main if snapshot_main is not None else self.spool_path,
             refreshable_source=(
                 snapshot_refreshable
@@ -3073,7 +3169,6 @@ class EvidenceStore:
             snapshot_refreshable=snapshot_refreshable,
             candidate_main=candidate_main,
             candidate_refreshable=candidate_refreshable,
-            workspace=None,
         )
 
     def _run_spool_compaction(
@@ -3122,14 +3217,44 @@ class EvidenceStore:
                 archive_bytes=0,
                 swapped=False,
                 generation=generation,
-                verification=self._compaction_nothing_to_do(preparation.current),
+                verification=self._compaction_nothing_to_do(),
+                warnings=warnings,
+            )
+
+        if dry_run:
+            # The blocking verification rebuilds a projection, which is the
+            # heaviest part of a compaction, and a dry run exists to be cheap: it
+            # scans, classifies, and measures, and says so in its own report.
+            # Nothing was written, so there is nothing to verify either.
+            return self._compaction_result(
+                dry_run=True,
+                plan=plan,
+                spool_bytes_before=spool_bytes_before,
+                spool_bytes_after=plan.candidate_main_bytes,
+                rows_after=plan.rows_kept,
+                archived_path=None,
+                archive_bytes=0,
+                swapped=False,
+                generation=generation,
+                verification={
+                    "outcome": "dry_run",
+                    "equivalent": None,
+                    "reason": (
+                        "a dry run scans, classifies, and measures only; the blocking verification "
+                        "rebuilds the candidate projection and runs with --write"
+                    ),
+                    "candidate_rows": plan.rows_kept,
+                    "candidate_bytes": plan.candidate_main_bytes,
+                },
                 warnings=warnings,
             )
 
         verification = self._verify_compaction_candidate(
+            plan=plan,
             candidate_main=candidate_main,
             candidate_refreshable=candidate_refreshable,
-            current=preparation.current,
+            main_limit=main_limit,
+            refreshable_limit=refreshable_limit,
             warnings=warnings,
         )
         verification["candidate_rows"] = plan.rows_kept
@@ -3139,7 +3264,8 @@ class EvidenceStore:
         if verification.get("equivalent") is not True:
             verification["outcome"] = "aborted"
             verification["abort_reason"] = (
-                "the rebuilt projection did not match the live projection; the spool was left untouched"
+                "live rows were missing from the rebuild of the compacted spool; "
+                "the spool was left untouched"
             )
             warnings.append(
                 "blocking verification failed, so nothing was swapped: "
@@ -3159,7 +3285,7 @@ class EvidenceStore:
                 warnings=warnings,
             )
 
-        if archive and not dry_run:
+        if archive:
             try:
                 archived_path, archive_bytes = self._archive_compaction_snapshot(
                     snapshot=(
@@ -3195,22 +3321,6 @@ class EvidenceStore:
                 # pre-compaction bytes; release the hard link now. (The cleanup
                 # pass unlinks again, which is a no-op.)
                 preparation.snapshot_main.unlink(missing_ok=True)
-
-        if dry_run:
-            verification["outcome"] = "dry_run"
-            return self._compaction_result(
-                dry_run=True,
-                plan=plan,
-                spool_bytes_before=spool_bytes_before,
-                spool_bytes_after=plan.candidate_main_bytes,
-                rows_after=plan.rows_kept,
-                archived_path=None,
-                archive_bytes=0,
-                swapped=False,
-                generation=generation,
-                verification=verification,
-                warnings=warnings,
-            )
 
         with self._locked():
             if not self._compaction_swap_is_safe(preparation):
@@ -3346,8 +3456,6 @@ class EvidenceStore:
                 temporary.unlink(missing_ok=True)
             except OSError:  # pragma: no cover - cleanup is best effort
                 pass
-        if preparation.workspace is not None:
-            shutil.rmtree(preparation.workspace, ignore_errors=True)
 
     def _compaction_result(
         self,
@@ -3484,12 +3592,12 @@ class EvidenceStore:
         }
 
     @staticmethod
-    def _compaction_nothing_to_do(current: Mapping[str, Any]) -> dict[str, Any]:
+    def _compaction_nothing_to_do() -> dict[str, Any]:
         """Verification report for a run with no droppable rows.
 
         Nothing can differ: with no row dropped the spool bytes are identical,
         so the projection a rebuild would produce is the projection that is
-        already there.
+        already there — and no rebuild has to be paid for.
         """
 
         return {
@@ -3497,78 +3605,231 @@ class EvidenceStore:
             "equivalent": True,
             "reason": "no spool row was droppable, so the spool bytes are unchanged",
             "mismatches": {},
-            "counts": {
-                name: {"current": value} for name, value in dict(current["counts"]).items()
-            },
-            "arrival_order_rows": int(current["arrival_rows"]),
-            "arrival_order_equal": True,
-            "spool_errors_rebuilt": int(current["spool_errors"]),
-            "spool_errors_equal": True,
         }
 
-    @staticmethod
-    def _compare_compaction_summaries(
-        current: Mapping[str, Any],
-        rebuilt: Mapping[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _coverage_rows(self, sql: str) -> Iterator[tuple[Any, ...]]:
+        """Stream this projection's rows for one coverage query, as plain tuples."""
+
+        with self._connection() as connection:
+            cursor = connection.execute(sql)
+            for row in cursor:
+                yield tuple(row)
+
+    def _spool_tail_identities(self, main_limit: int, refreshable_limit: int) -> set[str]:
+        """The evidence ids and keys the spools hold *past* the snapshot.
+
+        A writer keeps appending while the candidate is built, and those rows are
+        copied to the candidate verbatim at swap time. They are therefore not
+        part of the comparison — but their identities must not read as rows the
+        compaction lost, which is what this collects. Any evidence id or
+        idempotency key found in the tail's records counts, at whatever nesting
+        the record uses: the tail is small, and a missed identity would only be a
+        spurious abort.
+        """
+
+        identities: set[str] = set()
+        for path, limit in (
+            (self.spool_path, main_limit),
+            (self.refreshable_usage_spool_path, refreshable_limit),
+        ):
+            if not path.is_file():
+                continue
+            with path.open("rb") as handle:
+                handle.seek(max(0, limit))
+                while True:
+                    raw = handle.readline()
+                    if not raw:
+                        break
+                    try:
+                        record = json.loads(raw)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    pending: list[Any] = [record]
+                    while pending:
+                        value = pending.pop()
+                        if isinstance(value, Mapping):
+                            for key, item in value.items():
+                                if key in {"evidence_id", "idempotency_key"} and isinstance(item, str):
+                                    identities.add(item)
+                                elif isinstance(item, (Mapping, list, tuple)):
+                                    pending.append(item)
+                        elif isinstance(value, (list, tuple)):
+                            pending.extend(value)
+        return identities
+
+    def _compare_rebuild_coverage(
+        self,
+        rebuilt: EvidenceStore,
+        appended: frozenset[str],
+        accountable: frozenset[str],
+    ) -> tuple[dict[str, Any], int, set[str]]:
+        """Every row a reader can reach has to survive the compaction.
+
+        The comparison is a containment, not an equality, and that is the point.
+        ``prune_versions`` deletes versions, receipts, dimensions, and
+        acknowledgements for rows the spool still holds, so a from-zero rebuild
+        of the compacted spool *legitimately* carries rows the live projection no
+        longer has: comparing the two for equality reports a correct compaction
+        as lossy on any store that was ever pruned, and no baseline built from
+        the spool escapes that — a from-zero replay of the 22.8 GB store's 3 M
+        row spool runs at about 137 rows/s (the replay opens a connection per
+        row), which is roughly six hours. Containment cannot be invalidated that
+        way: prune only ever removes rows, so whatever live still answers for has
+        to be in the rebuild, unchanged.
+
+        Two properties of the drop rule make containment exactly the right test:
+
+        * a dropped row's ``idempotency_key`` is absent from the live projection
+          (that *is* the drop rule), so no live version, receipt, dimension, or
+          acknowledgement shares its key — removing it cannot alter a live row's
+          facts, dispositions, or conflict flags;
+        * every row sharing a live key is kept, so the rebuild replays each live
+          key's whole group, in order, and reproduces those facts exactly.
+
+        ``appended`` holds the identities of rows a writer added to the spool
+        after the snapshot was taken. Those are copied to the candidate verbatim
+        at swap time and are no part of this comparison, so they must not read as
+        rows the compaction lost.
+
+        ``accountable`` holds the evidence ids and idempotency keys the kept
+        *main-spool* rows carry. A live row no kept row answers for was never
+        this spool's to lose — the refreshable-usage lane stores its own records
+        elsewhere, and a store can carry rows projected by an older code path
+        that the current spool cannot reproduce — so only accountable rows are
+        required to appear in the rebuild. That keeps the check exact where it
+        can be exact: anything this spool carried is still required, with its
+        facts unchanged.
+
+        Returns the mismatches, how many live rows were checked, and the live
+        evidence ids the arrival-order digest is restricted to.
+        """
+
         mismatches: dict[str, Any] = {}
-        counts: dict[str, Any] = {}
-        for name, before in dict(current["counts"]).items():
-            after = dict(rebuilt["counts"]).get(name)
-            counts[name] = {"current": before, "rebuilt": after}
-            if before != after:
-                mismatches[name] = {"current": before, "rebuilt": after}
-        arrival_equal = bool(
-            current["arrival_digest"] == rebuilt["arrival_digest"]
-            and current["arrival_rows"] == rebuilt["arrival_rows"]
-        )
-        if not arrival_equal:
-            mismatches["arrival_order"] = {
-                "current_rows": current["arrival_rows"],
-                "rebuilt_rows": rebuilt["arrival_rows"],
-            }
-        spool_errors_equal = bool(current["spool_errors"] == rebuilt["spool_errors"])
-        if not spool_errors_equal:
-            mismatches["spool_errors"] = {
-                "current": current["spool_errors"],
-                "rebuilt": rebuilt["spool_errors"],
-            }
-        verification = {
-            "equivalent": not mismatches,
-            "mismatches": mismatches,
-            "counts": counts,
-            "arrival_order_rows": int(rebuilt["arrival_rows"]),
-            "arrival_order_equal": arrival_equal,
-            "spool_errors_rebuilt": int(rebuilt["spool_errors"]),
-            "spool_errors_equal": spool_errors_equal,
-        }
-        return verification, mismatches
+        checked = 0
+        live_ids: set[str] = set()
+        for name, sql in _COMPACTION_COVERAGE_QUERIES:
+            rebuilt_rows = set(rebuilt._coverage_rows(sql))
+            missing = 0
+            sample: list[list[str]] = []
+            for row in self._coverage_rows(sql):
+                if any(str(value) in appended for value in row):
+                    continue
+                if not self._coverage_row_is_accountable(row, name, accountable):
+                    continue
+                checked += 1
+                if name == "evidence_versions":
+                    live_ids.add(str(row[0]))
+                if row in rebuilt_rows:
+                    continue
+                missing += 1
+                if len(sample) < 3:
+                    sample.append([str(value) for value in row])
+            if missing:
+                mismatches[name] = {"live_rows_missing_from_the_rebuild": missing, "sample": sample}
+        return mismatches, checked, live_ids
+
+    @staticmethod
+    def _coverage_row_is_accountable(
+        row: tuple[Any, ...],
+        name: str,
+        accountable: frozenset[str],
+    ) -> bool:
+        """Whether the kept spool rows answer for this live row's identity."""
+
+        columns = _COMPACTION_ACCOUNTABLE_COLUMNS.get(name)
+        if columns is None:
+            # Tables the drop rule cannot touch: every live row is required.
+            return True
+        return any(str(row[index]) in accountable for index in columns if index < len(row))
+
+    def _coverage_arrival_digest(self, restrict_to: set[str] | None = None) -> tuple[str, int]:
+        """Digest the arrival order of this projection's evidence versions.
+
+        ``restrict_to`` keeps only the given evidence ids, which is how the
+        rebuild's order is compared with the live one: the rebuild may carry
+        extra rows (the ones prune removed), but every row live has must still
+        arrive in the same relative order, or a fence re-map or a lost row moved
+        it.
+        """
+
+        digest = hashlib.sha256()
+        rows = 0
+        with self._connection() as connection:
+            cursor = connection.execute(
+                "SELECT evidence_id FROM evidence_versions "
+                "ORDER BY first_receipt_sequence ASC, evidence_id ASC"
+            )
+            while True:
+                batch = cursor.fetchmany(20_000)
+                if not batch:
+                    break
+                ids = [str(row[0]) for row in batch]
+                if restrict_to is not None:
+                    ids = [evidence_id for evidence_id in ids if evidence_id in restrict_to]
+                if not ids:
+                    continue
+                digest.update("\n".join(ids).encode("utf-8") + b"\n")
+                rows += len(ids)
+        return digest.hexdigest(), rows
+
+    def _rebuild_spool_projection(
+        self,
+        *,
+        root: Path,
+        main_source: Path,
+        refreshable_source: Path | None,
+    ) -> EvidenceStore:
+        """Hard-link the given spools into a scratch store and replay them.
+
+        The links are why a rebuild costs no extra spool bytes: the scratch store
+        reads the very inode the store reads, and reads it to the end because the
+        candidate is a private file nothing appends to. The scratch projection is
+        opened without durability: replaying rows at a live store's per-row fsync
+        costs orders of magnitude more than the replay itself, and this
+        projection is discarded as soon as it has been compared.
+        """
+
+        store = EvidenceStore(root, durable=False)
+        if main_source.is_file():
+            os.link(main_source, store.spool_path)
+        if refreshable_source is not None and refreshable_source.is_file():
+            os.link(refreshable_source, store.refreshable_usage_spool_path)
+        store._recover_unlocked()
+        return store
 
     def _verify_compaction_candidate(
         self,
         *,
+        plan: _SpoolCompactionPlan,
         candidate_main: Path,
         candidate_refreshable: Path | None,
-        current: Mapping[str, Any],
+        main_limit: int,
+        refreshable_limit: int,
         warnings: list[str],
     ) -> dict[str, Any]:
-        """Rebuild the projection from the candidate spools in a scratch store.
+        """Rebuild the candidate from zero and check nothing live was lost.
 
-        This is the blocking gate: the swap happens only when every compared
-        count, the whole arrival order, and the spool-error count equal the live
-        projection's. A mismatch, a replay failure, or an unusable candidate
-        leaves the original spool in place.
+        This is the blocking gate: a mismatch, a replay failure, or an unusable
+        candidate leaves the original spool in place.
+
+        The rebuild is the pre-existing cost of a compaction and it is bounded by
+        the *kept* rows, not by the spool: a store kept 3 M rows to drop 60 k, so
+        verifying the candidate costs a minute where replaying the whole prefix
+        costs hours (measured on the 22.8 GB store: ~137 rows/s, because the
+        replay opens a connection per row, so a from-zero baseline of that spool
+        is about six hours). The rebuild is therefore compared by *identity* with
+        the live projection rather than for equality against it — see
+        `_compare_rebuild_coverage` for why containment is the right test and why
+        every other form of that comparison is either unsound or unaffordable.
+
+        What is compared, in full: every row of every table a reader can reach,
+        as identities and facts; the relative arrival order of the live evidence
+        ids; and the candidate's own arithmetic as the snapshot's remainder — its
+        size against the snapshot's minus ``dropped_bytes``, and its row count
+        against ``kept_rows``, because a kept row is copied byte for byte.
         """
 
-        try:
-            with tempfile.TemporaryDirectory(prefix=_COMPACTION_VERIFY_PREFIX) as scratch:
-                scratch_store = EvidenceStore(Path(scratch))
-                os.link(candidate_main, scratch_store.spool_path)
-                if candidate_refreshable is not None and candidate_refreshable.is_file():
-                    os.link(candidate_refreshable, scratch_store.refreshable_usage_spool_path)
-                replay = scratch_store.recover()
-                rebuilt = scratch_store._projection_compaction_summary()
-        except Exception as exc:  # noqa: BLE001 - a failed rebuild must abort, not raise
+        def rebuild_failure(exc: BaseException) -> dict[str, Any]:
             warnings.append(
                 "blocking verification could not rebuild the candidate projection, so nothing was swapped: "
                 f"{type(exc).__name__}: {exc}"
@@ -3576,21 +3837,74 @@ class EvidenceStore:
             return {
                 "equivalent": False,
                 "mismatches": {"replay": f"{type(exc).__name__}: {exc}"},
-                "counts": {
-                    name: {"current": value, "rebuilt": None}
-                    for name, value in dict(current["counts"]).items()
-                },
+                "counts": {},
+                "live_rows_checked": 0,
                 "arrival_order_rows": 0,
                 "arrival_order_equal": False,
-                "spool_errors_rebuilt": None,
-                "spool_errors_equal": False,
             }
-        verification, mismatches = self._compare_compaction_summaries(current, rebuilt)
-        verification["rebuilt_invalid_records"] = int(replay.invalid_records)
+
+        try:
+            with tempfile.TemporaryDirectory(prefix=_COMPACTION_VERIFY_PREFIX) as scratch:
+                rebuilt_store = self._rebuild_spool_projection(
+                    root=Path(scratch) / "candidate",
+                    main_source=candidate_main,
+                    refreshable_source=candidate_refreshable,
+                )
+                appended = frozenset(
+                    self._spool_tail_identities(main_limit, refreshable_limit)
+                )
+                live_counts = dict(self._projection_compaction_summary()["counts"])
+                rebuilt_counts = dict(rebuilt_store._projection_compaction_summary()["counts"])
+                mismatches, live_rows, live_ids = self._compare_rebuild_coverage(
+                    rebuilt_store, appended, plan.kept_identities
+                )
+                live_digest, live_order_rows = self._coverage_arrival_digest(live_ids)
+                rebuilt_digest, rebuilt_order_rows = rebuilt_store._coverage_arrival_digest(live_ids)
+        except Exception as exc:  # noqa: BLE001 - a failed rebuild must abort, not raise
+            return rebuild_failure(exc)
+
+        arrival_equal = bool(
+            live_digest == rebuilt_digest and live_order_rows == rebuilt_order_rows
+        )
+        if not arrival_equal:
+            mismatches["arrival_order"] = {
+                "live_rows": live_order_rows,
+                "rebuilt_rows": rebuilt_order_rows,
+            }
+
+        # The candidate has to be the snapshot's own remainder: a kept row is
+        # copied byte for byte, so its size and row count are arithmetic. That is
+        # what catches a filter that silently lost or duplicated a row, which the
+        # identity comparison above would read as the compaction's own doing.
+        candidate_bytes = self._path_size(candidate_main)
+        if candidate_bytes != plan.candidate_main_bytes:
+            mismatches["candidate_bytes"] = {
+                "expected": plan.candidate_main_bytes,
+                "found": candidate_bytes,
+            }
+        candidate_rows = self._count_spool_rows(candidate_main)
+        if candidate_rows != plan.rows_kept:
+            mismatches["candidate_rows"] = {"expected": plan.rows_kept, "found": candidate_rows}
+
+        verification = {
+            "equivalent": not mismatches,
+            "mismatches": mismatches,
+            "live_rows_checked": live_rows,
+            "arrival_order_rows": live_order_rows,
+            "arrival_order_equal": arrival_equal,
+            # Both sides, for the record. The rebuilt side normally carries more
+            # rows than the live projection because it resurrects the ones prune
+            # removed, which is exactly why these numbers are information and not
+            # the comparison.
+            "counts": {
+                name: {"live": value, "rebuilt": rebuilt_counts.get(name)}
+                for name, value in live_counts.items()
+            },
+        }
         if mismatches:
             warnings.append(
-                "the rebuilt projection differs from the live projection, so nothing was swapped: "
-                f"{sorted(mismatches)}"
+                "blocking verification found live rows missing from the rebuild, "
+                f"so nothing was swapped: {sorted(mismatches)}"
             )
         return verification
 
@@ -3601,8 +3915,8 @@ class EvidenceStore:
         main_limit: int,
         refreshable_source: Path,
         refreshable_limit: int,
-        candidate_main: Path,
-        candidate_refreshable: Path,
+        candidate_main: Path | None,
+        candidate_refreshable: Path | None,
         surviving_keys: frozenset[str],
         guarded_ids: frozenset[str],
         warnings: list[str],
@@ -3612,15 +3926,23 @@ class EvidenceStore:
         Reads only the snapshot's first ``main_limit`` bytes and tracks the byte
         offset every kept row lands on, which is what re-maps the refreshable
         fences. The candidate file is created lazily at the first dropped row,
-        so a spool with nothing to drop is never rewritten at all.
+        so a spool with nothing to drop is never rewritten at all. A ``None``
+        ``candidate_main`` makes this a pure scan: the same classification and
+        the same counts with no file written and no refreshable spool read,
+        which is why a dry run can classify a 20 GB spool without touching the
+        disk.
         """
 
-        refreshable_records, refreshable_fences = self._refreshable_rewrite_plan(
-            refreshable_source, refreshable_limit, warnings
-        )
+        refreshable_records: list[bytes] | None = None
+        refreshable_fences: list[int | None] = []
+        if candidate_main is not None:
+            refreshable_records, refreshable_fences = self._refreshable_rewrite_plan(
+                refreshable_source, refreshable_limit, warnings
+            )
         fence_targets = [0] * len(refreshable_fences)
         fence_index = 0
         rows_before = rows_kept = rows_dropped = unclassified = dropped_bytes = 0
+        kept_identities: set[str] = set()
         output = None
         source = (
             main_source.open("rb")
@@ -3668,7 +3990,7 @@ class EvidenceStore:
                     fence_targets[fence_index] = new_offset
                     fence_index += 1
                 if verdict == _COMPACTION_DROP:
-                    if output is None:
+                    if candidate_main is not None and output is None:
                         output = candidate_main.open("xb")
                         _owner_only(candidate_main, 0o600)
                         self._copy_spool_prefix(source, output, record_start)
@@ -3681,10 +4003,17 @@ class EvidenceStore:
                 rows_kept += 1
                 if output is not None:
                     output.write(raw)
-            if output is None:
-                candidate_main_bytes = max(0, main_limit)
-            else:
-                candidate_main_bytes = max(0, offset - dropped_bytes)
+                if candidate_main is not None:
+                    # The identities the kept rows carry are what a live row has
+                    # to be answerable by: the drop rule only ever removes rows
+                    # from this spool, so a live row no kept row answers for was
+                    # never this spool's to lose.
+                    evidence_id, idempotency_key = self._spool_row_identity(raw)
+                    if evidence_id is not None:
+                        kept_identities.add(evidence_id)
+                    if idempotency_key is not None:
+                        kept_identities.add(idempotency_key)
+            candidate_main_bytes = max(0, offset - dropped_bytes)
             while fence_index < len(refreshable_fences):
                 if refreshable_fences[fence_index] is not None:
                     fence_targets[fence_index] = candidate_main_bytes
@@ -3701,7 +4030,7 @@ class EvidenceStore:
         # refreshable candidate to write at all: the spool stays untouched.
         candidate_refreshable_bytes = refreshable_limit
         fences_remapped = 0
-        if refreshable_records is not None and rows_dropped > 0:
+        if refreshable_records is not None and candidate_refreshable is not None and rows_dropped > 0:
             with candidate_refreshable.open("xb") as target:
                 _owner_only(candidate_refreshable, 0o600)
                 for raw, fence, target_offset in zip(
@@ -3733,6 +4062,27 @@ class EvidenceStore:
             candidate_refreshable_bytes=candidate_refreshable_bytes,
             refreshable_rows=len(refreshable_records) if refreshable_records is not None else 0,
             fences_remapped=fences_remapped,
+            kept_identities=frozenset(kept_identities),
+        )
+
+    @staticmethod
+    def _spool_row_identity(raw: bytes) -> tuple[str | None, str | None]:
+        """The evidence id and idempotency key a spool row carries, if it carries them."""
+
+        try:
+            record = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None, None
+        if not isinstance(record, Mapping) or record.get("kind") != "evidence":
+            return None, None
+        payload = record.get("payload")
+        if not isinstance(payload, Mapping):
+            return None, None
+        evidence_id = payload.get("evidence_id")
+        idempotency_key = payload.get("idempotency_key")
+        return (
+            evidence_id if isinstance(evidence_id, str) else None,
+            idempotency_key if isinstance(idempotency_key, str) else None,
         )
 
     @staticmethod

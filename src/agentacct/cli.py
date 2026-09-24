@@ -7187,37 +7187,53 @@ def _evidence_spool_compaction_payload(result: Any) -> dict[str, Any]:
 def _evidence_spool_verification(value: Any) -> tuple[list[str], bool | None]:
     """Summarize the compact-spool blocking verification for the human output.
 
-    The first line is the headline (how many compared counts are equal); the
-    rest are the store's own detail fields. Anything the store reports under a
-    name this does not recognize is still printed rather than dropped, so a
-    changed report shape degrades into a longer summary, never into silence.
-    Returns the lines and the store's own verdict when it reports one.
+    The first line is the headline: how many rows the live projection answers for
+    were found in the rebuild of the compacted candidate, and whether they arrive
+    in the same order. The counts the store reports for both sides are shown as
+    context and are deliberately *not* the comparison — the rebuild legitimately
+    carries rows prune removed, so equality there would fail on every store that
+    was ever pruned. Anything the store reports under a name this does not
+    recognize is still printed rather than dropped, so a changed report shape
+    degrades into a longer summary, never into silence. Returns the lines and the
+    store's own verdict when it reports one.
     """
 
     if not isinstance(value, Mapping) or not value:
         return [], None
 
     lines: list[str] = []
+    checked = value.get("live_rows_checked")
+    missing = value.get("mismatches")
+    if isinstance(checked, int) and isinstance(missing, Mapping):
+        if missing:
+            lines.append(
+                f"{count_noun(len(missing), 'check')} failed against the live projection"
+            )
+            for name, entry in missing.items():
+                lines.append(f"{name}: {_jsonable_evidence_value(entry)}")
+        else:
+            lines.append(
+                f"every {count_noun(checked, 'row')} the live projection answers for is in the rebuild"
+            )
+
     counts = value.get("counts")
     if isinstance(counts, Mapping) and counts:
-        differing = [
-            (name, entry)
-            for name, entry in counts.items()
-            if not isinstance(entry, Mapping) or entry.get("current") != entry.get("rebuilt")
-        ]
-        if differing:
-            for name, entry in differing:
-                current = entry.get("current") if isinstance(entry, Mapping) else entry
-                rebuilt = entry.get("rebuilt") if isinstance(entry, Mapping) else None
-                lines.append(f"{name}: {_jsonable_evidence_value(current)} -> {_jsonable_evidence_value(rebuilt)}")
-            lines.insert(0, f"{count_noun(len(differing), 'compared count')} differ")
-        else:
-            lines.append(f"all {count_noun(len(counts), 'compared count')} are equal")
+        for name, entry in counts.items():
+            if not isinstance(entry, Mapping):
+                continue
+            live = entry.get("live")
+            rebuilt = entry.get("rebuilt")
+            if live != rebuilt:
+                lines.append(
+                    f"{name}: live {_jsonable_evidence_value(live)}, "
+                    f"rebuild {_jsonable_evidence_value(rebuilt)}"
+                )
 
     details = [
         f"{name}={_jsonable_evidence_value(entry)}"
         for name, entry in value.items()
-        if name not in {"counts", "equivalent"} and entry not in ({}, None, ())
+        if name not in {"counts", "equivalent", "live_rows_checked", "mismatches"}
+        and entry not in ({}, None, ())
     ]
     if details:
         lines.append(", ".join(details))
@@ -7260,10 +7276,12 @@ def evidence_compact_spool(
     Projections, receipts, acknowledgements, conflicts, and current facts are
     untouched, and no evidence conclusion changes.
 
-    The default dry run counts and verifies only, leaving the spool, its
-    archive, and the projection untouched. A real compaction needs both
-    --write and --yes: it runs the blocking verification before the swap and
-    aborts without touching anything when a compared count differs.
+    The default dry run scans, classifies, and measures only: it writes nothing
+    and rebuilds nothing, leaving the spool, its archive, and the projection
+    untouched. A real compaction needs both --write and --yes: it rebuilds the
+    projection from the current spool and from the compacted candidate, and
+    aborts without touching anything when a compared count, the arrival order,
+    or the spool-error count differs.
     """
 
     if write and not yes:
@@ -7328,13 +7346,29 @@ def evidence_compact_spool(
         print(f"Archive: would be written under {store.root / 'archive'} (a dry run writes nothing)")
     else:
         print("Archive: none written")
-    print("Blocking verification: " + (verification_lines[0] if verification_lines else "not reported"))
-    for line in verification_lines[1:]:
-        print(f"  {line}")
-    if verdict is True:
-        print("  the rebuilt projection matches the live one, which is the only state that allows the swap")
-    elif verdict is False:
-        print("  the rebuilt projection does NOT match — nothing was swapped; report this before retrying")
+    print("Blocking verification:")
+    if result.dry_run:
+        print("  not run — a dry run only scans, classifies, and measures, so there is nothing to compare.")
+        print(
+            "  It runs with --write, which rebuilds the projection from the compacted spool and refuses the"
+        )
+        print(
+            "  swap unless every row the live projection answers for is still there, arriving in the same"
+        )
+        print("  order, and the candidate is the snapshot's own byte-for-byte remainder.")
+    else:
+        print("  " + (verification_lines[0] if verification_lines else "not reported"))
+        for line in verification_lines[1:]:
+            print(f"  {line}")
+        if verdict is True:
+            print(
+                "  that containment is what allows the swap: dropping a row cannot change a live row's facts, "
+                "because a dropped row's key is absent from the live projection"
+            )
+        elif verdict is False:
+            print(
+                "  live rows are missing from the rebuild — nothing was swapped; report this before retrying"
+            )
     if result.dropped_rows:
         print(
             "Dropped rows were shadow rows with nothing left to answer for them: their versions already left "
