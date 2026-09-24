@@ -6,8 +6,10 @@ plan-calibration status, and recent sessions (with per-session weekly-plan
 share where calibrated). The full window has a recent-activity **Dashboard**,
 folder-based **Work** groups with client participation and shared timelines,
 and latest-first **Sessions** with a Work Receipt for each task. Receipts put
-activity before detailed steps and checks. **Usage & limits** combines daily
-client/model drilldowns, Fresh/All token counting, and provider capacity.
+activity before detailed steps and checks. **Usage & limits** leads with the
+selected 7d/30d/90d range's own cost and token totals per agent and per model,
+then combines daily client/model drilldowns, Fresh/All token counting, and
+provider capacity.
 Recorded issues remain available without becoming the default task order.
 Aggregation and evidence grading stay in the Python daemon.
 

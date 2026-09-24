@@ -18,6 +18,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   prompt|mcp|instructions --agent kimi-code` adds the onboarding surfaces
   (MCP registers in the user-level `~/.kimi-code/mcp.json`), and the CLI, TUI,
   local API, and macOS app show Kimi Code in their client labels.
+- The Usage page leads with the selected range's own totals: a "This range"
+  block lists each agent and each model with sessions, fresh/cache/total
+  tokens, and cost for the chosen 7/30/90 days, built from the range-scoped
+  buckets the local API already returns. Per-day history and the selected
+  day's detail are unchanged, and the cost labels keep their ≈ / `~$` /
+  Unpriced meaning.
 
 ### Changed
 
@@ -72,6 +78,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The macOS app shows "DeepSeek Harness" for `dsh` sessions in the recording
   health, work group, and provider-limit client labels instead of the raw
   client id.
+- The app's top bar always shows the local-data freshness stamp. It used to
+  render only when a timestamp happened to be set, so a work-receipt snapshot
+  without published build metadata — or any refresh that did not touch that
+  field — made the whole indicator, dot included, disappear; a successful
+  task-list read with omitted build metadata could also overwrite a known
+  time with none. The stamp now falls back honestly to the last known build,
+  the saved-copy date, or the read time, and shows "time unavailable" instead
+  of nothing when no honest time exists; the recorded-usage read time ships in
+  its hover text and accessibility label.
+- `usage_exclusions.unknown_time_rows` in `/v1/usage/summary` counted only
+  held rows, so an additive row dropped for an unusable timestamp vanished
+  from every bucket while the "what did this range leave out" field reported
+  zero. It now reports the same count as `totals.unknown_time_rows` (additive
+  and held rows alike), documented in `docs/reference.md`.
 
 ## [0.12.0] — 2026-09-23
 

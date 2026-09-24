@@ -615,17 +615,13 @@ struct TopBar: View {
                 .help("Install the recorder and configure your coding agents")
                 .accessibilityIdentifier("dashboard.setup-recording")
             }
-            if let updated = dashboard.lastUpdated {
-                let freshness = dashboardFreshnessText(updated)
-                HStack(spacing: 5) {
-                    Circle().fill(Theme.green).frame(width: 5, height: 5)
-                    Text("Local data · \(freshness)")
-                }
-                .workFont(.dataSmall)
-                .foregroundStyle(Theme.muted)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Local data updated \(freshness)")
-            }
+            // Never optional: a window whose local data has not been read yet
+            // says so, instead of dropping the indicator and leaving a blank
+            // where "how old is this?" used to be answered.
+            TopBarFreshnessIndicator(freshness: TopBarFreshness(
+                localData: dashboard.lastUpdated,
+                recordedUsage: dashboard.usageLastUpdated
+            ))
             ZStack {
                 if showsRefreshProgress {
                     ProgressView()

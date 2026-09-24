@@ -82,6 +82,61 @@ def _cube(records, **kwargs):
     return build_usage_cube(records, record_time=_usage_record_time, **kwargs)
 
 
+def _trusted_usage_event(
+    *,
+    session,
+    client="codex",
+    model="gpt-5.5",
+    input_tokens=100,
+    output_tokens=25,
+    cache_creation=0,
+    cache_read=0,
+    cost=0.01,
+    cost_confidence="estimated_from_tokens",
+    started_at=None,
+    updated_at=None,
+    project_dir=None,
+    cache_creation_reported=True,
+    cache_read_reported=True,
+    session_kind="root",
+    parent_session=None,
+):
+    """The trusted-import event body — one builder, so a row with distinct
+    start/update times (the cross-day span cases) can never drift from the
+    single-row helper's provenance shape."""
+
+    metadata = {
+        "usage_source": "local_client_session_store",
+        "client": client,
+        "client_session_id": session,
+        "client_session_kind": session_kind,
+        "parent_client_session_id": parent_session,
+        "cached_input_tokens": cache_creation + cache_read,
+        "cache_creation_input_tokens": cache_creation,
+        "cache_read_input_tokens": cache_read,
+    }
+    metadata["cache_creation_tokens_reported"] = cache_creation_reported
+    metadata["cache_read_tokens_reported"] = cache_read_reported
+    if started_at is not None:
+        metadata["started_at"] = started_at
+    if updated_at is not None:
+        metadata["updated_at"] = updated_at
+    if project_dir is not None:
+        metadata["project_dir"] = project_dir
+    return {
+        "source": f"{client}-local-session-import",
+        "event_type": "model_usage",
+        "provider": client,
+        "model": model,
+        "estimated_input_tokens": input_tokens,
+        "estimated_output_tokens": output_tokens,
+        "estimated_cost_usd": cost,
+        "usage_confidence": "client_reported",
+        "cost_confidence": cost_confidence,
+        "metadata": metadata,
+    }
+
+
 def _trusted_usage(
     store_root,
     *,
@@ -101,36 +156,27 @@ def _trusted_usage(
     session_kind="root",
     parent_session=None,
 ):
-    metadata = {
-        "usage_source": "local_client_session_store",
-        "client": client,
-        "client_session_id": session,
-        "client_session_kind": session_kind,
-        "parent_client_session_id": parent_session,
-        "cached_input_tokens": cache_creation + cache_read,
-        "cache_creation_input_tokens": cache_creation,
-        "cache_read_input_tokens": cache_read,
-    }
-    metadata["cache_creation_tokens_reported"] = cache_creation_reported
-    metadata["cache_read_tokens_reported"] = cache_read_reported
-    if started_at is not None:
-        metadata["started_at"] = started_at
-        metadata["updated_at"] = started_at
-    if project_dir is not None:
-        metadata["project_dir"] = project_dir
     return SentinelService(store_root).record_event(
-        {
-            "source": f"{client}-local-session-import",
-            "event_type": "model_usage",
-            "provider": client,
-            "model": model,
-            "estimated_input_tokens": input_tokens,
-            "estimated_output_tokens": output_tokens,
-            "estimated_cost_usd": cost,
-            "usage_confidence": "client_reported",
-            "cost_confidence": cost_confidence,
-            "metadata": metadata,
-        },
+        _trusted_usage_event(
+            session=session,
+            client=client,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_creation=cache_creation,
+            cache_read=cache_read,
+            cost=cost,
+            cost_confidence=cost_confidence,
+            # One saved activity timestamp: both slots carry it, exactly as
+            # before this helper gained an explicit ``updated_at``.
+            started_at=started_at,
+            updated_at=started_at,
+            project_dir=project_dir,
+            cache_creation_reported=cache_creation_reported,
+            cache_read_reported=cache_read_reported,
+            session_kind=session_kind,
+            parent_session=parent_session,
+        ),
         trusted_usage_import=True,
     )
 
@@ -999,3 +1045,811 @@ def test_all_token_basis_counts_normalized_cache_buckets_once_everywhere(granula
     assert active["by_client"]["claude-code"]["total_tokens_including_cached"] == 1000
     assert active["by_client"]["codex"]["total_tokens_including_cached"] == 1100
     assert active["by_client"]["codex"]["fresh_tokens"] == 350
+
+
+# ---------------------------------------------------------------------------
+# Range scoping — `GET /usage/summary?days=N` is the macOS Usage range
+# picker's contract (7d/30d/90d): `by_client` and `by_model` must be the sum
+# of exactly the rows whose ATTRIBUTED local date falls in the trailing N
+# days, with no page-limit truncation of the underlying ledger and the cube's
+# cost honesty intact in every bucket.
+#
+# Range tests anchor rows to the REAL clock: the route resolves its own
+# `date.today()`, so the module's fixed TODAY would land every row outside
+# the window. Offsets are local midnights, which no DST transition moves.
+# ---------------------------------------------------------------------------
+
+
+def _range_day(offset, today):
+    """Local midday ``offset`` days before ``today`` — the range-window anchor."""
+
+    day = today - timedelta(days=offset)
+    return datetime.combine(day, dtime(12, 0)).timestamp()
+
+
+def _seed_usage_rows(store_root, rows, *, today):
+    """Record a row table through ONE service for the same trusted-import
+    intake `_trusted_usage` uses (one service keeps the 250-row volume
+    fixture fast instead of re-opening the store per row).
+
+    Range tests anchor their rows to ``today``, which the route resolves for
+    itself; a run that crosses local midnight mid-seed would compare the
+    fixture against a window that has since moved, so that case skips.
+    """
+
+    service = SentinelService(store_root)
+    for row in rows:
+        service.record_event(
+            _trusted_usage_event(
+                session=row["session"],
+                client=row["client"],
+                model=row["model"],
+                input_tokens=row["input"],
+                output_tokens=row["output"],
+                cache_creation=row.get("cache_creation", 0),
+                cache_read=row.get("cache_read", 0),
+                cost=row["cost"],
+                cost_confidence=row["confidence"],
+                started_at=_range_day(row["started_offset"], today),
+                updated_at=_range_day(row["updated_offset"], today),
+                session_kind=row.get("kind", "root"),
+                parent_session=row.get("parent"),
+            ),
+            trusted_usage_import=True,
+        )
+    if date.today() != today:
+        pytest.skip("local midnight crossed while seeding the range fixture")
+
+
+def _attributed_offset(row):
+    """The day offset a row is attributed to — the one rule the range filter
+    applies: Hermes rides its session start, every other client its latest
+    saved activity (`period_attribution.description`)."""
+
+    return row["started_offset"] if row["client"] == "hermes" else row["updated_offset"]
+
+
+def _expected_range_bucket():
+    return {
+        "rows": 0,
+        "held_rows": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "total_tokens_including_cached": 0,
+        "priced_rows": 0,
+        "unpriced_rows": 0,
+        "cost": 0.0,
+        "session_keys": set(),
+    }
+
+
+def _add_expected_row(bucket, row):
+    """One row into one independently-summed bucket."""
+
+    bucket["rows"] += 1
+    bucket["session_keys"].add((row["client"], row["session"]))
+    if not row["additive"]:
+        bucket["held_rows"] += 1
+        return
+    bucket["input_tokens"] += row["input"]
+    bucket["output_tokens"] += row["output"]
+    bucket["cache_creation_tokens"] += row["cache_creation"]
+    bucket["cache_read_tokens"] += row["cache_read"]
+    bucket["total_tokens_including_cached"] += row["input"] + row["output"] + row["cached"]
+    if row["cost"] is None:
+        bucket["unpriced_rows"] += 1
+        return
+    bucket["priced_rows"] += 1
+    bucket["cost"] += row["cost"]
+
+
+def _expected_range_cube(rows, *, days, today, granularity="daily"):
+    """Plain-arithmetic recomputation of the range cube — no cube code runs.
+
+    Returns ``(by_client, by_model, by_period)``; ``by_period`` is keyed by the
+    period label (local day, or its ISO week start for weekly). The documented
+    window rule — ``days=N`` keeps the local days ``today-N+1 .. today`` — is
+    applied to the row table's own numbers, so the endpoint cannot pass these
+    checks by reusing the aggregation under test.
+    """
+
+    by_client: dict[str, dict] = {}
+    by_model: dict[tuple[str, str, str], dict] = {}
+    by_period: dict[str, dict[str, dict]] = {}
+    for row in rows:
+        offset = _attributed_offset(row)
+        if offset > days - 1:
+            continue
+        day = today - timedelta(days=offset)
+        period_key = (week_start(day) if granularity == "weekly" else day).isoformat()
+        model_key = (row["client"], row["client"], row["model"])
+        period = by_period.setdefault(period_key, {"by_client": {}, "by_model": {}})
+        for bucket in (
+            by_client.setdefault(row["client"], _expected_range_bucket()),
+            by_model.setdefault(model_key, _expected_range_bucket()),
+            period["by_client"].setdefault(row["client"], _expected_range_bucket()),
+            period["by_model"].setdefault(model_key, _expected_range_bucket()),
+        ):
+            _add_expected_row(bucket, row)
+    return by_client, by_model, by_period
+
+
+def _assert_bucket_matches_expected(bucket, expected):
+    """Compare one response bucket field-by-field with the independent sum.
+
+    Cost keeps the cube's honesty contract: a bucket whose rows all carry a
+    priced estimate reports that sum (a 0.0 from a priced row is a reported
+    zero, not an unknown), a bucket with no priced row reports None and no
+    confidence, and a bucket holding a quarantined row withholds its total
+    while ``known_additive_cost_usd`` keeps the priced subset visible.
+    """
+
+    assert bucket["rows"] == expected["rows"]
+    assert bucket["sessions"] == len(expected["session_keys"])
+    assert bucket["input_tokens"] == expected["input_tokens"]
+    assert bucket["output_tokens"] == expected["output_tokens"]
+    assert bucket["fresh_tokens"] == expected["input_tokens"] + expected["output_tokens"]
+    assert bucket["cache_creation_tokens"] == expected["cache_creation_tokens"]
+    assert bucket["cache_read_tokens"] == expected["cache_read_tokens"]
+    assert bucket["total_tokens_including_cached"] == expected["total_tokens_including_cached"]
+    assert bucket["priced_rows"] == expected["priced_rows"]
+    assert bucket["unpriced_rows"] == expected["unpriced_rows"]
+    if not expected["priced_rows"]:
+        assert bucket["estimated_cost_usd"] is None
+        assert bucket["known_additive_cost_usd"] is None
+    elif expected["held_rows"]:
+        assert bucket["estimated_cost_usd"] is None
+        assert bucket["known_additive_cost_usd"] == pytest.approx(expected["cost"])
+    else:
+        assert bucket["estimated_cost_usd"] == pytest.approx(expected["cost"])
+        assert bucket["known_additive_cost_usd"] == pytest.approx(expected["cost"])
+    assert bucket["cost_complete"] is bool(
+        expected["rows"] and not expected["held_rows"] and not expected["unpriced_rows"]
+    )
+
+
+def _range_row(
+    client,
+    model,
+    session,
+    offset,
+    *,
+    cost,
+    confidence,
+    input_tokens=100,
+    output_tokens=25,
+    cache_read=0,
+    cache_creation=0,
+    started_offset=None,
+    updated_offset=None,
+    additive=True,
+    kind="root",
+    parent=None,
+):
+    """One range-fixture row. ``offset`` is the saved activity day;
+
+    ``cached`` mirrors the ``cached_input_tokens`` the importer stores
+    (creation + read), ``additive=False`` marks a held row (non-additive rows
+    stay countable evidence but never enter token/cost sums).
+    """
+
+    return {
+        "client": client,
+        "model": model,
+        "session": session,
+        "input": input_tokens,
+        "output": output_tokens,
+        "cache_read": cache_read,
+        "cache_creation": cache_creation,
+        "cached": cache_read + cache_creation,
+        "cost": cost,
+        "confidence": confidence,
+        "started_offset": offset if started_offset is None else started_offset,
+        "updated_offset": offset if updated_offset is None else updated_offset,
+        "additive": additive,
+        "kind": kind,
+        "parent": parent,
+    }
+
+
+def _range_rows():
+    """The multi-day range fixture: two clients, two models under one client,
+    a cross-day span, a Hermes session-start row and an unpriced row.
+
+    Offsets: 0 = today, 6 = the 7d window's first day, 8 = inside 30d only,
+    45 = inside 90d only.
+    """
+
+    return [
+        _range_row("codex", "gpt-5.5", "range-codex-today", 0, input_tokens=100, output_tokens=25,
+                   cache_read=500, cost=0.10, confidence="estimated_from_tokens"),
+        _range_row("codex", "gpt-5.5", "range-codex-day3", 3, input_tokens=200, output_tokens=50,
+                   cost=0.20, confidence="estimated_from_tokens"),
+        _range_row("claude-code", "fable-5", "range-fable-day6", 6, input_tokens=300, output_tokens=75,
+                   cache_creation=40, cost=0.30, confidence="client_reported"),
+        # Offset 8: the row a 7d window must exclude and a 30d window include.
+        _range_row("claude-code", "fable-5", "range-fable-day8", 8, input_tokens=400, output_tokens=100,
+                   cost=0.40, confidence="client_reported"),
+        # Offset 45: only the 90d window reaches it.
+        _range_row("codex", "gpt-5.5", "range-codex-day45", 45, input_tokens=1000, output_tokens=0,
+                   cost=1.00, confidence="estimated_from_tokens"),
+        _range_row("claude-code", "mystery-model", "range-unpriced-day2", 2, input_tokens=50,
+                   output_tokens=10, cost=None, confidence=None),
+        # Cross-day spans: same start/activity pair, attributed by each
+        # client's own rule (codex -> latest activity, Hermes -> session start).
+        _range_row("codex", "gpt-5.5", "range-codex-span", 0, input_tokens=10, output_tokens=5,
+                   cost=0.01, confidence="estimated_from_tokens", started_offset=6, updated_offset=0),
+        _range_row("hermes", "gpt-5.4-mini", "range-hermes-span", 3, input_tokens=7, output_tokens=3,
+                   cost=0.02, confidence="estimated_from_tokens", started_offset=3, updated_offset=0),
+        # Hermes session active TODAY but started 10 days ago: the 7d window
+        # excludes it (session-start attribution), the 30d window includes it.
+        _range_row("hermes", "gpt-5.4-mini", "range-hermes-stale-start", 10, input_tokens=70,
+                   output_tokens=30, cost=0.07, confidence="estimated_from_tokens",
+                   started_offset=10, updated_offset=0),
+        # One session with rows on two different days: the per-period session
+        # counts split it, the range's distinct-session count does not.
+        _range_row("codex", "gpt-5.5", "range-codex-multiday", 1, input_tokens=11, output_tokens=1,
+                   cost=0.01, confidence="estimated_from_tokens"),
+        _range_row("codex", "gpt-5.5", "range-codex-multiday", 5, input_tokens=12, output_tokens=2,
+                   cost=0.01, confidence="estimated_from_tokens"),
+    ]
+
+
+def test_usage_summary_range_client_and_model_totals_are_the_in_range_row_sums(tmp_path):
+    store_root = tmp_path / "state"
+    today = date.today()
+    rows = _range_rows()
+    _seed_usage_rows(store_root, rows, today=today)
+    client = _client(store_root)
+
+    for days in (7, 30, 90):
+        payload = client.get(f"/usage/summary?days={days}&granularity=daily").json()
+        expected_clients, expected_models, _ = _expected_range_cube(rows, days=days, today=today)
+
+        by_client = {bucket["client"]: bucket for bucket in payload["by_client"]}
+        assert set(by_client) == set(expected_clients)
+        # Order is part of the contract (the app renders the list as delivered):
+        # biggest total token volume first, client name breaking ties.
+        assert [bucket["client"] for bucket in payload["by_client"]] == sorted(
+            by_client,
+            key=lambda name: (-by_client[name]["total_tokens_including_cached"], name),
+        )
+        for name, expected in expected_clients.items():
+            _assert_bucket_matches_expected(by_client[name], expected)
+
+        by_model = {
+            (bucket["client"], bucket["provider"], bucket["model"]): bucket
+            for bucket in payload["by_model"]
+        }
+        assert set(by_model) == set(expected_models)
+        assert [(b["client"], b["provider"], b["model"]) for b in payload["by_model"]] == sorted(
+            by_model, key=lambda key: (-by_model[key]["total_tokens_including_cached"], key)
+        )
+        for key, expected in expected_models.items():
+            _assert_bucket_matches_expected(by_model[key], expected)
+
+        # The range totals are one more bucket over the same population.
+        assert payload["totals"]["rows"] == sum(bucket["rows"] for bucket in payload["by_client"])
+        assert payload["totals"]["sessions"] == sum(
+            len(expected["session_keys"]) for expected in expected_clients.values()
+        )
+        assert payload["totals"]["total_tokens_including_cached"] == sum(
+            bucket["total_tokens_including_cached"] for bucket in payload["by_client"]
+        )
+
+    seven = client.get("/usage/summary?days=7&granularity=daily").json()
+    thirty = client.get("/usage/summary?days=30&granularity=daily").json()
+    ninety = client.get("/usage/summary?days=90&granularity=daily").json()
+
+    # The window is applied to SAVED-ROW attribution dates, and the payload
+    # says so: the recomputation above deliberately uses those dates rather
+    # than any reconstructed per-call history (`exact_daily_usage` false), so
+    # a session that straddles days is counted whole on one side.
+    assert seven["period_attribution"] == {
+        "basis": "saved_session_row",
+        "timezone": "daemon_local",
+        "exact_daily_usage": False,
+        "label": "Session totals by activity date",
+        "description": (
+            "Session totals are assigned to their saved activity date "
+            "(Hermes: session start; other clients: latest saved activity). "
+            "Multi-day sessions are not split into exact daily usage."
+        ),
+    }
+
+    def _client_tokens(payload, name):
+        return next(bucket["total_tokens_including_cached"] for bucket in payload["by_client"]
+                    if bucket["client"] == name)
+
+    def _model_rows(payload, name, model):
+        return next(bucket["rows"] for bucket in payload["by_model"]
+                    if bucket["client"] == name and bucket["model"] == model)
+
+    # 7d: codex 625 + 250 + 15 + 12 + 14, claude-code 415 + 60 (the day-8
+    # fable-5 row and the day-45 codex row are outside the window).
+    assert _client_tokens(seven, "codex") == 916
+    assert _client_tokens(seven, "claude-code") == 475
+    assert _model_rows(seven, "claude-code", "fable-5") == 1
+    # 30d: the day-8 fable-5 row joins, the day-45 codex row stays out.
+    assert _client_tokens(thirty, "codex") == 916
+    assert _client_tokens(thirty, "claude-code") == 975
+    assert _model_rows(thirty, "claude-code", "fable-5") == 2
+    # 90d: the day-45 codex row finally enters.
+    assert _client_tokens(ninety, "codex") == 1916
+    assert _client_tokens(ninety, "claude-code") == 975
+    assert _model_rows(ninety, "codex", "gpt-5.5") == 6
+
+
+def test_usage_summary_range_attributes_cross_day_sessions_by_the_disclosed_client_rule(tmp_path):
+    store_root = tmp_path / "state"
+    today = date.today()
+    _seed_usage_rows(store_root, _range_rows(), today=today)
+    client = _client(store_root)
+
+    seven = client.get("/usage/summary?days=7&granularity=daily").json()
+    thirty = client.get("/usage/summary?days=30&granularity=daily").json()
+
+    # The rule the range filter applies is disclosed in-band, and this fixture
+    # is only meaningful while it keeps naming both client behaviours.
+    attribution = seven["period_attribution"]
+    assert attribution["basis"] == "saved_session_row"
+    assert attribution["timezone"] == "daemon_local"
+    assert attribution["exact_daily_usage"] is False
+    assert "Hermes: session start" in attribution["description"]
+    assert "latest saved activity" in attribution["description"]
+
+    periods = {entry["period"]: entry for entry in seven["by_period"]}
+    today_key = today.isoformat()
+    # The cross-day codex span rides its LATEST ACTIVITY (today)...
+    assert periods[today_key]["by_client"]["codex"]["rows"] == 2
+    assert "hermes" not in periods[today_key]["by_client"]
+    # ...while the Hermes span rides its SESSION START (3 days ago), even
+    # though its latest activity is today.
+    start_key = (today - timedelta(days=3)).isoformat()
+    assert periods[start_key]["by_client"]["hermes"]["input_tokens"] == 7
+    # The codex span's own start (6 days ago) is NOT where its row lives: the
+    # only lane on that day is the genuine day-6 claude-code row.
+    assert set(periods[(today - timedelta(days=6)).isoformat()]["by_client"]) == {"claude-code"}
+
+    # The visible consequence for a range view: a Hermes session that was
+    # active today but started 10 days ago is NOT in the 7d window (its
+    # tokens cannot be split into fictional daily usage), and it appears once
+    # the window reaches its session start.
+    hermes_seven = next(bucket for bucket in seven["by_client"] if bucket["client"] == "hermes")
+    hermes_thirty = next(bucket for bucket in thirty["by_client"] if bucket["client"] == "hermes")
+    assert hermes_seven["rows"] == 1 and hermes_seven["input_tokens"] == 7
+    assert hermes_thirty["rows"] == 2 and hermes_thirty["input_tokens"] == 77
+
+    # Attribution never loses or duplicates a row: the per-period slices of a
+    # client always add back up to that client's range totals.
+    for field in ("rows", "input_tokens", "output_tokens", "fresh_tokens",
+                  "total_tokens_including_cached"):
+        for name in ("codex", "hermes"):
+            assert sum(entry["by_client"].get(name, {}).get(field, 0)
+                       for entry in seven["by_period"]) == next(
+                bucket[field] for bucket in seven["by_client"] if bucket["client"] == name
+            ), (field, name)
+
+
+def test_usage_summary_range_cost_columns_appear_only_where_rows_are_priced(tmp_path):
+    store_root = tmp_path / "state"
+    today = date.today()
+    rows = [
+        _range_row("codex", "gpt-5.5", "cost-estimated", 0, cost=0.10,
+                   confidence="estimated_from_tokens"),
+        _range_row("codex", "gpt-5.5", "cost-client-reported", 1, cost=0.20,
+                   confidence="client_reported"),
+        _range_row("claude-code", "fable-5", "cost-unpriced", 2, cost=None, confidence=None),
+        # A stored cost with no confidence label: priced, and never upgraded.
+        _range_row("claude-code", "unlabeled-model", "cost-unlabeled", 3, cost=0.30, confidence=None),
+        # A reported zero is a measurement, not an unknown.
+        _range_row("hermes", "gpt-5.4-mini", "cost-reported-zero", 4, cost=0.0,
+                   confidence="client_reported"),
+    ]
+    _seed_usage_rows(store_root, rows, today=today)
+    client = _client(store_root)
+
+    payload = client.get("/usage/summary?days=7&granularity=daily").json()
+    by_client = {bucket["client"]: bucket for bucket in payload["by_client"]}
+    by_model = {bucket["model"]: bucket for bucket in payload["by_model"]}
+
+    unpriced = by_model["fable-5"]
+    assert unpriced["estimated_cost_usd"] is None
+    assert unpriced["known_additive_cost_usd"] is None
+    assert unpriced["priced_rows"] == 0
+    assert unpriced["unpriced_rows"] == 1
+    assert unpriced["cost_confidence"] is None
+    assert unpriced["cost_confidence_label"] is None
+    assert unpriced["cost_confidence_mixed"] is False
+    assert unpriced["cost_complete"] is False
+
+    # The unpriced row never removes the priced lane's number, and the client
+    # bucket says its $0.30 covers one of two rows.
+    unlabeled = by_model["unlabeled-model"]
+    assert unlabeled["estimated_cost_usd"] == pytest.approx(0.30)
+    assert unlabeled["cost_confidence"] == "unknown"
+    assert unlabeled["cost_confidence_label"] == "unknown confidence"
+    assert unlabeled["cost_complete"] is True
+    claude_code = by_client["claude-code"]
+    assert claude_code["estimated_cost_usd"] == pytest.approx(0.30)
+    assert claude_code["known_additive_cost_usd"] == pytest.approx(0.30)
+    assert claude_code["priced_rows"] == 1
+    assert claude_code["unpriced_rows"] == 1
+    assert claude_code["cost_complete"] is False
+
+    # $0.00 from a priced row stays a number; cost weight (not row count)
+    # picks the dominant confidence, and a split names both labels.
+    reported_zero = by_client["hermes"]
+    assert reported_zero["estimated_cost_usd"] == 0.0
+    assert reported_zero["cost_confidence"] == "client_reported"
+    assert reported_zero["cost_complete"] is True
+    codex = by_client["codex"]
+    assert codex["estimated_cost_usd"] == pytest.approx(0.30)
+    assert codex["cost_confidence"] == "client_reported"
+    assert codex["cost_confidence_mixed"] is True
+    assert codex["cost_confidence_label"] == "mixed confidence (mostly client_reported)"
+
+    # Rule for every bucket of this range: a cost number appears exactly when
+    # a priced row backs it, and a bucket with no priced row reports None
+    # instead of a fabricated 0.00.
+    buckets = [payload["totals"], *payload["by_client"], *payload["by_model"],
+               *[entry for entry in payload["by_period"] if entry["rows"]],
+               *[lane for entry in payload["by_period"] for lane in entry["by_client"].values()],
+               *[slice_bucket for entry in payload["by_period"] for slice_bucket in entry["by_model"]]]
+    for bucket in buckets:
+        assert (bucket["estimated_cost_usd"] is None) is (bucket["priced_rows"] == 0)
+        if bucket["priced_rows"] == 0:
+            assert bucket["cost_confidence"] is None
+            assert bucket["cost_complete"] is False
+        else:
+            assert bucket["cost_confidence"] is not None
+
+    assert payload["totals"]["estimated_cost_usd"] == pytest.approx(0.60)
+    assert payload["totals"]["cost_complete"] is False
+    assert payload["totals"]["unpriced_rows"] == 1
+
+
+@pytest.mark.parametrize(("days", "granularity"), [("7", "daily"), ("30", "daily"), ("90", "weekly")])
+def test_usage_summary_range_period_slices_add_up_to_the_range_totals(tmp_path, days, granularity):
+    store_root = tmp_path / "state"
+    today = date.today()
+    rows = _range_rows()
+    _seed_usage_rows(store_root, rows, today=today)
+    client = _client(store_root)
+
+    payload = client.get(f"/usage/summary?days={days}&granularity={granularity}").json()
+    expected_clients, expected_models, expected_periods = _expected_range_cube(
+        rows, days=int(days), today=today, granularity=granularity
+    )
+    periods = payload["by_period"]
+    lanes = {bucket["client"]: bucket for bucket in payload["by_client"]}
+    model_lanes = {(b["client"], b["provider"], b["model"]): b for b in payload["by_model"]}
+
+    # Every period in the window is present (gaps included) and nothing
+    # outside it leaks in; the populated ones carry exactly the rows whose
+    # attributed day falls there.
+    populated = {entry["period"]: entry for entry in periods if entry["rows"]}
+    assert set(populated) == set(expected_periods)
+    if granularity == "daily":
+        # The whole window is enumerated, gap days included.
+        assert [entry["period"] for entry in periods] == [
+            (today - timedelta(days=offset)).isoformat() for offset in range(int(days) - 1, -1, -1)
+        ]
+
+    additive_fields = (
+        "rows", "input_tokens", "output_tokens", "fresh_tokens", "cache_creation_tokens",
+        "cache_read_tokens", "total_tokens_including_cached", "priced_rows", "unpriced_rows",
+    )
+    for field in additive_fields:
+        assert sum(entry[field] for entry in periods) == payload["totals"][field], field
+        for name, lane in lanes.items():
+            assert sum(entry["by_client"].get(name, {}).get(field, 0)
+                       for entry in periods) == lane[field], (field, name)
+        for key, lane in model_lanes.items():
+            assert sum(
+                slice_bucket[field]
+                for entry in periods
+                for slice_bucket in entry["by_model"]
+                if (slice_bucket["client"], slice_bucket["provider"], slice_bucket["model"]) == key
+            ) == lane[field], (field, key)
+
+    # Every row here is priced and additive except the unpriced one, and a
+    # bucket whose only row is unpriced reports None (never $0.00) — so the
+    # priced-only view is the one that must add up across grains.
+    priced_period_cost = sum(entry["estimated_cost_usd"] for entry in periods if entry["priced_rows"])
+    priced_lane_cost = sum(lane["estimated_cost_usd"] for lane in lanes.values() if lane["priced_rows"])
+    priced_model_cost = sum(
+        lane["estimated_cost_usd"] for lane in model_lanes.values() if lane["priced_rows"]
+    )
+    assert priced_period_cost == pytest.approx(payload["totals"]["estimated_cost_usd"])
+    assert priced_lane_cost == pytest.approx(payload["totals"]["estimated_cost_usd"])
+    assert priced_model_cost == pytest.approx(payload["totals"]["estimated_cost_usd"])
+    unpriced_only = [entry["period"] for entry in periods if entry["rows"] and not entry["priced_rows"]]
+    if granularity == "daily":
+        # Only the unpriced row's own day lacks a priced row entirely.
+        assert unpriced_only == [(today - timedelta(days=2)).isoformat()]
+    # A populated period whose rows are all unpriced reports None, never $0.00.
+    for entry in periods:
+        assert (entry["estimated_cost_usd"] is None) is (entry["priced_rows"] == 0), entry["period"]
+    for entry in periods:
+        if not entry["rows"]:
+            assert entry["estimated_cost_usd"] is None
+            assert entry["by_client"] == {} and entry["by_model"] == []
+            continue
+        expected = expected_periods[entry["period"]]
+        for name, expected_lane in expected["by_client"].items():
+            _assert_bucket_matches_expected(entry["by_client"][name], expected_lane)
+        got_slices = {(b["client"], b["provider"], b["model"]): b for b in entry["by_model"]}
+        assert set(got_slices) == set(expected["by_model"])
+        for key, expected_lane in expected["by_model"].items():
+            _assert_bucket_matches_expected(got_slices[key], expected_lane)
+
+    # Sessions are the one NON-additive counter: each period counts its own
+    # distinct sessions, so a session with rows on two days appears twice —
+    # which is exactly why period_attribution flags exact_daily_usage false
+    # and why the range total is the number to quote, never the column sum.
+    assert sum(entry["sessions"] for entry in periods) > payload["totals"]["sessions"]
+    assert payload["totals"]["sessions"] == sum(
+        len(expected["session_keys"]) for expected in expected_clients.values()
+    )
+    assert {name for entry in periods for name in entry["by_client"]} == set(lanes)
+
+
+def test_usage_summary_range_client_totals_are_not_a_page_of_events(tmp_path):
+    store_root = tmp_path / "state"
+    today = date.today()
+    volume_rows = [
+        _range_row("codex", "gpt-5.5", f"vol-{index}", 0, input_tokens=10, output_tokens=2,
+                   cache_read=3, cost=0.001, confidence="estimated_from_tokens")
+        for index in range(250)
+    ]
+    rows = [
+        *volume_rows,
+        _range_row("claude-code", "fable-5", "vol-claude", 0, input_tokens=100, output_tokens=25,
+                   cost=0.01, confidence="client_reported"),
+        # Two rows outside the 7d window: they must not leak into it.
+        _range_row("codex", "gpt-5.5", "vol-old-a", 20, input_tokens=5000, output_tokens=900,
+                   cost=5.0, confidence="estimated_from_tokens"),
+        _range_row("codex", "gpt-5.5", "vol-old-b", 25, input_tokens=5000, output_tokens=900,
+                   cost=5.0, confidence="estimated_from_tokens"),
+    ]
+    _seed_usage_rows(store_root, rows, today=today)
+    client = _client(store_root)
+
+    seven = client.get("/usage/summary?days=7&granularity=daily").json()
+
+    # 250 codex rows inside the window (the two day-20/25 rows are not) and one
+    # claude-code row. /events cannot return more than 200 rows per page, so a
+    # client bucket of 250 rows proves the aggregate is a full-population sum,
+    # not a truncated page or a scan limit.
+    assert len(client.get("/events?limit=200").json()["events"]) == 200
+    by_client = {bucket["client"]: bucket for bucket in seven["by_client"]}
+    assert set(by_client) == {"codex", "claude-code"}
+    assert by_client["codex"]["rows"] == 250
+    assert by_client["codex"]["fresh_tokens"] == 250 * 12
+    assert by_client["codex"]["cache_read_tokens"] == 250 * 3
+    assert by_client["codex"]["total_tokens_including_cached"] == 250 * 15
+    assert by_client["codex"]["estimated_cost_usd"] == pytest.approx(0.25)
+    assert by_client["claude-code"]["rows"] == 1
+    assert by_client["claude-code"]["fresh_tokens"] == 125
+    assert seven["totals"]["rows"] == 251
+    assert seven["totals"]["fresh_tokens"] == 250 * 12 + 125
+    assert seven["totals"]["sessions"] == 251
+
+    # The two older rows join only once the window reaches them, and the
+    # out-of-range tokens never appear in the 7d picture.
+    thirty = client.get("/usage/summary?days=30&granularity=daily").json()
+    thirty_codex = next(bucket for bucket in thirty["by_client"] if bucket["client"] == "codex")
+    assert thirty_codex["rows"] == 252
+    assert thirty_codex["fresh_tokens"] == 250 * 12 + 2 * 5900
+
+
+def test_usage_summary_range_keeps_held_rows_counted_but_never_summed(tmp_path):
+    store_root = tmp_path / "state"
+    today = date.today()
+    rows = [
+        # A cumulative Codex descendant is held from every token/cost subtotal
+        # even when it lands inside the selected range.
+        _range_row("codex", "gpt-5.5", "held-child", 1, input_tokens=5_000_000_000,
+                   output_tokens=1_000_000_000, cache_read=70_000_000_000, cost=500.0,
+                   confidence="estimated_from_tokens", additive=False, kind="child",
+                   parent="missing-parent"),
+        _range_row("codex", "gpt-5.5", "held-neighbour", 1, input_tokens=100, output_tokens=25,
+                   cost=0.10, confidence="estimated_from_tokens"),
+        _range_row("claude-code", "fable-5", "held-clean", 2, input_tokens=300, output_tokens=75,
+                   cost=0.30, confidence="client_reported"),
+    ]
+    _seed_usage_rows(store_root, rows, today=today)
+    client = _client(store_root)
+
+    for days in ("7", "30"):
+        payload = client.get(f"/usage/summary?days={days}&granularity=daily").json()
+        expected_clients, expected_models, expected_periods = _expected_range_cube(
+            rows, days=int(days), today=today
+        )
+        by_client = {bucket["client"]: bucket for bucket in payload["by_client"]}
+        by_model = {(b["client"], b["provider"], b["model"]): b for b in payload["by_model"]}
+
+        codex = by_client["codex"]
+        assert codex["rows"] == 2
+        assert codex["additive_rows"] == 1
+        assert codex["excluded_non_additive_rows"] == 1
+        # The held row is still a session (it is evidence), its tokens are not.
+        assert codex["sessions"] == 2
+        assert codex["fresh_tokens"] == 125
+        assert codex["total_tokens_including_cached"] == 125
+        assert codex["estimated_cost_usd"] is None
+        assert codex["known_additive_cost_usd"] == pytest.approx(0.10)
+        assert codex["cost_complete"] is False
+        assert codex["usage_availability"] == "partial"
+        # The $500 and the multi-billion-token counters reach no bucket at any
+        # grain.
+        assert by_client["claude-code"]["estimated_cost_usd"] == pytest.approx(0.30)
+        assert payload["totals"]["estimated_cost_usd"] is None
+        assert payload["totals"]["known_additive_cost_usd"] == pytest.approx(0.40)
+        assert payload["totals"]["excluded_non_additive_rows"] == 1
+        assert payload["usage_exclusions"] == {
+            "non_additive_rows": 1,
+            "unknown_time_rows": 0,
+            "reason": "legacy_codex_descendant_cumulative_unproven",
+            "raw_evidence_preserved": True,
+        }
+        for bucket in (*by_client.values(), *by_model.values(), payload["totals"]):
+            assert bucket["total_tokens_including_cached"] < 1_000_000
+
+        for name, expected in expected_clients.items():
+            _assert_bucket_matches_expected(by_client[name], expected)
+        for key, expected in expected_models.items():
+            _assert_bucket_matches_expected(by_model[key], expected)
+        assert {entry["period"] for entry in payload["by_period"] if entry["rows"]} == set(expected_periods)
+
+
+def test_usage_summary_range_drops_future_dated_rows_from_every_bounded_window(tmp_path):
+    """A row dated after today is outside every bounded window.
+
+    The exclusion is deliberate (``usage_snapshot``: future / absurd
+    timestamps are excluded exactly as the dashboard's summary does, and a
+    bounded range cannot honestly include them). Note for the range view: it
+    is also undisclosed at row level — ``unknown_time_rows`` counts only rows
+    that FAIL the bad-timestamp guard, and ``history_outside_range``
+    deliberately never calls a future-dated client "preserved history" — so
+    the only place such a row shows up is the all-time cube. This test pins
+    the scoping (no leakage into any bounded bucket) rather than a disclosure
+    the endpoint does not make.
+    """
+
+    store_root = tmp_path / "state"
+    today = date.today()
+    rows = [
+        _range_row("codex", "gpt-5.5", "future-row", -3, input_tokens=999, output_tokens=99,
+                   cost=9.0, confidence="estimated_from_tokens"),
+        _range_row("codex", "gpt-5.5", "dated-today", 0, input_tokens=100, output_tokens=25,
+                   cost=0.10, confidence="estimated_from_tokens"),
+    ]
+    _seed_usage_rows(store_root, rows, today=today)
+    client = _client(store_root)
+
+    for days in ("7", "30", "90"):
+        payload = client.get(f"/usage/summary?days={days}&granularity=daily").json()
+        codex = next(bucket for bucket in payload["by_client"] if bucket["client"] == "codex")
+        assert codex["rows"] == 1
+        assert codex["fresh_tokens"] == 125
+        assert codex["estimated_cost_usd"] == pytest.approx(0.10)
+        assert payload["totals"]["rows"] == 1
+        assert payload["totals"]["unknown_time_rows"] == 0
+        assert payload["range_context"]["history_outside_range"] == []
+        assert (today + timedelta(days=3)).isoformat() not in {
+            entry["period"] for entry in payload["by_period"]
+        }
+
+    # The row is stored, not deleted: all-time shows it on its own date.
+    all_time = client.get("/usage/summary?days=all&granularity=daily").json()
+    future_period = next(
+        entry for entry in all_time["by_period"]
+        if entry["period"] == (today + timedelta(days=3)).isoformat()
+    )
+    assert future_period["fresh_tokens"] == 1098
+    assert all_time["totals"]["rows"] == 2
+
+
+def test_usage_summary_range_unknown_time_row_is_disclosed_by_totals_and_exclusions(tmp_path):
+    """Dropped rows, one count: both disclosures agree on the same lane set.
+
+    A row whose timestamp fails the bad-timestamp guard cannot join a bounded
+    range: it is dropped from every ``by_client`` / ``by_model`` /
+    ``by_period`` bucket and counted by ``totals.unknown_time_rows``
+    (docs/reference.md: "unknown timestamps ... are counted separately in
+    bounded ranges"). That holds for both lanes — the fixture carries one
+    additive row and one held (non-additive) row with the same unusable stamp.
+
+    ``usage_exclusions`` is the object a JSON consumer reads to ask "what did
+    this range leave out?", so its ``unknown_time_rows`` carries that same
+    scope — every in-range row dropped for an unusable timestamp, additive and
+    held alike — and is by construction the cube's own count, so a consumer can
+    never see a dropped row that only one of the two objects admits to. The
+    field overlaps ``totals`` on purpose; ``non_additive_rows`` stays the
+    held-lane-only counter, and an undated held row is disclosed by the
+    unknown-time counter rather than by that range-scoped held counter.
+    """
+
+    store_root = tmp_path / "state"
+    today = date.today()
+    _seed_usage_rows(
+        store_root,
+        [_range_row("codex", "gpt-5.5", "undated-ok", 0, input_tokens=100, output_tokens=25,
+                    cost=0.10, confidence="estimated_from_tokens")],
+        today=today,
+    )
+    SentinelService(store_root).record_event(
+        _trusted_usage_event(
+            session="undated-row",
+            client="codex",
+            model="gpt-5.5",
+            input_tokens=7,
+            output_tokens=3,
+            cost=0.01,
+            cost_confidence="estimated_from_tokens",
+            started_at=1e300,
+            updated_at=1e300,
+        ),
+        trusted_usage_import=True,
+    )
+    # The HELD lane carries the same stamp: this row is non-additive (an
+    # unproven Codex cumulative descendant) AND undated, so neither counter may
+    # lose it.
+    SentinelService(store_root).record_event(
+        _trusted_usage_event(
+            session="undated-held-row",
+            client="codex",
+            model="gpt-5.5",
+            input_tokens=9,
+            output_tokens=1,
+            cost=0.02,
+            cost_confidence="estimated_from_tokens",
+            started_at=1e300,
+            updated_at=1e300,
+            session_kind="child",
+            parent_session="missing-parent",
+        ),
+        trusted_usage_import=True,
+    )
+    client = _client(store_root)
+
+    payload = client.get("/usage/summary?days=7&granularity=daily").json()
+
+    # Documented behaviour: excluded from every bucket, counted in totals.
+    assert payload["totals"]["unknown_time_rows"] == 2
+    assert payload["totals"]["rows"] == 1
+    codex = next(bucket for bucket in payload["by_client"] if bucket["client"] == "codex")
+    assert codex["rows"] == 1
+    assert codex["input_tokens"] == 100
+    assert [entry["period"] for entry in payload["by_period"]] == [
+        (today - timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)
+    ]
+    # All-time keeps the rows under the explicit unknown period — they are
+    # dropped from the range, never deleted from the ledger. Only the additive
+    # row's tokens reach the period bucket; the held row stays evidence-only.
+    all_time = client.get("/usage/summary?days=all&granularity=daily").json()
+    unknown_period = next(entry for entry in all_time["by_period"] if entry["period"] == "unknown")
+    assert unknown_period["rows"] == 2 and unknown_period["fresh_tokens"] == 10
+
+    # Both disclosures name the same two dropped rows — one additive, one held
+    # — and the undated HELD row is disclosed by the unknown-time counter, not
+    # by the range-scoped held counter (it carries no date to be held "inside
+    # the range" with).
+    assert payload["usage_exclusions"] == {
+        "non_additive_rows": 0,
+        "unknown_time_rows": 2,
+        "reason": "legacy_codex_descendant_cumulative_unproven",
+        "raw_evidence_preserved": True,
+    }
+    assert payload["usage_exclusions"]["unknown_time_rows"] == payload["totals"]["unknown_time_rows"]
+    # Same rule with days=all: nothing is dropped for an unusable timestamp
+    # there (the rows are kept under the "unknown" period), so the shared count
+    # matches those kept rows rather than claiming an exclusion — and the held
+    # row now also lands in the held-lane counter, since no range excludes it.
+    assert all_time["usage_exclusions"]["unknown_time_rows"] == all_time["totals"]["unknown_time_rows"] == 2
+    assert all_time["usage_exclusions"]["non_additive_rows"] == 1
+    assert unknown_period["rows"] == all_time["usage_exclusions"]["unknown_time_rows"]

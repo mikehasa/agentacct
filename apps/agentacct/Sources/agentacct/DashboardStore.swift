@@ -140,6 +140,13 @@ final class DashboardStore {
     private(set) var updateRestarting = false
     private(set) var isRefreshing = false
     private(set) var isLoadingReceipts = false
+    /// Freshness of the local data this window shows, as the top bar reports
+    /// it: the newest completed work-receipt generation the daemon served
+    /// (`built_at`), or the read time on a daemon that publishes no generation
+    /// metadata. Every successful Task-list read writes it (see
+    /// `localDataStamp`), so a failed usage or attention lane cannot erase a
+    /// stamp this window already earned. `nil` means no read has completed;
+    /// the top bar says so rather than hiding the indicator.
     private(set) var lastUpdated: Date?
 
     /// Folder-anchored Work groupings (the Work tab). Membership is re-queried
@@ -370,12 +377,10 @@ final class DashboardStore {
         async let connectionsRefresh: Void = refreshConnections()
         async let versionRefresh: Void = refreshVersion()
 
-        var tasksSucceeded = false
         do {
             let tasks = try await tasksRequest
             if receiptListGeneration == self.receiptListGeneration {
                 publishReceiptTasks(tasks)
-                tasksSucceeded = true
             }
         } catch let pending as WorkProjectionPending {
             if !Task.isCancelled, receiptListGeneration == self.receiptListGeneration {
@@ -438,8 +443,10 @@ final class DashboardStore {
             usage = summary
             errorText = nil
             let updated = Date()
+            // Only the recorded-usage lane is stamped here. `lastUpdated` is
+            // written by the Task-list lane that produced it, so a usage
+            // failure can no longer hide a local-data stamp this window has.
             usageLastUpdated = updated
-            if tasksSucceeded { lastUpdated = receiptListLastUpdated }
         } catch GlanceClientError.noDiscovery(_) {
             guard !Task.isCancelled,
                   rangeGeneration == usageDaysGeneration else { return }
@@ -747,14 +754,42 @@ final class DashboardStore {
     }
 
     private func publishReceiptTasks(_ payload: ReceiptTasksPayload) {
+        let stamp = Self.localDataStamp(
+            projection: payload.projection,
+            publishedBuiltAt: receiptListLastUpdated,
+            savedCollectionDate: savedWork?.collectionDate,
+            readAt: SnapshotMode.currentDate
+        )
         receiptListProjection = payload.projection
         receiptTasks = payload.tasks
         totalReceiptTasks = payload.total
         receiptTasksTruncated = payload.truncated
         receiptAttention = payload.attention
         receiptListError = nil
-        receiptListLastUpdated = payload.projection == nil
-            ? (savedWork?.collectionDate ?? Date()) : payload.projection?.builtDate
+        receiptListLastUpdated = stamp
+        // A completed read is the local-data freshness the top bar reports.
+        // Writing it here (rather than in whichever other lane happens to
+        // succeed alongside) is what keeps the indicator visible when the
+        // usage or attention request fails.
+        lastUpdated = stamp
+    }
+
+    /// The freshness stamp for one completed Task-list read.
+    ///
+    /// A daemon that publishes generation metadata owns the timestamp
+    /// (`built_at`). A rebuilding generation that omits it keeps the last build
+    /// this window actually saw, so fresh evidence is never relabelled as
+    /// un-timed. A daemon with no metadata at all keeps the saved copy's date
+    /// when there is one, and only a live read with neither falls back to the
+    /// read time itself.
+    static func localDataStamp(
+        projection: WorkProjectionMetadata?,
+        publishedBuiltAt: Date?,
+        savedCollectionDate: Date?,
+        readAt: Date
+    ) -> Date? {
+        guard let projection else { return savedCollectionDate ?? readAt }
+        return projection.builtDate ?? publishedBuiltAt
     }
 
     func fetchReceipt(taskId: String) async {
@@ -1047,7 +1082,6 @@ final class DashboardStore {
             errorText = nil
             let updated = Date()
             usageLastUpdated = updated
-            if receiptListError == nil { lastUpdated = receiptListLastUpdated }
         } catch {
             guard generation == usageDaysGeneration else { return }
             errorText = "usage range fetch failed: \(error.localizedDescription)"
