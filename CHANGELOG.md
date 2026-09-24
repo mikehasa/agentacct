@@ -21,6 +21,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The capability manifest no longer understates the cost basis of Claude Code,
+  Codex, hermes, and dsh usage rows. These clients store no cost figure, so a
+  row priced by `--estimate-costs` (which the daemon and first-sync import
+  paths enable by default) comes from agentacct's local pricing table; those
+  usage lanes now say `estimated_from_tokens` instead of `unknown`, and each
+  lane states the bound in place: an id the table does not cover stays unknown
+  rather than taking a nearby price, a Claude Code or dsh row is therefore
+  always an equivalent ≈ estimate and never a bill, Codex imports additionally
+  leave rows with no model label or an uncovered id unpriced, and a
+  Hermes-stored cost is kept as `client_reported`. The coverage matrix is
+  regenerated, and the usage truth table carries the same statement.
 - Kimi Code usage can now be priced. Kimi Code reports its own routing model
   names, which did not match the local pricing table, so imported rows stayed
   cost-unknown even though their token counters were complete;

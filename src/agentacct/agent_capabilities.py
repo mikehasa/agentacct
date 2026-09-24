@@ -374,11 +374,15 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             ),
             "usage_import": _capability_record(
                 "verified_partial",
-                "Client-reported input and output token totals from local assistant-message rows.",
+                "Client-reported input and output token totals from local assistant-message rows, with cost derived from those tokens by the local pricing table.",
                 activation="opt_in_project",
                 verification=_LOCAL_IMPORT_LIVE,
-                limitations=("Client-reported usage is not provider billing.",),
+                limitations=(
+                    "Client-reported usage is not provider billing.",
+                    "Claude Code persists no cost figure, so a priced row is always agentacct's local pricing-table estimate, never a client- or provider-reported cost, and it exists only while that table covers the reported model id: an unpriced id stays cost-unknown.",
+                ),
                 usage_basis="client_reported",
+                cost_basis="estimated_from_tokens",
             ),
             "mechanical_capture": _capability_record(
                 "experimental",
@@ -429,7 +433,10 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 ),
             ),
         },
-        "limitations": ["Exact work attribution still requires client-authored identifiers on the recording call."],
+        "limitations": [
+            "Exact work attribution still requires client-authored identifiers on the recording call.",
+            "Cost on the usage lane is agentacct's own estimate from the client-reported tokens against the local pricing table: a stored Claude Code row carries no cost figure, so a priced row is an equivalent-cost estimate, never provider or subscription billing, and an id that table does not cover stays cost-unknown.",
+        ],
     },
     {
         "client": "codex",
@@ -455,11 +462,16 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             ),
             "usage_import": _capability_record(
                 "verified_partial",
-                "Rollout token-count events with a conservative SQLite fallback.",
+                "Rollout token-count events with a conservative SQLite fallback, with cost derived from those tokens by the local pricing table.",
                 activation="opt_in_project",
                 verification=_LOCAL_IMPORT_LIVE,
-                limitations=("Replay-like descendant rows can be held as non-additive instead of counted.",),
+                limitations=(
+                    "Replay-like descendant rows can be held as non-additive instead of counted.",
+                    "Codex persists no cost figure, so a priced row is always agentacct's local pricing-table estimate, never a client- or provider-reported cost, and it exists only while that table covers the reported model id: an unpriced id stays cost-unknown.",
+                    "Real imports price only the rows the local pricing table can resolve: a row with no model label, or with a model id the table does not cover, keeps cost-unknown instead of taking a nearby price.",
+                ),
                 usage_basis="client_reported",
+                cost_basis="estimated_from_tokens",
             ),
             "mechanical_capture": _capability_record(
                 "experimental",
@@ -515,7 +527,10 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 ),
             ),
         },
-        "limitations": ["Usage and semantic work remain separate unless client-log evidence proves the join."],
+        "limitations": [
+            "Usage and semantic work remain separate unless client-log evidence proves the join.",
+            "Cost on the usage lane is agentacct's own estimate from the client-reported rollout tokens against the local pricing table: a stored Codex row carries no cost figure, so a priced row is an equivalent-cost estimate, never subscription billing, while rows with no model label or an uncovered model id stay cost-unknown.",
+        ],
     },
     {
         "client": "hermes",
@@ -541,11 +556,16 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             ),
             "usage_import": _capability_record(
                 "verified_partial",
-                "Client-reported input and output token totals from usage-bearing state.db rows.",
+                "Client-reported input and output token totals from usage-bearing state.db rows, with cost derived from those tokens by the local pricing table when the store records none.",
                 activation="opt_in_project",
                 verification=_LOCAL_IMPORT_LIVE,
-                limitations=("Optional model/cache/cost fields have synthetic evidence only; schema drift can collapse to an empty result.",),
+                limitations=(
+                    "Optional model/cache/cost fields have synthetic evidence only; schema drift can collapse to an empty result.",
+                    "A client-reported cost, when Hermes stores one, is kept as client_reported.",
+                    "When the store records no cost, a priced row is always agentacct's local pricing-table estimate, never a client- or provider-reported cost, and it exists only while that table covers the reported model id: an unpriced id stays cost-unknown.",
+                ),
                 usage_basis="client_reported",
+                cost_basis="estimated_from_tokens",
             ),
             "mechanical_capture": _capability_record(
                 "experimental",
@@ -602,7 +622,10 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 ),
             ),
         },
-        "limitations": ["Remain provisional until schema-drift recovery and zero-token observation have live evidence."],
+        "limitations": [
+            "Remain provisional until schema-drift recovery and zero-token observation have live evidence.",
+            "Cost on the usage lane follows the client: a stored Hermes cost is kept as client_reported, and every other row is agentacct's own estimate from the client-reported tokens against the local pricing table — equivalent cost, never provider billing — with an uncovered model id staying cost-unknown.",
+        ],
     },
     {
         "client": "opencode",
@@ -797,15 +820,15 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             ),
             "usage_import": _capability_record(
                 "experimental",
-                "Input, output, cache, and reasoning tokens from assistant/message events (Zstandard-compressed JSONL).",
+                "Input, output, cache, and reasoning tokens from assistant/message events (Zstandard-compressed JSONL), with cost derived from those tokens by the local pricing table.",
                 activation="opt_in_project",
                 verification=_DSH_USAGE_FIXTURE,
                 limitations=(
                     "Synthetic happy-path fixture only; malformed/schema-drift diagnostics are incomplete.",
-                    "dsh does not persist a cost, so only agentacct's local pricing-table estimate is possible.",
+                    "dsh persists no cost figure, so a priced row is always agentacct's local pricing-table estimate, never a client- or provider-reported cost, and it exists only while that table covers the reported model id: an unpriced id stays cost-unknown.",
                 ),
                 usage_basis="client_reported",
-                cost_basis="unknown",
+                cost_basis="estimated_from_tokens",
             ),
             "mechanical_capture": _unavailable_capability("No typed dsh plugin-hook adapter is implemented."),
             "mcp_semantics": _capability_record(
@@ -848,7 +871,10 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 ),
             ),
         },
-        "limitations": ["Usage-import lanes remain synthetic-fixture experimental until a live dsh usage-log smoke and namespace hardening exist; the MCP self-reporting lanes are verified on one machine/version."],
+        "limitations": [
+            "Usage-import lanes remain synthetic-fixture experimental until a live dsh usage-log smoke and namespace hardening exist; the MCP self-reporting lanes are verified on one machine/version.",
+            "Cost on the usage lane is agentacct's own estimate from the client-reported tokens against the local pricing table: dsh stores no cost figure, so a priced row is an equivalent-cost estimate, never provider billing, and an uncovered model id stays cost-unknown.",
+        ],
     },
     {
         "client": "kimi-code",

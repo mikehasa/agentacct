@@ -44,25 +44,28 @@ Generated from the capability manifest; last reviewed 2026-09-23. Integration br
 
 - **Collection path:** `projects JSONL`
 - **Session scope:** Root and child transcripts, including sessions with no token row yet.
-- **Usage / cost basis:** `client_reported` / `unknown`
+- **Usage / cost basis:** `client_reported` / `estimated_from_tokens`
 - **Validation scope:** `single_machine_live_observation` (2026-07-17)
 - Exact work attribution still requires client-authored identifiers on the recording call.
+- Cost on the usage lane is agentacct's own estimate from the client-reported tokens against the local pricing table: a stored Claude Code row carries no cost figure, so a priced row is an equivalent-cost estimate, never provider or subscription billing, and an id that table does not cover stays cost-unknown.
 
 ### Codex
 
 - **Collection path:** `state_5.sqlite`, `rollout JSONL`
 - **Session scope:** State database and rollout-only root/child sessions, including zero-token observations.
-- **Usage / cost basis:** `client_reported` / `unknown`
+- **Usage / cost basis:** `client_reported` / `estimated_from_tokens`
 - **Validation scope:** `single_machine_live_observation` (2026-07-17)
 - Usage and semantic work remain separate unless client-log evidence proves the join.
+- Cost on the usage lane is agentacct's own estimate from the client-reported rollout tokens against the local pricing table: a stored Codex row carries no cost figure, so a priced row is an equivalent-cost estimate, never subscription billing, while rows with no model label or an uncovered model id stay cost-unknown.
 
 ### Hermes
 
 - **Collection path:** `state.db sessions`
 - **Session scope:** Modeled state.db session rows, including rows with no positive usage yet.
-- **Usage / cost basis:** `client_reported` / `unknown`
+- **Usage / cost basis:** `client_reported` / `estimated_from_tokens`
 - **Validation scope:** `single_machine_live_observation` (2026-07-17)
 - Remain provisional until schema-drift recovery and zero-token observation have live evidence.
+- Cost on the usage lane follows the client: a stored Hermes cost is kept as client_reported, and every other row is agentacct's own estimate from the client-reported tokens against the local pricing table — equivalent cost, never provider billing — with an uncovered model id staying cost-unknown.
 
 ### OpenCode
 
@@ -84,9 +87,10 @@ Generated from the capability manifest; last reviewed 2026-09-23. Integration br
 
 - **Collection path:** `Zstandard-compressed assistant/message JSONL`
 - **Session scope:** Usage-bearing assistant/message events in per-session dsh logs.
-- **Usage / cost basis:** `client_reported` / `unknown`
+- **Usage / cost basis:** `client_reported` / `estimated_from_tokens`
 - **Validation scope:** `single_machine_live_observation` (2026-09-16)
 - Usage-import lanes remain synthetic-fixture experimental until a live dsh usage-log smoke and namespace hardening exist; the MCP self-reporting lanes are verified on one machine/version.
+- Cost on the usage lane is agentacct's own estimate from the client-reported tokens against the local pricing table: dsh stores no cost figure, so a priced row is an equivalent-cost estimate, never provider billing, and an uncovered model id stays cost-unknown.
 
 ### Kimi Code
 

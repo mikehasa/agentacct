@@ -6808,10 +6808,25 @@ def build_stored_unknown_cost_reprice_batch(
     """Price trusted historical usage outside the current discovery window.
 
     No transcript is reread and no source fact is inferred. Only an additive,
-    unknown-cost row with complete rates for its recorded token buckets may
-    change. Scanned bases stay with the ordinary importer (including withheld
-    or conflicting observations); ambiguous stored identities stay untouched.
-    The exact base rows are checked again under the ledger writer lock, so a
+    unknown-cost row the active catalog can price may change, and eligibility
+    is the fresh-import pricing path itself (``apply_pricing_estimate_to_event``
+    resolves it): a row a fresh import would price is priced here field for
+    field — same ``estimated_cost_usd``, ``cost_confidence``, ``cost_basis`` and
+    ``metadata.pricing_source``. A stored row's dollars can therefore never
+    depend on whether it was imported now or repriced from the ledger.
+
+    Category rates are deliberately NOT required to be explicit. A missing
+    cache-read rate falls back to 0.1x the input price and a missing
+    cache-write (5m/1h) rate to the input price, per the documented convention
+    inside ``estimate_model_cost_breakdown_usd``. Using it here is not unsafe:
+    those fallbacks are how every other pricing path already estimates, and
+    whatever they produce is still stamped an estimate
+    (``estimated_from_tokens``), never a billed amount. Demanding an explicit
+    per-bucket rate instead would skip a row a fresh import happily prices.
+
+    Scanned bases stay with the ordinary importer (including withheld or
+    conflicting observations); ambiguous stored identities stay untouched. The
+    exact base rows are checked again under the ledger writer lock, so a
     concurrent refresh/delete cannot be overwritten or resurrected.
     """
 
@@ -6858,20 +6873,13 @@ def build_stored_unknown_cost_reprice_batch(
         event_id = event.get("event_id")
         if not isinstance(event_id, str) or not event_id:
             continue
+        # Only "no catalog entry at all" blocks here; per-bucket rate
+        # availability is left entirely to the shared pricing path below, whose
+        # category fallbacks are what a fresh import would use too (see
+        # docstring). Requiring explicit rates here would make the amount
+        # depend on import timing.
         entry = model_pricing_entry(str(event.get("provider") or ""), str(event.get("model") or ""))
         if entry is None:
-            continue
-        cache_write = _safe_nonnegative_int(metadata.get("cache_creation_input_tokens"))
-        cache_5m = _safe_nonnegative_int(metadata.get("cache_creation_5m_input_tokens"))
-        cache_1h = _safe_nonnegative_int(metadata.get("cache_creation_1h_input_tokens"))
-        cache_read = _safe_nonnegative_int(metadata.get("cache_read_input_tokens"))
-        if cache_write + cache_read == 0:
-            cache_read = _safe_nonnegative_int(metadata.get("cached_input_tokens"))
-        if cache_read and entry.cache_read_cost_per_1m is None:
-            continue
-        if (cache_5m or cache_write > cache_1h) and entry.cache_write_5m_cost_per_1m is None:
-            continue
-        if cache_1h and entry.cache_write_1h_cost_per_1m is None:
             continue
         replacement = copy.deepcopy(event)
         if not apply_pricing_estimate_to_event(replacement):
