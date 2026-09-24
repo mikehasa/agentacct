@@ -15,6 +15,18 @@ from typer.testing import CliRunner
 
 from agentacct.cli import app
 
+# The console wraps output to the terminal width, so asserting on a phrase can
+# fail on a narrow terminal (CI renders at 80 columns) even though the phrase is
+# there, and even after whitespace is collapsed when a panel border glyph sits
+# between the wrapped halves. Drop the box-drawing characters as well.
+_BOX_GLYPHS = "│┃─━╭╮╰╯┌┐└┘├┤┬┴┼┏┓┗┛╔╗╚╝║═"
+_BOX_TO_SPACE = str.maketrans(_BOX_GLYPHS, " " * len(_BOX_GLYPHS))
+
+
+def _flat(output: str) -> str:
+    """Output rendered without reference to where the console happened to wrap."""
+    return " ".join(output.translate(_BOX_TO_SPACE).split())
+
 
 @pytest.fixture
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -295,9 +307,10 @@ def test_onboard_global_agent_kimi_code_writes_user_level_mcp_json_and_instructi
     # Its MCP registration write is tested, its recording is not: reported as
     # experimental, and never folded into the machine-wide-recording claim. It is
     # also NOT reported as an unconfigured manual step any more.
-    assert "experimental" in result.output.lower()
-    assert "recording is machine-wide now" not in result.output
-    assert "One-command work recording is not available" not in result.output
+    unwrapped = _flat(result.output)
+    assert "experimental" in unwrapped.lower()
+    assert "recording is machine-wide now" not in unwrapped
+    assert "One-command work recording is not available" not in unwrapped
 
 
 def test_onboard_global_agent_kimi_code_is_idempotent_and_keeps_other_servers(
@@ -318,7 +331,7 @@ def test_onboard_global_agent_kimi_code_is_idempotent_and_keeps_other_servers(
     second = CliRunner().invoke(app, arguments)
 
     assert second.exit_code == 0, second.output
-    assert "already registered" in second.output
+    assert "already registered" in _flat(second.output)
     assert config.read_text() == after_first  # second run is a no-op write
     servers = json.loads(config.read_text())["mcpServers"]
     assert servers["linear"] == {"command": "linear-mcp"}  # user's server untouched
@@ -361,10 +374,11 @@ def test_onboard_global_agent_kimi_code_leaves_an_unparseable_mcp_json_alone(
     # The user's broken file is never partially rewritten...
     assert config.read_text() == original
     # ...the entry is handed over instead, and no recording claim is made.
-    assert "could not be written" in " ".join(result.output.split())
-    assert '"mcpServers"' in result.output
-    assert "no semantic recording client was configured" in result.output
-    assert "experimental" not in result.output.lower()
+    unwrapped = _flat(result.output)
+    assert "could not be written" in unwrapped
+    assert '"mcpServers"' in unwrapped
+    assert "no semantic recording client was configured" in unwrapped
+    assert "experimental" not in unwrapped.lower()
     # The instruction leg is independent and still installed.
     assert (kimi_home / "AGENTS.md").exists()
 

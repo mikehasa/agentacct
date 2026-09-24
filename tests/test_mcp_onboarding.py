@@ -11,6 +11,19 @@ from agentacct.cli import app
 
 runner = CliRunner()
 
+# The console wraps output to the terminal width, so asserting on a phrase can
+# fail on a narrow terminal (CI renders at 80 columns) even though the phrase is
+# there. Inside a panel the wrap lands against the border glyph — "refusing to │"
+# / "│ overwrite" — which leaves a border between the halves even after the
+# whitespace is collapsed, so drop the box-drawing characters first.
+_BOX_GLYPHS = "│┃─━╭╮╰╯┌┐└┘├┤┬┴┼┏┓┗┛╔╗╚╝║═"
+_BOX_TO_SPACE = str.maketrans(_BOX_GLYPHS, " " * len(_BOX_GLYPHS))
+
+
+def _flat(output: str) -> str:
+    """Output rendered without reference to where the console happened to wrap."""
+    return " ".join(output.translate(_BOX_TO_SPACE).split())
+
 
 def test_setup_mcp_claude_code_preview_is_copy_paste_friendly_and_does_not_write(tmp_path: Path) -> None:
     result = runner.invoke(app, ["setup", "mcp", "--agent", "claude-code", "--project-dir", str(tmp_path)])
@@ -633,18 +646,18 @@ def test_setup_mcp_kimi_code_preview_promises_the_write_and_touches_nothing(
     result = runner.invoke(app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path)])
 
     assert result.exit_code == 0, result.output
-    # The console wraps long lines (and can split a path mid-token), so assert on
-    # whitespace-stripped output for the path and whitespace-normalized for prose.
-    unwrapped = " ".join(result.output.split())
+    unwrapped = _flat(result.output)
+    # The console can split a path mid-token, so paths are matched with every
+    # whitespace character removed.
     squished = "".join(result.output.split())
-    assert "Kimi Code" in result.output
+    assert "Kimi Code" in unwrapped
     assert str(kimi_home / "mcp.json") in squished
-    assert '"mcpServers"' in result.output
+    assert '"mcpServers"' in squished
     assert str((tmp_path / ".agent-sentinel" / "state").resolve()) in squished
     # A managed write, not a hand-applied block: the old "no writer" wording is gone.
     assert "no mcp.json writer" not in unwrapped
     assert "by hand" not in unwrapped
-    assert "--write" in result.output
+    assert "--write" in squished
     # Preview mode writes nothing at all.
     assert not kimi_home.exists()
 
@@ -663,8 +676,9 @@ def test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json(tmp_path: Path
     # Absolute store path: the user-level registration is loaded by every Kimi Code
     # session, whatever cwd it launches the server from.
     assert entry["args"] == ["mcp", "serve", "--store-dir", str((tmp_path / ".agent-sentinel" / "state").resolve())]
-    assert "user level" in result.output
-    assert "Already registered" not in result.output
+    unwrapped = _flat(result.output)
+    assert "user level" in unwrapped
+    assert "Already registered" not in unwrapped
     # Zero repo files, despite the project-dir argument.
     assert not (tmp_path / ".mcp.json").exists()
     assert not (tmp_path / ".kimi-code").exists()
@@ -686,7 +700,7 @@ def test_setup_mcp_kimi_code_write_is_idempotent_and_preserves_other_servers(
     second = runner.invoke(app, arguments)
 
     assert second.exit_code == 0, second.output
-    assert "Already registered" in second.output
+    assert "Already registered" in _flat(second.output)
     assert config_path.read_text() == after_first  # no rewrite, no churn
     data = json.loads(config_path.read_text())
     assert data["mcpServers"]["linear"] == {"command": "linear-mcp"}
@@ -706,7 +720,7 @@ def test_setup_mcp_kimi_code_write_refuses_a_file_it_cannot_parse(tmp_path: Path
     )
 
     assert result.exit_code != 0
-    assert "refusing to overwrite" in result.output
+    assert "refusing to overwrite" in _flat(result.output)
     assert config_path.read_text() == original  # never partially rewritten
 
 
@@ -722,7 +736,7 @@ def test_setup_mcp_kimi_code_rejects_a_relative_store_path(tmp_path: Path, monke
     )
 
     assert result.exit_code != 0
-    assert "cannot be used with kimi-code" in result.output
+    assert "cannot be used with kimi-code" in _flat(result.output)
     assert not (tmp_path / "kimi-home" / "mcp.json").exists()
 
 
@@ -732,7 +746,7 @@ def test_setup_mcp_kimi_code_preview_explains_stale_entries_are_collapsed(tmp_pa
     result = runner.invoke(app, ["setup", "mcp", "--agent", "kimi-code", "--project-dir", str(tmp_path)])
 
     assert result.exit_code == 0, result.output
-    unwrapped = " ".join(result.output.split())
+    unwrapped = _flat(result.output)
     # agentacct writes the file, so the stale pre-rename entry is agentacct's job —
     # there is no `kimi-code mcp remove` verb to hand the user.
     assert "kimi-code mcp remove" not in unwrapped
