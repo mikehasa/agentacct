@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.3] — 2026-09-24
+
+Kimi Code work can finally be attributed: a new observe-only hook bridge reports the authoritative session id, and an agent's MCP reports in the same session bind to it.
+
 ### Added
 
 - Kimi Code can install an optional observe-only hook bridge
