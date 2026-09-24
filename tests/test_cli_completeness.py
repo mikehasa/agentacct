@@ -11,6 +11,16 @@ from agentacct.cli import app
 from agentacct.policy import DEFAULT_POLICY_FILE, load_policy, validate_policy
 
 
+def _flat(output: str) -> str:
+    """Console output asserted without styling or the console's line wrapping.
+
+    Rich wraps to the console width, so a phrase that renders unbroken at CI's
+    80 columns can be split across lines on a narrower terminal. Assertions on
+    wrapped prose compare this flattened text instead of the raw output.
+    """
+    return " ".join(unstyle(output).split())
+
+
 def test_init_creates_project_policy_without_overwriting(tmp_path):
     runner = CliRunner()
 
@@ -95,7 +105,16 @@ def test_init_can_add_agent_instructions_idempotently(tmp_path):
 
 @pytest.mark.parametrize("color", [False, True])
 def test_help_surfaces_current_handoff_and_refresh_contracts(color):
-    environment = {"FORCE_COLOR": "1" if color else None, "NO_COLOR": None if color else "1"}
+    # Rich renders help as a table and CROPS option names to an ellipsis
+    # ("--interval-s…") once the console is narrower than the table wants — a
+    # truncation no whitespace normalization can undo. Pin the render width so
+    # the flag-name contract is asserted as written, independent of the width
+    # of the terminal the suite happens to run in.
+    environment = {
+        "FORCE_COLOR": "1" if color else None,
+        "NO_COLOR": None if color else "1",
+        "COLUMNS": "200",
+    }
     runner = CliRunner()
     work_help = runner.invoke(app, ["evidence", "work-event", "--help"], color=color, env=environment)
     import_help = runner.invoke(app, ["usage", "import-local", "--help"], color=color, env=environment)
@@ -107,12 +126,12 @@ def test_help_surfaces_current_handoff_and_refresh_contracts(color):
         assert result.exit_code == 0, result.output
         # Rich may style the two hyphens separately when CI forces color.
         # Test the rendered help text, not its ANSI segment boundaries.
-        output = unstyle(result.output)
+        output = _flat(result.output)
         assert "--refresh" in output
         assert "Refresh & save usage" not in output
 
     # The managed-cadence + skip-unchanged knobs are surfaced on `usage watch`.
-    watch_output = unstyle(watch_help.output)
+    watch_output = _flat(watch_help.output)
     assert "--interval-seconds" in watch_output
     assert "--skip-unchanged" in watch_output
     assert "--no-skip-unchanged" in watch_output
@@ -175,12 +194,13 @@ def test_init_agent_mcp_preview_does_not_write_config_by_default(tmp_path):
     result = runner.invoke(app, ["init", "--project-dir", str(tmp_path), "--agent", "codex"])
 
     assert result.exit_code == 0, result.output
-    assert "Codex" in result.output
-    assert "codex mcp add agentacct" in result.output
-    assert "Preview only" in result.output
-    assert "agentacct mcp doctor" in result.output
-    assert "read-only diagnostics" in result.output
-    assert "mcp doctor --store-dir" not in result.output
+    output = _flat(result.output)
+    assert "Codex" in output
+    assert "codex mcp add agentacct" in output
+    assert "Preview only" in output
+    assert "agentacct mcp doctor" in output
+    assert "read-only diagnostics" in output
+    assert "mcp doctor --store-dir" not in output
     assert (tmp_path / "AGENTS.md").exists()
     assert not (tmp_path / ".codex" / "config.toml").exists()
 
@@ -344,9 +364,10 @@ def test_init_write_mcp_keeps_profile_agents_preview_only(tmp_path):
     result = runner.invoke(app, ["init", "--project-dir", str(tmp_path), "--agent", "hermes", "--write-mcp"])
 
     assert result.exit_code == 0, result.output
-    assert "Hermes" in result.output
-    assert "hermes mcp add agentacct" in result.output
-    assert "project-local MCP config write is not available" in result.output
+    output = _flat(result.output)
+    assert "Hermes" in output
+    assert "hermes mcp add agentacct" in output
+    assert "project-local MCP config write is not available" in output
     assert not (tmp_path / ".mcp.json").exists()
 
 
@@ -474,6 +495,14 @@ def test_doctor_reports_project_readiness_without_printing_secrets(tmp_path, mon
     (tmp_path / ".gitignore").write_text(".env.local\n.env\n")
     monkeypatch.setenv("AGENT_CHRONICLE_OPENROUTER_API_KEY", "OPENROUTER_TEST_KEY_PLACEHOLDER")
 
+    # The readiness table folds cell text at the console width — narrowed,
+    # "secret files ignored" splits over two rows with the Details column in
+    # between, which no whitespace normalization can rejoin. A per-invocation
+    # COLUMNS override cannot widen it either: Rich bakes COLUMNS into a
+    # console's width at construction, and the CLI's console is module-level
+    # (built at import, before the override). Pin the width on the instance.
+    monkeypatch.setattr(cli_module.console, "size", (200, 25))
+
     result = runner.invoke(app, ["doctor", "--project-dir", str(tmp_path)])
 
     assert result.exit_code == 0
@@ -496,17 +525,20 @@ def test_doctor_gives_actionable_setup_steps_for_uninitialized_project(tmp_path,
     result = runner.invoke(app, ["doctor", "--project-dir", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert "policy file" in result.output
-    assert "Next steps:" in result.output
-    assert "Initialize project-local config: agentacct init --project-dir" in result.output
-    assert "Run doctor from a git repository root" in result.output
-    assert "Protect local secrets" in result.output
+    # Next steps wrap to the console width (and carry the project path), so the
+    # phrases are asserted against the flattened text.
+    output = _flat(result.output)
+    assert "policy file" in output
+    assert "Next steps:" in output
+    assert "Initialize project-local config: agentacct init --project-dir" in output
+    assert "Run doctor from a git repository root" in output
+    assert "Protect local secrets" in output
     # Phase 3 (item 5): the missing-key mention stays neutral and optional —
     # enforcement is secondary in the observe-only alpha.
-    assert "AGENTACCT_OPENROUTER_API_KEY" in result.output
-    assert "observe-only" in result.output
-    assert "Optional provider forwarding" not in result.output
-    assert "agentacct serve" in result.output
+    assert "AGENTACCT_OPENROUTER_API_KEY" in output
+    assert "observe-only" in output
+    assert "Optional provider forwarding" not in output
+    assert "agentacct serve" in output
 
 
 def test_doctor_json_reports_readiness_without_printing_secret_values(tmp_path, monkeypatch):
