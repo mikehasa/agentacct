@@ -349,6 +349,26 @@ _KIMI_CODE_MCP_WRITE_FIXTURE = _verification_record(
         "tests/test_mcp_onboarding.py::test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json",
     ),
 )
+_KIMI_CODE_HOOK_FIXTURE = _verification_record(
+    "synthetic_fixture",
+    verified_at="2026-09-24",
+    evidence_refs=(
+        "tests/test_hooks_kimi_code.py::test_kimi_code_pre_tool_use_records_a_tool_tick_and_context_file",
+        "tests/test_hooks_kimi_code.py::test_kimi_code_install_merges_config_toml_and_is_idempotent",
+        "tests/test_hooks_kimi_code.py::test_kimi_code_hook_context_is_selected_by_pid_lineage",
+    ),
+)
+_KIMI_CODE_GLOBAL_ONBOARD_FIXTURE = _verification_record(
+    "synthetic_fixture",
+    verified_at="2026-09-24",
+    evidence_refs=(
+        "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_fresh_file_uses_the_documented_shape",
+        "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_is_idempotent_and_does_not_rewrite",
+        "tests/test_onboard_global.py::test_onboard_global_agent_kimi_code_writes_user_level_mcp_json_and_instructions",
+        "tests/test_mcp_onboarding.py::test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json",
+        "tests/test_hooks_kimi_code.py::test_kimi_code_install_merges_config_toml_and_is_idempotent",
+    ),
+)
 _CURSOR_LIVE = _verification_record(
     "live_smoke",
     verified_at="2026-07-17",
@@ -928,7 +948,17 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 usage_basis="client_reported",
                 cost_basis="estimated_from_tokens",
             ),
-            "mechanical_capture": _unavailable_capability("No typed Kimi Code plugin-hook adapter is implemented."),
+            "mechanical_capture": _capability_record(
+                "experimental",
+                "Global onboarding installs an observe-only hook bridge through Kimi Code's own [[hooks]] config: the hook receives the authoritative session id on stdin and writes a tool-activity tick plus a hook-context file on every tool call, so MCP reports made in the same session bind to that session instead of arriving unjoinable. `agentacct hooks kimi-code install` installs the same bridge on its own.",
+                activation="one_command_global",
+                verification=_KIMI_CODE_HOOK_FIXTURE,
+                limitations=(
+                    "No live smoke has been recorded yet: the bridge is proven by synthetic fixtures, not by an observed real Kimi Code session.",
+                    "The hook config is opt-in — installation writes the user's ~/.kimi-code/config.toml, and a Kimi Code [[hooks]] entry accepts only the event, matcher, command, and timeout fields.",
+                    "The hook fires once per tool call.",
+                ),
+            ),
             "mcp_semantics": _capability_record(
                 "experimental",
                 "agentacct writes the user-level MCP registration for Kimi Code rather than previewing it: `agentacct setup mcp --agent kimi-code --write` merges the `mcpServers.agentacct` entry into $KIMI_CODE_HOME/mcp.json (default ~/.kimi-code/mcp.json), and `agentacct onboard --scope global --agent kimi-code` also writes the record-your-work directive into the $KIMI_CODE_HOME/AGENTS.md file Kimi Code loads on every session.",
@@ -971,16 +1001,16 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             ),
             "automatic_install": _capability_record(
                 "experimental",
-                "`agentacct onboard --scope global --agent kimi-code` writes the agentacct MCP registration into the user-level $KIMI_CODE_HOME/mcp.json (default ~/.kimi-code/mcp.json) and the record-your-work directive into $KIMI_CODE_HOME/AGENTS.md, with zero files left in the repository. It installs no hook, because no typed Kimi Code hook adapter exists.",
+                "`agentacct onboard --scope global --agent kimi-code` writes all three legs: the agentacct MCP registration into the user-level $KIMI_CODE_HOME/mcp.json (default ~/.kimi-code/mcp.json), the record-your-work directive into $KIMI_CODE_HOME/AGENTS.md, and the observe-only hook bridge into the user's $KIMI_CODE_HOME/config.toml — with zero files left in the repository (`agentacct hooks kimi-code install` installs the bridge on its own).",
                 activation="one_command_global",
-                verification=_KIMI_CODE_MCP_WRITE_FIXTURE,
+                verification=_KIMI_CODE_GLOBAL_ONBOARD_FIXTURE,
                 limitations=(
-                    "Fixture evidence only: the one-command install is covered by tests against temp homes, and no real Kimi Code session has been observed picking the written registration up.",
+                    "Fixture evidence only: the one-command install is covered by tests against temp homes, and no real Kimi Code session has been observed picking the written registration up or firing the installed hook.",
                 ),
             ),
         },
         "limitations": [
-            "Session-discovery, usage-import, model, and cache-read lanes carry dated real-capture evidence from one machine and one client build; the MCP registration write and the one-command install that wraps it are fixture evidence only, with no real Kimi Code session observed loading the server or recording over MCP, and cache-write, zero-usage observation, namespace hardening, and multi-version stability remain unclaimed.",
+            "Session-discovery, usage-import, model, and cache-read lanes carry dated real-capture evidence from one machine and one client build; the MCP registration write, the one-command install that wraps it, and the observe-only hook bridge are fixture evidence only, with no real Kimi Code session observed loading the server, recording over MCP, or firing the installed hook, and cache-write, zero-usage observation, namespace hardening, and multi-version stability remain unclaimed.",
             "Cost on the usage lane is agentacct's own estimate from the client-reported tokens against the local pricing table, so it follows that table's coverage of the labels Kimi Code reports and stays an equivalent-cost estimate, never Moonshot billing.",
         ],
     },
@@ -1259,7 +1289,7 @@ def agent_capability_manifest() -> dict[str, Any]:
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "last_reviewed_at": "2026-09-23",
+        "last_reviewed_at": "2026-09-24",
         "support_policy": (
             "Capabilities are evaluated independently. Runtime detection and ingestion health do not imply "
             "that every integration lane is verified. Missing or conditional token fields remain unknown."
