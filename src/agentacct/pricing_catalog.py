@@ -113,11 +113,23 @@ class PricingCatalog:
         entries: Iterable[PricingCatalogEntry] = (),
         *,
         provider_aliases: dict[str, str] | None = None,
+        model_aliases: dict[str, tuple[str, str]] | None = None,
     ) -> None:
         self._entries: dict[tuple[str, str], PricingCatalogEntry] = {}
         self._provider_aliases = {
             normalize_pricing_key(key): normalize_pricing_key(value)
             for key, value in (provider_aliases or {}).items()
+        }
+        # Client model id -> catalog (provider, model) identity. Deliberate,
+        # human-vetted NAME mappings only (see cost.PRICING_MODEL_ALIASES):
+        # they carry no price of their own, the target row's own list price is
+        # what gets applied.
+        self._model_aliases: dict[str, tuple[str, str]] = {
+            normalize_pricing_key(key): (
+                normalize_pricing_key(target[0]),
+                normalize_pricing_key(target[1]),
+            )
+            for key, target in (model_aliases or {}).items()
         }
         for entry in entries:
             self.add(entry)
@@ -126,7 +138,10 @@ class PricingCatalog:
         self._entries[entry.key] = entry
 
     def merged(self, entries: Iterable[PricingCatalogEntry]) -> PricingCatalog:
-        catalog = PricingCatalog(provider_aliases=self._provider_aliases)
+        catalog = PricingCatalog(
+            provider_aliases=self._provider_aliases,
+            model_aliases=self._model_aliases,
+        )
         catalog._entries.update(self._entries)
         for entry in entries:
             existing = catalog._entries.get(entry.key)
@@ -148,6 +163,22 @@ class PricingCatalog:
         return catalog
 
     def lookup(self, provider: str, model: str, *, allow_default: bool = False) -> PricingCatalogEntry | None:
+        """Resolve a reported (provider, model) pair to at most one catalog row.
+
+        Name resolution only — no price is ever invented. In order:
+
+        1. the exact normalized (provider, model) key;
+        2. the provider's alias key (``provider_aliases``);
+        3. the model's client-namespace alias target (``model_aliases``);
+        4. the generic vendor-namespace fallback: a model id shaped
+           ``"<vendor>/<model>"`` is retried as that vendor's own provider key,
+           then under that vendor's provider alias.
+
+        Anything still unmatched is unpriced (``None``): the ``("default",
+        "default")`` row is returned only when the caller explicitly opts in
+        with ``allow_default=True``.
+        """
+
         provider_key = normalize_pricing_key(provider)
         model_key = normalize_pricing_key(model)
         if not provider_key or not model_key:
@@ -160,8 +191,37 @@ class PricingCatalog:
             entry = self._entries.get((alias_provider, model_key))
             if entry is not None:
                 return entry
+        alias_target = self._model_aliases.get(model_key)
+        if alias_target is not None:
+            entry = self._entries.get(alias_target)
+            if entry is not None:
+                return entry
+        entry = self._lookup_vendor_namespace(model_key)
+        if entry is not None:
+            return entry
         if allow_default:
             return self._entries.get(("default", "default"))
+        return None
+
+    def _lookup_vendor_namespace(self, model_key: str) -> PricingCatalogEntry | None:
+        """Retry a ``"<vendor>/<model>"`` id as the vendor's own catalog key.
+
+        Some clients report a vendor the price tables key as a PROVIDER as a
+        model-id prefix instead (Kimi Code's ``"DeepSeek/deepseek-flash"``,
+        which the table keys under provider ``deepseek``). Only the two
+        candidate providers below are tried, so a namespace the catalog holds
+        no row for still resolves to nothing rather than to some other
+        provider's price."""
+
+        namespace, separator, bare_model = model_key.partition("/")
+        if not separator or not namespace or not bare_model:
+            return None
+        for candidate_provider in (namespace, self._provider_aliases.get(namespace, "")):
+            if not candidate_provider:
+                continue
+            entry = self._entries.get((candidate_provider, bare_model))
+            if entry is not None:
+                return entry
         return None
 
     def entries(self) -> list[PricingCatalogEntry]:

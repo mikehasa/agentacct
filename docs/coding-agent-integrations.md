@@ -15,7 +15,7 @@ Client support is capability-based, not a binary badge:
 | OpenClaw | Manual profile command preview | JSONL importer | Typed plugin hooks and `sessions.json` routing are not integrated yet | Usage plus MCP work when separately configured |
 | DeepSeek Harness (dsh) | Global onboard writes the home patch (`$DSH_HOME/cordis.patch.yml`) + `AGENTS.md`; project setup previews | Zstandard-compressed JSONL importer | Typed plugin hooks are not integrated; MCP self-report verified live on one machine (dsh 0.1.5-rc.1), usage-import fixture-only | Usage + MCP work once dsh loads the home patch |
 | Cursor | Portable MCP definition only | Primary `state.vscdb` composer observations only; no token importer | Metadata payload normalization exists, but onboarding does not install it | A metadata-only composer Task after explicit refresh/manual capture; usage, cache, and cost unavailable |
-| Kimi Code | Manual `mcp.json` registration preview; no writer | `session_index.jsonl` plus per-agent `wire.jsonl` `usage.record` importer (per-request token deltas; cost only as a pricing estimate) | No typed plugin hook adapter | Usage import; MCP work context once the user applies the previewed entry |
+| Kimi Code | Manual `mcp.json` registration preview; no writer | `session_index.jsonl` plus per-agent `wire.jsonl` `usage.record` importer (per-request token deltas; no client cost figure, so cost comes only from the local pricing table) | No typed plugin hook adapter | Usage import; MCP work context once the user applies the previewed entry |
 | Other MCP clients | Portable stdio definition | None unless a client-specific importer exists | None | MCP work context only |
 
 This prose overview is not the support source of truth. agentacct now exposes a machine-readable, per-capability manifest that keeps runtime detection, ingestion health, and implementation evidence separate:
@@ -64,7 +64,7 @@ Currently implemented local import paths:
 - OpenClaw JSONL session logs
 - DeepSeek Harness (dsh) Zstandard-compressed JSONL session logs (`session.vN.jsonl.zstd` under `~/.dsh`; input/output/cache/reasoning tokens, no cost recorded)
 - Cursor primary `User/globalStorage/state.vscdb` composer identities, timestamps, explicit model metadata, and exact child links (observation-only; no usage/cost rows)
-- Kimi Code `session_index.jsonl` plus per-agent `wire.jsonl` `usage.record` events under `~/.kimi-code` (per-request input/cache-read/cache-write/output token deltas summed into session totals; no cost recorded)
+- Kimi Code `session_index.jsonl` plus per-agent `wire.jsonl` `usage.record` events under `~/.kimi-code` (per-request input/cache-read/cache-write/output token deltas summed into session totals; the client records no cost, so priced rows come only from the local pricing table)
 
 Measured imports are labeled `client_reported`, and pricing-table estimates are labeled `estimated_from_tokens`. Cursor is deliberately different: the same command surface saves only trusted session observations, so missing usage remains unavailable rather than a measured zero. It rejects symlinked source components, active WAL state, schema drift, corrupt JSON/SQLite, replacement races, and invalid parent graphs; it never falls back to `state.vscdb.backup` or ai-tracking stores. Other agents need client-specific importers because every client can store sessions in a different format.
 
@@ -219,6 +219,8 @@ agentacct usage import-local --client kimi-code --dry-run --json
 ```
 
 Local usage import reads Kimi Code's own session stores read-only. `~/.kimi-code/session_index.jsonl` indexes the sessions; each session directory (`sessions/wd_<workspace hash>/<session id>/`) holds per-agent `agents/<agentId>/wire.jsonl` streams whose `usage.record` events carry one row per LLM request. Those values are per-request increments, never cumulative, so the importer sums them into session totals: `inputOther` → input, `output` → output, `inputCacheRead` → cache read, `inputCacheCreation` → cache write. Prompt and message content is never read or stored.
+
+Kimi Code records no cost figure, so an imported row starts cost-unknown and stays that way unless a pricing-aware import runs. `agentacct usage import-local --client kimi-code --estimate-costs` (and `usage watch --estimate-costs`) prices it from the local pricing table by matching the client's own routing names — `kimi-code/k3-256k` (and its `kimi-code/k3` sibling) to the Moonshot K3 row, `DeepSeek/deepseek-flash` to the DeepSeek Flash row — so K3 and DeepSeek Flash sessions report `estimated_from_tokens` cost. That number is an equivalent-cost estimate, never a Moonshot invoice, and a model id the local table does not cover stays cost-unknown rather than taking a nearby price.
 
 To select a non-default Kimi Code home explicitly (the default is `~/.kimi-code`):
 

@@ -187,6 +187,19 @@ def test_kimi_code_manifest_upgrades_only_the_captured_lanes_and_leaves_cache_wr
         assert kimi["capabilities"][lane]["state"] == "unavailable"
 
 
+def test_kimi_code_usage_cost_is_a_local_pricing_estimate_never_a_stored_cost() -> None:
+    """Kimi Code stores no cost, so its usage lane prices from tokens against the local pricing table."""
+    kimi = _client_rows()["kimi-code"]
+    usage = kimi["capabilities"]["usage_import"]
+
+    assert usage["usage_basis"] == "client_reported"
+    assert usage["cost_basis"] == "estimated_from_tokens"
+    limitations = " ".join(usage["limitations"])
+    assert "local pricing-table estimate" in limitations
+    assert "never a client- or provider-reported cost" in limitations
+    assert any("Moonshot billing" in limitation for limitation in kimi["limitations"])
+
+
 def test_claude_one_command_install_is_scoped_to_onboard_and_fixture_only() -> None:
     """Claude Code's auto-install is experimental (fixture), scoped to onboard, one command."""
     rows = _client_rows()

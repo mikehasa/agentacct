@@ -3,10 +3,12 @@ import time
 from pathlib import Path
 
 import httpx
+import pytest
 
 from agentacct.cost import (
     LEGACY_PRICING_CATALOG_PATH_ENV,
     PRICING_CATALOG_PATH_ENV,
+    PRICING_MODEL_ALIASES,
     estimate_model_cost_breakdown_usd,
     estimate_model_cost_usd,
     has_model_price,
@@ -28,6 +30,32 @@ _LITELLM_TTL_FIXTURE = {
         "output_cost_per_token": 0.000003,
     }
 }
+
+# The two rows this feature leans on, exactly as LiteLLM's table carries them:
+# the K3 family is published ONCE (moonshot/kimi-k3), and DeepSeek's flash
+# model is keyed under provider "deepseek".
+_KIMI_CODE_LITELLM_ROWS = {
+    "moonshot/kimi-k3": {
+        "litellm_provider": "moonshot",
+        "input_cost_per_token": 3e-06,
+        "output_cost_per_token": 1.5e-05,
+        "cache_read_input_token_cost": 3e-07,
+    },
+    "deepseek/deepseek-flash": {
+        "litellm_provider": "deepseek",
+        "input_cost_per_token": 3e-07,
+        "output_cost_per_token": 1.2e-06,
+        "cache_read_input_token_cost": 6e-09,
+    },
+}
+
+
+def _pin_catalog(monkeypatch, tmp_path, payload, *, name="litellm.json"):
+    path = tmp_path / name
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv(PRICING_CATALOG_PATH_ENV, str(path))
+    reset_pricing_catalog_cache()
+    return path
 
 
 class _FakeResponse:
@@ -566,3 +594,224 @@ def test_new_builtin_model_prices_cover_fable_and_gpt_5_4_mini(monkeypatch):
     assert mini["input_cost_usd"] == 0.75
     assert mini["output_cost_usd"] == 4.5
     assert mini["cache_read_cost_usd"] == 0.075
+
+
+# ---------------------------------------------------------------------------
+# Kimi Code's routing ids: client model aliases + vendor-namespace fallback
+# ---------------------------------------------------------------------------
+
+
+def test_vendor_namespace_fallback_prices_a_vendor_the_client_used_as_a_prefix(tmp_path, monkeypatch):
+    """Kimi Code stores ("moonshot", "DeepSeek/deepseek-flash") while the table
+    keys the model under the deepseek PROVIDER. No hand-written alias entry is
+    involved: any "<vendor>/<model>" id the table keys that way resolves
+    through the same generic fallback (case-normalized)."""
+
+    _pin_catalog(monkeypatch, tmp_path, _KIMI_CODE_LITELLM_ROWS)
+
+    assert has_model_price("moonshot", "DeepSeek/deepseek-flash") is True
+    entry = model_pricing_entry("moonshot", "DeepSeek/deepseek-flash")
+    assert entry is not None
+    assert (entry.provider, entry.model) == ("deepseek", "deepseek-flash")
+    assert entry.source == "litellm_model_cost_map"
+    assert entry.source_provider == "deepseek"
+    assert entry.source_model == "deepseek/deepseek-flash"
+    assert entry.input_cost_per_1m == 0.30
+    assert entry.output_cost_per_1m == 1.20
+    assert entry.cost_multiplier == 1.0  # list price, no invented convention
+
+    # The captured real lane's counters, priced by hand at that row's rates:
+    # 596 in * 0.30 + 190 out * 1.20 + 44,800 cache read * 0.006 (all per 1M).
+    breakdown = estimate_model_cost_breakdown_usd(
+        "moonshot",
+        "DeepSeek/deepseek-flash",
+        input_tokens=596,
+        output_tokens=190,
+        cache_read_input_tokens=44_800,
+    )
+    assert breakdown["total_cost_usd"] == pytest.approx(0.0006756)
+
+    # A vendor the catalog holds no provider row for stays unpriced.
+    assert model_pricing_entry("moonshot", "FutureVendor/future-model") is None
+
+
+def test_client_model_alias_maps_both_k3_ids_to_the_single_moonshot_k3_row(tmp_path, monkeypatch):
+    """Kimi Code's own config.toml declares "kimi-code/k3-256k" (display
+    "K3-256k") and "kimi-code/k3" as one K3 family; LiteLLM prices that family
+    once, as moonshot/kimi-k3, so both ids take that row's list price (a ≈
+    estimate, recorded as such on the event)."""
+
+    _pin_catalog(monkeypatch, tmp_path, _KIMI_CODE_LITELLM_ROWS)
+
+    assert PRICING_MODEL_ALIASES["kimi-code/k3-256k"] == ("moonshot", "kimi-k3")
+    assert PRICING_MODEL_ALIASES["kimi-code/k3"] == ("moonshot", "kimi-k3")
+
+    for model_id in ("kimi-code/k3-256k", "kimi-code/k3"):
+        assert has_model_price("moonshot", model_id) is True
+        entry = model_pricing_entry("moonshot", model_id)
+        assert entry is not None
+        assert (entry.provider, entry.model) == ("moonshot", "kimi-k3")
+        assert entry.source == "litellm_model_cost_map"
+        assert entry.source_provider == "moonshot"
+        assert entry.source_model == "moonshot/kimi-k3"
+        assert entry.input_cost_per_1m == 3.00
+        assert entry.output_cost_per_1m == 15.00
+        assert entry.cost_multiplier == 1.0
+
+    # The reported id is normalized like every other pricing key.
+    assert model_pricing_entry("moonshot", "Kimi-Code/K3-256k").model == "kimi-k3"
+
+
+def test_unmapped_client_model_ids_stay_cost_unknown(tmp_path, monkeypatch):
+    """The honesty boundary: an id no catalog row covers stays unpriced. No
+    near-neighbour guess, and the ("default", "default") row is reachable only
+    through the explicit allow_default opt-in — never by name mapping."""
+
+    _pin_catalog(monkeypatch, tmp_path, _KIMI_CODE_LITELLM_ROWS)
+
+    for model_id in ("kimi-code/kimi-for-coding", "kimi-code/k1-mini", "kimi-code/k4-512k"):
+        assert has_model_price("moonshot", model_id) is False
+        assert model_pricing_entry("moonshot", model_id) is None
+        assert model_pricing_entry("moonshot", model_id, allow_default=True).model == "default"
+
+
+def test_exact_rows_outrank_model_aliases_and_the_namespace_fallback(tmp_path, monkeypatch):
+    """All four resolution routes competing inside ONE catalog: an exact
+    (provider, model) row wins over the client model alias, the client model
+    alias wins over the namespace fallback, and an exact namespaced row wins
+    over the fallback that would otherwise price it."""
+
+    _pin_catalog(
+        monkeypatch,
+        tmp_path,
+        {
+            "pricing": [
+                {
+                    "provider": "moonshot",
+                    "model": "kimi-code/k3-256k",
+                    "input_cost_per_1m": 111.0,
+                    "output_cost_per_1m": 222.0,
+                    "source": "test_exact",
+                },
+                {
+                    "provider": "moonshot",
+                    "model": "kimi-k3",
+                    "input_cost_per_1m": 3.0,
+                    "output_cost_per_1m": 15.0,
+                    "source": "test_model_alias_target",
+                },
+                {
+                    "provider": "kimi-code",
+                    "model": "k3",
+                    "input_cost_per_1m": 5.0,
+                    "output_cost_per_1m": 6.0,
+                    "source": "test_namespace_row_k3",
+                },
+                {
+                    "provider": "kimi-code",
+                    "model": "k3-thinking",
+                    "input_cost_per_1m": 1.0,
+                    "output_cost_per_1m": 2.0,
+                    "source": "test_namespace_row_thinking",
+                },
+                {
+                    "provider": "moonshot",
+                    "model": "DeepSeek/deepseek-flash",
+                    "input_cost_per_1m": 9.0,
+                    "output_cost_per_1m": 90.0,
+                    "source": "test_exact_namespaced",
+                },
+                {
+                    "provider": "deepseek",
+                    "model": "deepseek-flash",
+                    "input_cost_per_1m": 0.3,
+                    "output_cost_per_1m": 1.2,
+                    "source": "test_namespace_fallback",
+                },
+            ]
+        },
+        name="native-pricing.json",
+    )
+
+    exact = model_pricing_entry("moonshot", "kimi-code/k3-256k")
+    assert exact.source == "test_exact"  # beats the kimi-k3 alias target
+    assert exact.input_cost_per_1m == 111.0
+
+    # This id has a competing ("kimi-code", "k3") namespace row too: the
+    # deliberate model alias still answers before the generic fallback.
+    aliased = model_pricing_entry("moonshot", "kimi-code/k3")
+    assert aliased.source == "test_model_alias_target"
+    assert aliased.input_cost_per_1m == 3.0
+
+    # Where the alias table has no entry, the generic fallback still works.
+    fallback = model_pricing_entry("moonshot", "kimi-code/k3-thinking")
+    assert fallback.source == "test_namespace_row_thinking"
+    assert fallback.input_cost_per_1m == 1.0
+
+    namespaced = model_pricing_entry("moonshot", "DeepSeek/deepseek-flash")
+    assert namespaced.source == "test_exact_namespaced"  # beats the fallback row
+    assert namespaced.input_cost_per_1m == 9.0
+
+
+def test_kimi_code_events_price_end_to_end_through_apply_pricing_estimate(tmp_path, monkeypatch):
+    """The import lane's own event shape end to end: a kimi-code row (provider
+    "moonshot", the client's routing id, cost unknown) becomes an
+    estimated_from_tokens row whose stored provenance names the catalog row
+    the price really came from — and an unmapped id is left untouched."""
+
+    from agentacct.client_usage import apply_pricing_estimate_to_event
+
+    _pin_catalog(monkeypatch, tmp_path, _KIMI_CODE_LITELLM_ROWS)
+
+    k3 = {
+        "event_type": "model_usage",
+        "provider": "moonshot",
+        "model": "kimi-code/k3-256k",
+        "estimated_input_tokens": 1_000_000,
+        "estimated_output_tokens": 200_000,
+        "cost_confidence": "unknown",
+        "estimated_cost_usd": None,
+        "metadata": {},
+    }
+    assert apply_pricing_estimate_to_event(k3) is True
+    assert k3["cost_confidence"] == "estimated_from_tokens"
+    assert k3["cost_basis"] == "pricing_table"
+    # 1,000,000 in * $3.00/1M + 200,000 out * $15.00/1M.
+    assert k3["estimated_cost_usd"] == pytest.approx(3.00 + 200_000 * 15.00 / 1_000_000)
+    assert k3["metadata"]["pricing_source"] == "litellm_model_cost_map"
+    assert k3["metadata"]["pricing_source_provider"] == "moonshot"
+    assert k3["metadata"]["pricing_source_model"] == "moonshot/kimi-k3"
+    assert k3["metadata"]["pricing_warning"]
+
+    # The committed real capture's lane: 596 in / 190 out / 44,800 cache read.
+    captured = {
+        "event_type": "model_usage",
+        "provider": "moonshot",
+        "model": "DeepSeek/deepseek-flash",
+        "estimated_input_tokens": 596,
+        "estimated_output_tokens": 190,
+        "cost_confidence": "unknown",
+        "estimated_cost_usd": None,
+        "metadata": {"cache_read_input_tokens": 44_800, "cache_creation_input_tokens": 0},
+    }
+    assert apply_pricing_estimate_to_event(captured) is True
+    assert captured["cost_confidence"] == "estimated_from_tokens"
+    assert captured["estimated_cost_usd"] == pytest.approx(0.0006756)
+    assert captured["metadata"]["pricing_source_provider"] == "deepseek"
+    assert captured["metadata"]["pricing_source_model"] == "deepseek/deepseek-flash"
+
+    # An id with no catalog row keeps its cost-unknown row untouched.
+    unmapped = {
+        "event_type": "model_usage",
+        "provider": "moonshot",
+        "model": "kimi-code/kimi-for-coding",
+        "estimated_input_tokens": 1_000,
+        "estimated_output_tokens": 100,
+        "cost_confidence": "unknown",
+        "estimated_cost_usd": None,
+        "metadata": {},
+    }
+    assert apply_pricing_estimate_to_event(unmapped) is False
+    assert unmapped["estimated_cost_usd"] is None
+    assert unmapped["cost_confidence"] == "unknown"
+    assert unmapped["metadata"] == {}

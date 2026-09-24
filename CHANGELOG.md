@@ -21,6 +21,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Kimi Code usage can now be priced. Kimi Code reports its own routing model
+  names, which did not match the local pricing table, so imported rows stayed
+  cost-unknown even though their token counters were complete;
+  `--estimate-costs` now resolves `kimi-code/k3-256k` to the Moonshot K3 row
+  and `DeepSeek/deepseek-flash` to the DeepSeek Flash row, so K3 and DeepSeek
+  Flash sessions carry a ≈ pricing-table estimate. Rows whose model id the
+  local table does not cover still stay unknown, and the estimate remains
+  token-derived equivalent cost, not Moonshot billing.
 - The macOS app shows "DeepSeek Harness" for `dsh` sessions in the recording
   health, work group, and provider-limit client labels instead of the raw
   client id.

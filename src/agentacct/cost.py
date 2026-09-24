@@ -166,6 +166,27 @@ PRICING_PROVIDER_ALIASES = {
     "codex": "openai",
 }
 
+# Client model ids the public price tables do not key under the same name.
+#
+# Kimi Code reports its own routing namespace: the ledger stores
+# ("moonshot", "kimi-code/k3-256k") because its config.toml declares
+# "kimi-code/k3-256k" (display "K3-256k") and "kimi-code/k3" as the same K3
+# family, the 256k id being the 256k-context variant. LiteLLM publishes that
+# family ONCE, as "moonshot/kimi-k3" (3e-06 in / 1.5e-05 out per token), so
+# both ids are priced from that one row — an ESTIMATE with ≈ semantics (the
+# event is written cost_confidence "estimated_from_tokens" plus a
+# pricing_warning, never provider-billed).
+#
+# This is a NAME mapping only: no price is invented here, no multiplier or
+# discount is applied, and an id no row covers stays cost-unknown. Vendor
+# namespaces the table DOES key need no entry — the catalog's generic
+# "<vendor>/<model>" fallback resolves those (Kimi Code's
+# "DeepSeek/deepseek-flash" -> deepseek/deepseek-flash).
+PRICING_MODEL_ALIASES: dict[str, tuple[str, str]] = {
+    "kimi-code/k3-256k": ("moonshot", "kimi-k3"),
+    "kimi-code/k3": ("moonshot", "kimi-k3"),
+}
+
 
 def pricing_catalog_path_for_store(store_dir: Path | str | None) -> Path | None:
     return default_pricing_catalog_snapshot_path(store_dir)
@@ -458,7 +479,11 @@ def _builtin_pricing_entries() -> list[PricingCatalogEntry]:
 
 @lru_cache(maxsize=1)
 def _builtin_pricing_catalog() -> PricingCatalog:
-    return PricingCatalog(_builtin_pricing_entries(), provider_aliases=PRICING_PROVIDER_ALIASES)
+    return PricingCatalog(
+        _builtin_pricing_entries(),
+        provider_aliases=PRICING_PROVIDER_ALIASES,
+        model_aliases=PRICING_MODEL_ALIASES,
+    )
 
 
 def _external_pricing_catalog_signature() -> tuple[str, int, int] | None:
@@ -527,6 +552,14 @@ def reset_pricing_catalog_cache() -> None:
 
 
 def model_pricing_entry(provider: str, model: str, *, allow_default: bool = False) -> PricingCatalogEntry | None:
+    """Resolve a reported (provider, model) pair to one catalog row via the
+    catalog's name-resolution order: exact key -> provider alias
+    (PRICING_PROVIDER_ALIASES) -> client model alias (PRICING_MODEL_ALIASES)
+    -> generic "<vendor>/<model>" namespace fallback. ``None`` means the
+    catalog cannot honestly price the pair (unknown, never a fabricated
+    price); only an explicit ``allow_default=True`` reaches the generic
+    ("default", "default") row."""
+
     return pricing_catalog().lookup(provider, model, allow_default=allow_default)
 
 

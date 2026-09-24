@@ -36,6 +36,7 @@ agentacct usage truth-table --json
 - Pricing-table estimates are equivalent-cost estimates, not provider invoices.
 - Subscription tools such as Claude Code and Codex may expose useful per-session token data without exposing exact marginal subscription billing.
 - Current local Codex and Claude Code subscription samples expose token/cache fields but do not expose provider-billed cost fields to agentacct.
+- Kimi Code records no cost figure either: its rows stay cost-unknown until `--estimate-costs` prices them from the local pricing table, which maps the labels Kimi Code reports (K3, DeepSeek Flash) onto its Moonshot and DeepSeek rows. A model id the table does not cover stays unknown rather than taking a nearby price, and the result is an estimate, never a Moonshot invoice.
 - Ingestion receipts prove what agentacct attempted and parsed from each configured local source. They do not upgrade client-reported usage to provider billing or prove that a stopped watcher will capture future sessions.
 
 ## Pre-provenance ledger migration note
