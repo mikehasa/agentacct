@@ -209,6 +209,7 @@ def part_one(root: pathlib.Path) -> None:
             "section_status": "completed",
             "section_title": "Add rate-limit to login",
             "summary": "Inspected the login flow, the redirects and the related tests.",
+            "progress": "Read through the login flow and its tests. Stopped before changing any code.",
         },
     )
     check(
@@ -217,7 +218,8 @@ def part_one(root: pathlib.Path) -> None:
         "this is a known limit, not a bug in the demo: see Part 4.3 for how much of the store reads this way",
     )
 
-    # 1.6 — the same call, with an outcome sentence.
+    # 1.6 — the same call, with an outcome sentence and a progress note that
+    # says where the work stopped.
     stored, error = mcp_call(
         server,
         "agentacct_record_section",
@@ -227,6 +229,7 @@ def part_one(root: pathlib.Path) -> None:
             "section_status": "completed",
             "section_title": "Add rate-limit to login",
             "summary": "Added a token-bucket limiter to the login endpoint and covered it with three tests.",
+            "progress": "Login now refuses rapid repeat attempts, with three tests. Done; next: watch production for 429s.",
             "next_step": "Watch the first production hour for 429s.",
         },
     )
@@ -403,6 +406,7 @@ def part_three(root: pathlib.Path) -> None:
                 "Cut checkout latency from 840 ms to 260 ms by batching the inventory lookups.\n\n"
                 "- 3 requests instead of 14\n- covered by tests/test_checkout.py"
             ),
+            "progress": "Le panier répond en 260 ms au lieu de 840 ms. Done.",
             "files": ["src/checkout/basket.py"],
             "kind": "implementation",
         },

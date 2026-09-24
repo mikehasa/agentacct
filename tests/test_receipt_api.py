@@ -95,6 +95,7 @@ def _record_section(service: SentinelService, *, session_id: str, section_id: st
                 "kind": "implementation",
                 "files": ["src/login.py"],
                 "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+                "progress": "Recorded the step the receipt reports on. Done; next: read the receipt." if status in {"completed", "handed_off"} else None,
                 "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
             },
         }

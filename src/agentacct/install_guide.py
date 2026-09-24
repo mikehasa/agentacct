@@ -302,14 +302,15 @@ _RECORDING_CONTRACT_LINES = (
     "the session's token and cost usage. Never guess it: an installed hook bridge fills "
     "it in, and a wrong id is worse than a missing one. Add `turn_id` when your client "
     "exposes it, so usage attributes per turn rather than per session.",
-    "- Finish with `section_status=completed` and a `summary`: one sentence stating the "
-    "outcome, then short lines for what changed and what was verified. The user reads "
-    "this prose, so lead with the result. A terminal section without it is refused. "
+    "- Finish with `section_status=completed`, a `summary` (one sentence stating the "
+    "outcome, then short lines for what changed and what was verified) and a `progress` "
+    "note: what got done in plain words for a reader with no background, ending with where "
+    "the work stopped (\"Stopped before X; next: Y.\"). A terminal section without them is refused. "
     "Call `agentacct_work_status` before you finish: it lists sections you left open and "
     "completed work that still has no check behind it.",
     "- Blocked or handing off: `section_status=blocked` with `blocker` (what stopped "
     "you) plus `next_step`, or `section_status=handed_off` with `summary` and "
-    "`next_step` when the user continues in a new session — never leave it "
+    "`next_step` (plus `progress`) when the user continues in a new session — never leave it "
     "`started`/`checkpoint`.",
     # The whole-job-done capstone. The per-task bullet above closes each task,
     # but nothing cued a SESSION-level close when the user signals the whole

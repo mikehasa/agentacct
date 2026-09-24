@@ -103,6 +103,7 @@ def _record_section(
         "client": client,
         "client_session_id": session,
         "summary": "Recorded outcome for this fixture section.",
+        "progress": "Applied the review fix and re-ran the step. Nothing is left open. Done.",
     }
     if transcript is not None:
         metadata["client_transcript_id"] = transcript

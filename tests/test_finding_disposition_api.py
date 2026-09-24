@@ -385,6 +385,7 @@ def test_unresolved_work_finding_controls_round_trip(tmp_path: Path) -> None:
                 "section_status": "completed",
                 "section_title": "Review unresolved namespace work",
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Finished the step behind the finding. Done; next: record a disposition.",
             },
         }
     )

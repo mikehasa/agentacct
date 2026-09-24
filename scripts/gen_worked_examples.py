@@ -77,7 +77,7 @@ def _usage(svc, *, client, session, model, project, tokens, cost, ns):
     )
 
 
-def _section(svc, *, client, session, project, ns, section_id, title, status, kind, at, files, summary=""):
+def _section(svc, *, client, session, project, ns, section_id, title, status, kind, at, files, summary="", progress=None):
     svc.record_event(
         {
             "event_id": f"evt_section_{session}_{section_id}_{status}",
@@ -100,6 +100,7 @@ def _section(svc, *, client, session, project, ns, section_id, title, status, ki
                 "objective": title,
                 "kind": kind,
                 "summary": summary,
+                "progress": progress,
                 "files": files,
             },
         }
@@ -214,15 +215,19 @@ def _seed_claude_code_a(store: Path) -> None:
     _usage(svc, client=c, session=s, model="claude-opus-4-8", project=p, tokens=1_900_000, cost=27.40, ns=ns)
     steps = [
         ("plan", "Plan the retry policy", "completed", "planning", ["src/payments/client.py"],
-         "Chose exponential backoff with full jitter, 5 attempts, 30s cap."),
+         "Chose exponential backoff with full jitter, 5 attempts, 30s cap.",
+         "Picked how failed payment calls retry. Done; next: write the tests."),
         ("tests", "Write the retry tests", "completed", "testing", ["tests/test_client.py"],
-         "Added 8 cases: transient 503, timeout, giving up, no-retry on 400."),
+         "Added 8 cases: transient 503, timeout, giving up, no-retry on 400.",
+         "Wrote tests for each way a payment call can fail. Done; next: make them pass."),
         ("impl", "Implement backoff + jitter", "completed", "implementation", ["src/payments/client.py"],
-         "Implemented the backoff wrapper; the 8 tests pass."),
+         "Implemented the backoff wrapper; the 8 tests pass.",
+         "Payment calls now retry with growing waits. Done."),
     ]
-    for i, (sid, title, status, kind, files, summary) in enumerate(steps):
+    for i, (sid, title, status, kind, files, summary, progress) in enumerate(steps):
         _section(svc, client=c, session=s, project=p, ns=ns, section_id=sid, title=title,
-                 status=status, kind=kind, at=BASE + 60 + i * 200, files=files, summary=summary)
+                 status=status, kind=kind, at=BASE + 60 + i * 200, files=files, summary=summary,
+                 progress=progress)
     # An agent-recorded test run that postdates the last edit (self-checked).
     _check(svc, client=c, session=s, project=p, ns=ns, section_id="impl", result="passed", at=BASE + 700,
            summary="8 passed", command="pytest tests/test_client.py -q", exit_code=0)
@@ -239,13 +244,16 @@ def _seed_codex_a(store: Path) -> None:
     _usage(svc, client=c, session=s, model="gpt-5.6-sol", project=p, tokens=1_600_000, cost=3.10, ns=ns)
     steps = [
         ("impl", "Add backoff to the HTTP client", "completed", "implementation", ["src/payments/client.py"],
-         "Wrapped the request in an exponential-backoff retry with jitter."),
+         "Wrapped the request in an exponential-backoff retry with jitter.",
+         "Payment calls now retry after a failure. Next: run the tests."),
         ("verify", "Run the payment tests", "completed", "testing", ["tests/test_client.py"],
-         "Ran the suite; recorded the result via the MCP check."),
+         "Ran the suite; recorded the result via the MCP check.",
+         "Ran the payment tests. Done."),
     ]
-    for i, (sid, title, status, kind, files, summary) in enumerate(steps):
+    for i, (sid, title, status, kind, files, summary, progress) in enumerate(steps):
         _section(svc, client=c, session=s, project=p, ns=ns, section_id=sid, title=title,
-                 status=status, kind=kind, at=BASE + 60 + i * 200, files=files, summary=summary)
+                 status=status, kind=kind, at=BASE + 60 + i * 200, files=files, summary=summary,
+                 progress=progress)
     # No hook fires for Codex, so the check is agent-recorded through MCP -> self checked.
     _check(svc, client=c, session=s, project=p, ns=ns, section_id="verify", result="passed", at=BASE + 500,
            summary="8 passed", command="pytest tests/test_client.py -q", exit_code=0)
@@ -362,11 +370,13 @@ def _seed_example_b(store: Path) -> None:
     # 1) Plan.
     _section(svc, client=c, session=s, project=p, ns=ns, section_id="plan", title="Reproduce the flaky total",
              status="completed", kind="planning", at=BASE + 60, files=["tests/test_checkout.py"],
-             summary="Reproduced: rounding drifts when a line item has a 3-decimal unit price.")
+             summary="Reproduced: rounding drifts when a line item has a 3-decimal unit price.",
+             progress="Found when the checkout total comes out a cent off. Next: fix the rounding.")
     # 2) Failing check — the "failed command".
     _section(svc, client=c, session=s, project=p, ns=ns, section_id="fix", title="Fix the rounding in the total",
              status="completed", kind="implementation", at=BASE + 240, files=["src/checkout/total.py"],
-             summary="Rounded each line item before summing, which removes the drift.")
+             summary="Rounded each line item before summing, which removes the drift.",
+             progress="Totals now round each item before adding them up. Next: rerun the tests.")
     _check(svc, client=c, session=s, project=p, ns=ns, section_id="fix", result="failed", at=BASE + 300,
            summary="3 failed (red)", command="pytest tests/test_checkout.py -q", exit_code=1)
     # 3) Re-run after the fix — passes, superseding the red run (the "retry").
@@ -377,7 +387,8 @@ def _seed_example_b(store: Path) -> None:
     _section(svc, client=c, session=s, project=p, ns=ns, section_id="refactor",
              title="Extract a rounding helper", status="completed", kind="implementation",
              at=BASE + 760, files=["src/checkout/total.py", "src/checkout/money.py"],
-             summary="Moved rounding into money.round_half_up(); the agent reported done here.")
+             summary="Moved rounding into money.round_half_up(); the agent reported done here.",
+             progress="Moved the rounding into one shared helper. Done.")
     _tool_activity(svc, client=c, session=s, at=BASE + 700, basis="client_hook_tool_category",
                    categories={"read": 10, "edit": 6, "execute": 4, "search": 2},
                    names=[("Read", 10), ("Edit", 6), ("Bash", 4), ("Grep", 2)],

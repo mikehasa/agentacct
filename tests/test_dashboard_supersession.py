@@ -34,6 +34,7 @@ def _section(service: SentinelService, *, section_id: str, status: str, session:
                 "client_session_id": session,
                 **extra,
                 "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+                "progress": "Rebuilt the step and replaced the earlier attempt. Done; next: review the page." if status in {"completed", "handed_off"} else None,
                 "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
             },
         }

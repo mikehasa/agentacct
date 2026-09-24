@@ -55,6 +55,7 @@ def _post_section(client, *, section_id, title, session, source="codex", status=
                 "client": source,
                 "client_session_id": session,
                 "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+                "progress": "Placed the step on the timeline with its session. Done." if status in {"completed", "handed_off"} else None,
                 "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
             },
         },

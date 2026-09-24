@@ -59,6 +59,7 @@ def test_agent_check_failure_is_an_open_finding_not_a_chronicle_failure(
                 "client": "codex",
                 "client_session_id": session_id,
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Closed the step that the open finding points at. Done; next: triage the finding.",
             },
         }
     )
@@ -324,6 +325,7 @@ def test_project_store_quarantines_pathless_check_from_filtered_foreign_session(
                 "client_session_id": session_id,
                 "project_dir": str(foreign_project),
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Closed the step that the open finding points at. Done; next: triage the finding.",
             },
         }
     )
@@ -481,6 +483,7 @@ def test_project_store_quarantines_pathless_check_matching_filtered_foreign_fact
                 "project_dir": str(foreign_project),
                 identity_key: identity_value,
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Closed the step that the open finding points at. Done; next: triage the finding.",
             },
         }
     )

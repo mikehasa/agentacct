@@ -41,7 +41,8 @@ def _seed(store: Path, *, now: float = 1_700_000_000.0) -> None:
             "sentinel_semantic_kind": "section", "client": "claude-code", "client_session_id": "s1",
             "client_transcript_id": "s1", "project_dir": "/tmp/proj", "section_id": "s1-1",
             "section_status": "completed", "section_title": "Build the snapshot harness",
-            "summary": "Implemented the snapshot harness and tested it against the fixture corpus.", "kind": "implementation", "files": ["src/mod.py"],
+            "summary": "Implemented the snapshot harness and tested it against the fixture corpus.",
+            "progress": "The snapshot harness runs against the fixture corpus. Done.", "kind": "implementation", "files": ["src/mod.py"],
         },
     })
     svc.record_event({
@@ -101,6 +102,7 @@ def test_receipt_markup_survives_hostile_fields(tmp_path):
             "sentinel_semantic_kind": "section", "client": "claude-code", "client_session_id": "sx",
             "client_transcript_id": "sx", "project_dir": "/tmp/p", "section_id": "sx-1",
             "section_status": "completed", "section_title": "pwn[/]step with markup", "summary": "[/]boom [/]boom [/]boom [/]boom with hostile markup",
+            "progress": "Shipped the [/]boom step with [/]markup. Done [/]boom.",
         },
     })
     receipt = _first_receipt(tmp_path)

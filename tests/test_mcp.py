@@ -484,6 +484,7 @@ def test_mcp_record_section_accepts_handed_off_and_reduces_to_clean_terminal(tmp
                     "source": "codex",
                     "section_id": "handoff-step",
                     "section_status": "handed_off",
+                    "progress": "Wrote up where the work stands. Handed off to a new session.",
                     "section_title": "Continue in a new session",
                     "client": "codex",
                     "client_session_id": "codex-session",
@@ -520,6 +521,7 @@ def test_mcp_record_machine_check_creates_evidence_event_linked_to_section(tmp_p
                     "source": "codex",
                     "section_id": "mcp-v1",
                     "section_status": "completed",
+                    "progress": "Finished the change and wrote down its outcome. Nothing is left open. Done.",
                     "section_title": "MCP v1 convergence",
                     "client": "codex",
                     "client_session_id": "codex-session",
@@ -1249,6 +1251,7 @@ def test_usage_import_row_joins_section_with_inherited_context(tmp_path):
             "source": "claude-code",
             "section_id": "inherited-join",
             "section_status": "completed",
+            "progress": "Landed the fix and noted which session did it. Done.",
             "section_title": "Inherited join",
             "kind": "implementation",
             "summary": "Recorded outcome for this fixture section.",
@@ -1449,7 +1452,7 @@ def test_stale_inherited_context_never_produces_exact_attribution(tmp_path):
         server,
         2,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "conversation-b-work", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+        {"source": "claude-code", "section_id": "conversation-b-work", "section_status": "completed", "progress": "Wrote the section and joined it to its session. Done; next: import usage.", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
     )
     _record_trusted_usage(server, session_id="conversation-a-session")
 
@@ -1477,6 +1480,7 @@ def test_explicit_section_ids_still_produce_exact_attribution(tmp_path):
             "source": "claude-code",
             "section_id": "explicit-work",
             "section_status": "completed",
+            "progress": "Closed out the work for this step. Done.",
             "summary": "Recorded outcome for this fixture section.",
             "client": "claude-code",
             "client_session_id": "explicit-session",
@@ -1564,7 +1568,7 @@ def test_context_bridge_does_not_upgrade_stale_inherited_section_to_exact(tmp_pa
         server,
         2,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "conversation-b-work", "section_status": "completed", "summary": "Recorded outcome for this fixture section.", "section_title": "Fixture section title"},
+        {"source": "claude-code", "section_id": "conversation-b-work", "section_status": "completed", "progress": "Checked the join keys on the stored record. Done; next: review attribution.", "summary": "Recorded outcome for this fixture section.", "section_title": "Fixture section title"},
     )
     _record_trusted_usage(server, session_id="conversation-a-session")
 
@@ -1612,6 +1616,7 @@ def test_context_bridge_explicit_section_ids_still_exact(tmp_path):
             "source": "claude-code",
             "section_id": "explicit-work",
             "section_status": "completed",
+            "progress": "Recorded the step through the MCP tool. Done.",
             "summary": "Recorded outcome for this fixture section.",
             "client": "claude-code",
             "client_session_id": "explicit-session",
@@ -1687,7 +1692,7 @@ def test_mcp_section_inherits_hook_client_context(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "hook-join", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+            {"source": "claude-code", "section_id": "hook-join", "section_status": "completed", "progress": "Finished the change and wrote down its outcome. Nothing is left open. Done.", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
     metadata = section_payload["event"]["metadata"]
@@ -1714,7 +1719,7 @@ def test_usage_joins_hook_derived_section_at_high_confidence(tmp_path):
         server,
         1,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "hook-join", "section_status": "completed", "summary": "Recorded outcome for this fixture section.", "section_title": "Fixture section title"},
+        {"source": "claude-code", "section_id": "hook-join", "section_status": "completed", "progress": "Landed the fix and noted which session did it. Done.", "summary": "Recorded outcome for this fixture section.", "section_title": "Fixture section title"},
     )
     _record_trusted_usage(server, session_id="hooked-session")
 
@@ -1941,6 +1946,7 @@ def test_explicit_session_id_with_hook_context_yields_exact(tmp_path):
                 "source": "claude-code",
                 "section_id": "explicit-upgrade",
                 "section_status": "completed",
+                "progress": "Wrote the section and joined it to its session. Done; next: import usage.",
                 "client_session_id": "hooked-session",
                 "section_title": "Fixture section title",
                 "summary": "Recorded outcome for this fixture section.",
@@ -2031,7 +2037,7 @@ def test_concurrent_hook_contexts_refuse_inheritance_end_to_end(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "ambiguous-work", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+            {"source": "claude-code", "section_id": "ambiguous-work", "section_status": "completed", "progress": "Closed out the work for this step. Done.", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
     metadata = payload["event"]["metadata"]
@@ -2069,7 +2075,7 @@ def test_concurrent_contexts_env_binding_selects_own_session(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "env-bound", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+            {"source": "claude-code", "section_id": "env-bound", "section_status": "completed", "progress": "Checked the join keys on the stored record. Done; next: review attribution.", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
     metadata = payload["event"]["metadata"]
@@ -2109,7 +2115,7 @@ def test_concurrent_contexts_env_binding_requires_strict_recency_end_to_end(tmp_
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "stale-env", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+            {"source": "claude-code", "section_id": "stale-env", "section_status": "completed", "progress": "Recorded the step through the MCP tool. Done.", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )["event"]["metadata"]
     assert "client_session_id" not in metadata
@@ -2135,7 +2141,7 @@ def test_concurrent_contexts_pid_lineage_selects_own_session(tmp_path):
             server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "lineage-bound", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+            {"source": "claude-code", "section_id": "lineage-bound", "section_status": "completed", "progress": "Finished the change and wrote down its outcome. Nothing is left open. Done.", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
     metadata = payload["event"]["metadata"]
@@ -2159,7 +2165,7 @@ def test_concurrent_contexts_pid_lineage_selects_own_session(tmp_path):
             sibling_server,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "sibling-work", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+            {"source": "claude-code", "section_id": "sibling-work", "section_status": "completed", "progress": "Landed the fix and noted which session did it. Done.", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )["event"]["metadata"]
     assert "client_session_id" not in sibling_metadata
@@ -2185,6 +2191,7 @@ def test_explicit_ids_suppress_refusal_stamp(tmp_path):
                 "source": "claude-code",
                 "section_id": "explicit-own-id",
                 "section_status": "completed",
+                "progress": "Wrote the section and joined it to its session. Done; next: import usage.",
                 "client_session_id": "my-own-session",
                 "section_title": "Fixture section title",
                 "summary": "Recorded outcome for this fixture section.",
@@ -2255,6 +2262,7 @@ def test_metadata_overflow_keeps_refusal_marker(tmp_path):
                 "source": "claude-code",
                 "section_id": "overflow-refusal",
                 "section_status": "completed",
+                "progress": "Closed out the work for this step. Done.",
                 "metadata": {"filler": "x" * 7000},
                 "section_title": "Fixture section title",
                 "summary": "Recorded outcome for this fixture section.",
@@ -2301,7 +2309,7 @@ def test_section_spanning_sessions_keeps_per_session_snapshots(tmp_path):
         server,
         2,
         "agentacct_record_section",
-        {"source": "claude-code", "section_id": "spanning-work", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+        {"source": "claude-code", "section_id": "spanning-work", "section_status": "completed", "progress": "Checked the join keys on the stored record. Done; next: review attribution.", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
     )
     _record_trusted_usage(server, session_id="conversation-a")
 
@@ -2433,6 +2441,7 @@ def test_section_free_form_metadata_cannot_smuggle_join_keys(tmp_path):
             "source": "codex",
             "section_id": "smuggle",
             "section_status": "completed",
+            "progress": "Recorded the step through the MCP tool. Done.",
             "metadata": {"client_session_id": "victim-session", "client_transcript_id": "victim-session"},
             "section_title": "Fixture section title",
             "summary": "Recorded outcome for this fixture section.",
@@ -2590,6 +2599,7 @@ def test_explicit_section_ids_persist_authored_marker_and_stay_exact(tmp_path):
                 "source": "claude-code",
                 "section_id": "explicit-marker",
                 "section_status": "completed",
+                "progress": "Finished the change and wrote down its outcome. Nothing is left open. Done.",
                 "client": "claude-code",
                 "client_session_id": "explicit-session",
                 "client_transcript_id": "explicit-session",
@@ -2622,6 +2632,7 @@ def test_benign_metadata_display_fields_survive_and_are_not_labelled_smuggled(tm
                 "source": "codex",
                 "section_id": "display-fields",
                 "section_status": "completed",
+                "progress": "Landed the fix and noted which session did it. Done.",
                 "metadata": {"summary": "important context", "files": ["a.py"], "custom": "kept"},
                 "section_title": "Fixture section title",
                 "summary": "Recorded outcome for this fixture section.",
@@ -2647,6 +2658,7 @@ def test_supplied_argument_overwrites_colliding_benign_metadata_without_label(tm
                 "source": "codex",
                 "section_id": "server-wins",
                 "section_status": "completed",
+                "progress": "Wrote the section and joined it to its session. Done; next: import usage.",
                 "summary": "Validated that the supplied argument wins over metadata.",
                 "metadata": {"summary": "caller summary", "custom": "kept"},
                 "section_title": "Fixture section title",
@@ -2671,6 +2683,7 @@ def test_forged_strip_label_in_metadata_is_discarded(tmp_path):
                 "source": "codex",
                 "section_id": "forged-label",
                 "section_status": "completed",
+                "progress": "Closed out the work for this step. Done.",
                 "metadata": {"reserved_context_keys_stripped": ["client_session_id"]},
                 "section_title": "Fixture section title",
                 "summary": "Recorded outcome for this fixture section.",
@@ -2707,7 +2720,7 @@ def test_refusal_note_with_attach_inherited_ids_does_not_claim_unattributed(tmp_
             server,
             2,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "attach-after-refusal", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+            {"source": "claude-code", "section_id": "attach-after-refusal", "section_status": "completed", "progress": "Checked the join keys on the stored record. Done; next: review attribution.", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
 
@@ -2730,7 +2743,7 @@ def test_refusal_note_with_attach_inherited_ids_does_not_claim_unattributed(tmp_
             fresh,
             1,
             "agentacct_record_section",
-            {"source": "claude-code", "section_id": "bare-refusal", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+            {"source": "claude-code", "section_id": "bare-refusal", "section_status": "completed", "progress": "Recorded the step through the MCP tool. Done.", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
         )
     )
     assert "stays unattributed" in bare["refused_client_context"]["note"]
@@ -3053,6 +3066,7 @@ def test_mangled_tool_call_is_warned_about_never_repaired(tmp_path):
                 "source": "codex",
                 "section_id": "mangled",
                 "section_status": "completed",
+                "progress": "Finished the change and wrote down its outcome. Nothing is left open. Done.",
                 "summary": "Fixed the validator.</summary>\n<files>src/agentacct/mcp.py</files>",
                 "section_title": "Fixture section title",
             },
@@ -3103,6 +3117,7 @@ def test_mangle_detector_ignores_prose_that_merely_mentions_fields(tmp_path):
                 "source": "codex",
                 "section_id": "prose",
                 "section_status": "completed",
+                "progress": "Landed the fix and noted which session did it. Done.",
                 "summary": "Reviewed the files and the source list; <files> and <summary> tags are discussed in the MCP config docs.",
                 "blocker": "Waiting on the reviewer to confirm the config wording.",
                 "next_step": "Re-read the config docs once review returns.",
@@ -3124,6 +3139,7 @@ def test_mangle_detector_ignores_prose_that_merely_mentions_fields(tmp_path):
                 "source": "codex",
                 "section_id": "prose-2",
                 "section_status": "completed",
+                "progress": "Wrote the section and joined it to its session. Done; next: import usage.",
                 "summary": "Documented the </files> closing tag in the config guide.",
                 "files": ["docs/mcp.md"],
                 "section_title": "Fixture section title",
@@ -3634,6 +3650,7 @@ def test_mangle_detector_does_not_fire_on_a_closing_title_tag(tmp_path):
                 "source": "codex",
                 "section_id": "html",
                 "section_status": "completed",
+                "progress": "Closed out the work for this step. Done.",
                 "summary": "The page head has <title>Report</title> in it.",
                 "section_title": "Fixture section title",
             },
@@ -3652,6 +3669,7 @@ def test_mangle_detector_does_not_fire_on_a_closing_title_tag(tmp_path):
                 "source": "codex",
                 "section_id": "html",
                 "section_status": "completed",
+                "progress": "Checked the join keys on the stored record. Done; next: review attribution.",
                 "summary": "The page head has <title>Report</title> in it.</next_step>",
                 "section_title": "Fixture section title",
             },
@@ -3681,7 +3699,7 @@ def test_mangle_detector_ineligible_set_is_calibrated_not_hand_picked(tmp_path):
                 server,
                 msg_id,
                 "agentacct_record_section",
-                {"source": "codex", "section_id": "svg", "section_status": "completed", "summary": f"Reviewed the markup docs and the export pipeline. {summary}", "section_title": "Review markup prose handling"},
+                {"source": "codex", "section_id": "svg", "section_status": "completed", "progress": "Recorded the step through the MCP tool. Done.", "summary": f"Reviewed the markup docs and the export pipeline. {summary}", "section_title": "Review markup prose handling"},
             )
         )
         metadata = payload["event"]["metadata"]

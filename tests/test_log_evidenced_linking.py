@@ -737,6 +737,7 @@ def test_codex_paginated_jsonl_links_trusted_import_to_gradeable_receipt(tmp_pat
                 "kind": "implementation",
                 "project_dir": "/work/project",
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Linked the step to the tool calls in the log. Done.",
             },
         }
     )
@@ -1348,6 +1349,7 @@ def _section_event(
         "kind": "implementation",
         "project_dir": "/tmp/projA",
         "summary": "Recorded outcome for this fixture section.",
+        "progress": "Linked the step to the tool calls in the log. Done.",
     }
     if authored:
         metadata["client_context_keys_authored"] = list(authored)

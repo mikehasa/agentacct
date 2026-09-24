@@ -92,6 +92,7 @@ def _record_section(store_root, *, section_id, title, session, client="codex", s
                 "client": client,
                 "client_session_id": session,
                 "summary": "Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else None,
+                "progress": "Shipped the product-tab step and its files. Done." if status in {"completed", "handed_off"} else None,
                 "blocker": "The staging migration needs an owner role this account does not have." if status == "blocked" else None,
             },
         }
@@ -582,6 +583,7 @@ def test_context_after_install_rate_is_exact_never_flattered(tmp_path):
                     "client": "claude-code",
                     "client_session_id": session,
                     "summary": "Recorded outcome for this fixture section.",
+                    "progress": "Shipped the product-tab step and its files. Done.",
                 },
             }
         )

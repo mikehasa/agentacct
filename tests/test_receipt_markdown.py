@@ -69,6 +69,7 @@ def _seed(store: Path, *, title: str = "Add a token-bucket rate limiter") -> Non
                 "kind": "implementation",
                 "files": ["src/login.py"],
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Built the snapshot harness step. Done; next: render the markdown receipt.",
             },
         }
     )

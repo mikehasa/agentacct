@@ -161,6 +161,7 @@ class WorkEvent:
     summary: str | None = None
     blocker: str | None = None
     next_step: str | None = None
+    progress: str | None = None
     client: str | None = None
     client_session_id: str | None = None
     client_transcript_id: str | None = None
@@ -201,6 +202,7 @@ class WorkEvent:
             ("summary", _MAX_SUMMARY),
             ("blocker", _MAX_SUMMARY),
             ("next_step", _MAX_SUMMARY),
+            ("progress", _MAX_SUMMARY),
             ("client", 80),
             ("original_event_type", 80),
         ):
@@ -233,6 +235,7 @@ class WorkEvent:
             summary=_limited(metadata.get("summary"), maximum=_MAX_SUMMARY),
             blocker=_limited(metadata.get("blocker"), maximum=_MAX_SUMMARY),
             next_step=_limited(metadata.get("next_step"), maximum=_MAX_SUMMARY),
+            progress=_limited(metadata.get("progress"), maximum=_MAX_SUMMARY),
             client=_limited(metadata.get("client"), maximum=80),
             client_session_id=_identifier(metadata.get("client_session_id")),
             client_transcript_id=_identifier(metadata.get("client_transcript_id")),
@@ -261,6 +264,7 @@ class WorkEvent:
             "summary": self.summary,
             "blocker": self.blocker,
             "next_step": self.next_step,
+            "progress": self.progress,
             "client": self.client,
             "client_session_id": self.client_session_id,
             "client_transcript_id": self.client_transcript_id,
@@ -285,6 +289,7 @@ class WorkEvent:
             "summary": self.summary,
             "blocker": self.blocker,
             "next_step": self.next_step,
+            "progress": self.progress,
             "client": self.client,
             "client_session_id": self.client_session_id,
             "client_transcript_id": self.client_transcript_id,

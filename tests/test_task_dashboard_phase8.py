@@ -96,6 +96,7 @@ def _record_section(
         "section_title": title,
         "client": client,
         "summary": "Recorded outcome for this fixture section.",
+        "progress": "Placed the step on the task dashboard. Done; next: check the canvas.",
     }
     if session is not None:
         metadata["client_session_id"] = session

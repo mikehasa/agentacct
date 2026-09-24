@@ -107,6 +107,7 @@ def _record_section(store_root: Path, *, section_id: str, session: str, client: 
                 "client": client,
                 "client_session_id": session,
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Fixed the dogfood issue and confirmed it locally. Done.",
             },
         }
     )
