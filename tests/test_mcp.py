@@ -3706,3 +3706,43 @@ def test_mangle_detector_ineligible_set_is_calibrated_not_hand_picked(tmp_path):
     # Pinned last, so a regression shows up as the behaviour above rather than
     # as a bare constant mismatch.
     assert MANGLE_DETECTOR_INELIGIBLE_PROPERTIES == {"title", "summary", "metadata", "source"}
+
+
+def test_bridged_client_source_inherits_its_own_hook_context(tmp_path):
+    """A bridged client's own source slug inherits that client's hook context.
+
+    Kimi Code's hooks report the authoritative session id into the hook context
+    (the session id the usage importer keys on), so a section recorded with
+    source ``kimi-code`` and no explicit client must pick it up instead of
+    staying unattributed.
+    """
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+    _write_hook_context(server.service.store.root, session_id="session_kimi_fixture", client="kimi-code")
+
+    metadata = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {"source": "kimi-code", "section_id": "kimi-work", "section_status": "started", "section_title": "Fixture section title"},
+        )
+    )["event"]["metadata"]
+    assert metadata["client_session_id"] == "session_kimi_fixture"
+    assert metadata["client"] == "kimi-code"
+
+
+def test_unbridged_lookalike_source_inherits_nothing(tmp_path):
+    """A source that merely starts with a bridged client's name stays unattributed."""
+    server = SentinelMCPServer(store_dir=tmp_path / "state")
+    _write_hook_context(server.service.store.root, session_id="session_kimi_fixture", client="kimi-code")
+
+    metadata = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {"source": "kimichat", "section_id": "lookalike-work", "section_status": "started", "section_title": "Fixture section title"},
+        )
+    )["event"]["metadata"]
+    assert "client_session_id" not in metadata
+    assert "client" not in metadata

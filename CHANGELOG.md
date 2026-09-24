@@ -6,6 +6,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Kimi Code can install an optional observe-only hook bridge
+  (`agentacct hooks kimi-code install`), and global onboarding installs it as
+  one of three legs (the user-level MCP registration, the
+  `$KIMI_CODE_HOME/AGENTS.md` directive, and the hook bridge). Kimi Code runs
+  its own `[[hooks]]` entries from `~/.kimi-code/config.toml`; the hook gets the
+  authoritative `session_id` on stdin and writes a tool-activity tick plus a
+  hook-context file on every tool call, so the MCP side binds the reports an
+  agent makes in the same session to that session — recorded work goes from
+  "reported but unattributable" to joinable. Fixture-verified only for now: no
+  live smoke in a real Kimi Code session has been recorded yet, the hook config
+  is opt-in (it writes the user's `~/.kimi-code/config.toml`), and the
+  capability manifest lists the lane as `experimental`.
+
 ## [0.12.2] — 2026-09-24
 
 A correctness patch for the evidence-spool compaction introduced in 0.12.1: its blocking verification could not pass on any store that had ever been pruned, and it read a concurrent refreshable-usage write as lost evidence. Both are fixed here, with the real 22.8 GB store compacted under the repaired gate (21.24 GiB -> 131.7 MiB, archived first).

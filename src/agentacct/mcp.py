@@ -1256,10 +1256,22 @@ class SentinelMCPServer:
         if effective_client is not None:
             if effective_client not in HOOK_CONTEXT_CLIENTS:
                 return [], None
-        elif not str(source or "").lower().replace("_", "-").startswith(("claude", "codex")):
-            # The source names neither a client with a hook bridge nor a
-            # claude/codex alias, so there is no context to inherit from.
-            return [], None
+        else:
+            # The source is what an agent labels itself with when it passes no
+            # client. Accept every bridged client's own slug or a slug that
+            # extends it (`kimi-code`, `kimi-code-hook`), so a section recorded
+            # by a bridged client inherits that client's hook context instead of
+            # silently staying unattributed.
+            source_slug = str(source or "").lower().replace("_", "-")
+            aliases = tuple(
+                dict.fromkeys(
+                    alias
+                    for client in HOOK_CONTEXT_CLIENTS
+                    for alias in (client, client.split("-", 1)[0])
+                )
+            )
+            if not any(source_slug == alias or source_slug.startswith(f"{alias}-") for alias in aliases):
+                return [], None
         selection = self._select_hook_client_context()
         if selection.status == "none":
             return [], None

@@ -87,7 +87,10 @@ def test_manifest_matches_usage_and_distinguishes_generic_from_installed_capture
     assert set(SUPPORTED_CLIENTS) == {*USAGE_EVENT_CLIENTS, "cursor"}
     generic_v2_manifest_clients = set(DEFAULT_CAPTURE_REGISTRY.vendors())
     assert generic_v2_manifest_clients == {"claude-code", "codex", "cursor"}
-    assert capture_clients == {*generic_v2_manifest_clients, "hermes", "opencode"}
+    # Installed client-specific bridges beyond the generic-v2 registry: the
+    # Codex/Hermes/OpenCode global-onboarding bridges plus the Kimi Code
+    # observe-only hook bridge (config.toml [[hooks]]).
+    assert capture_clients == {*generic_v2_manifest_clients, "hermes", "opencode", "kimi-code"}
     assert rows["cursor"]["capabilities"]["usage_import"]["state"] == "unavailable"
 
 
@@ -162,7 +165,7 @@ def test_cursor_manifest_is_observation_only_and_single_version_bounded() -> Non
 
 
 def test_kimi_code_manifest_upgrades_only_the_captured_lanes_and_leaves_cache_write_unproven() -> None:
-    """kimi-code cites the dated real capture on four lanes; cache write stays synthetic-only."""
+    """kimi-code cites the dated real capture on four lanes; cache write and the hook bridge stay experimental."""
     kimi = _client_rows()["kimi-code"]
     anchor = "docs/adapter-capability-evidence.md#2026-09-23-kimi-code-real-capture-fixture-and-live-smoke"
 
@@ -183,28 +186,63 @@ def test_kimi_code_manifest_upgrades_only_the_captured_lanes_and_leaves_cache_wr
     assert cache_write["state"] == "experimental"
     assert cache_write["verification"]["level"] == "synthetic_fixture"
     assert "never been observed" in " ".join(cache_write["limitations"])
-    assert kimi["capabilities"]["mechanical_capture"]["state"] == "unavailable"
-    # The user-level MCP writer and the global onboarding that wraps it exist and
-    # are tested, but no real Kimi Code session has been observed loading the
-    # registration or recording over MCP: fixture evidence can only ever prove
-    # "experimental", so these two lanes must never reach a verified* state.
+    # The observe-only hook bridge landed after the capture lanes, so it is an
+    # experimental one-command-global lane with fixture evidence only: no live
+    # smoke has observed a real session firing the hook, and its limitations
+    # must keep saying that plus the opt-in [[hooks]] write and the per-tool-call
+    # firing rate.
+    mechanical = kimi["capabilities"]["mechanical_capture"]
+    assert mechanical["state"] == "experimental"
+    assert mechanical["activation"] == "one_command_global"
+    assert mechanical["verification"]["level"] == "synthetic_fixture"
+    assert mechanical["verification"]["verified_at"] == "2026-09-24"
+    assert mechanical["verification"]["evidence_refs"] == [
+        "tests/test_hooks_kimi_code.py::test_kimi_code_pre_tool_use_records_a_tool_tick_and_context_file",
+        "tests/test_hooks_kimi_code.py::test_kimi_code_install_merges_config_toml_and_is_idempotent",
+        "tests/test_hooks_kimi_code.py::test_kimi_code_hook_context_is_selected_by_pid_lineage",
+    ]
+    mechanical_limits = " ".join(mechanical["limitations"]).lower()
+    assert "no live smoke" in mechanical_limits
+    assert "opt-in" in mechanical_limits
+    assert "event, matcher, command, and timeout" in mechanical_limits
+    assert "once per tool call" in mechanical_limits
+    # The user-level MCP writer, the global onboarding that wraps it, and the
+    # hook bridge it now installs exist and are tested, but no real Kimi Code
+    # session has been observed loading the registration, recording over MCP, or
+    # firing the hook: fixture evidence can only ever prove "experimental", so
+    # these lanes must never reach a verified* state.
     for lane in ("mcp_semantics", "automatic_install"):
         capability = kimi["capabilities"][lane]
         assert capability["state"] == "experimental"
         assert capability["activation"] == "one_command_global"
         assert capability["verification"]["level"] == "synthetic_fixture"
-        assert capability["verification"]["verified_at"] == "2026-09-23"
-        assert capability["verification"]["evidence_refs"] == [
-            "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_fresh_file_uses_the_documented_shape",
-            "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_is_idempotent_and_does_not_rewrite",
-            "tests/test_onboard_global.py::test_onboard_global_agent_kimi_code_writes_user_level_mcp_json_and_instructions",
-            "tests/test_mcp_onboarding.py::test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json",
-        ]
+    assert kimi["capabilities"]["mcp_semantics"]["verification"]["verified_at"] == "2026-09-23"
+    assert kimi["capabilities"]["mcp_semantics"]["verification"]["evidence_refs"] == [
+        "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_fresh_file_uses_the_documented_shape",
+        "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_is_idempotent_and_does_not_rewrite",
+        "tests/test_onboard_global.py::test_onboard_global_agent_kimi_code_writes_user_level_mcp_json_and_instructions",
+        "tests/test_mcp_onboarding.py::test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json",
+    ]
+    # Onboard also installs the hook bridge now, so its fixture record carries
+    # the hook-install test alongside the MCP-writer refs.
+    assert kimi["capabilities"]["automatic_install"]["verification"]["verified_at"] == "2026-09-24"
+    assert kimi["capabilities"]["automatic_install"]["verification"]["evidence_refs"] == [
+        "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_fresh_file_uses_the_documented_shape",
+        "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_is_idempotent_and_does_not_rewrite",
+        "tests/test_onboard_global.py::test_onboard_global_agent_kimi_code_writes_user_level_mcp_json_and_instructions",
+        "tests/test_mcp_onboarding.py::test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json",
+        "tests/test_hooks_kimi_code.py::test_kimi_code_install_merges_config_toml_and_is_idempotent",
+    ]
     mcp_semantics = kimi["capabilities"]["mcp_semantics"]
     # The write covers the user-level file only, and the recording it enables is
     # still unobserved — both bounds stay stated on the lane itself.
     assert any(".kimi-code/mcp.json" in limitation for limitation in mcp_semantics["limitations"])
     assert any("no real Kimi Code session" in limitation for limitation in mcp_semantics["limitations"])
+    # The client-level limitations carry the hook bridge honestly: fixture-only,
+    # with the never-observed firing stated alongside the never-observed MCP use.
+    client_limits = " ".join(kimi["limitations"])
+    assert "observe-only hook bridge are fixture evidence only" in client_limits
+    assert "firing the installed hook" in client_limits
 
 
 def test_kimi_code_usage_cost_is_a_local_pricing_estimate_never_a_stored_cost() -> None:

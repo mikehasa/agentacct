@@ -118,11 +118,17 @@ from .hooks import (
     HERMES_CONFIG_RELATIVE_PATH,
     HERMES_HOOK_EVENT_SUBCOMMANDS,
     HERMES_HOOK_RELATIVE_PATH,
+    KIMI_CODE_CONFIG_RELATIVE_PATH,
+    KIMI_CODE_HOOK_EVENT_SUBCOMMANDS,
+    KIMI_CODE_HOOK_EVENTS,
+    KIMI_CODE_HOOK_RELATIVE_PATH,
+    KIMI_CODE_HOOK_TIMEOUT_SECONDS,
     OPENCODE_PLUGIN_RELATIVE_PATH,
     capture_claude_code_client_context,
     capture_tool_activity,
     capture_hermes_tool_check,
     capture_hermes_turn_boundary,
+    clear_ended_session_hook_context,
     hermes_first_turn_nudge,
     capture_mechanical_check,
     capture_opencode_tool_check,
@@ -131,10 +137,16 @@ from .hooks import (
     claude_code_hook_paths,
     claude_session_start_response,
     codex_hooks_json_block,
+    command_runs_hook_wrapper,
     evaluate_stdin_json,
     install_claude_code_hook,
+    kimi_code_hook_command,
+    kimi_code_hook_doctor_checks,
+    kimi_code_hooks_toml_block,
+    kimi_code_hooks_unsupported_fields,
     render_codex_hook_wrapper,
     render_hermes_hook_wrapper,
+    render_kimi_code_hook_wrapper,
     render_opencode_plugin,
 )
 from .log_evidence import build_log_evidence_index, summarize_log_evidence_donor_rows
@@ -292,6 +304,9 @@ claude_code_hooks_app = typer.Typer(help="Claude Code hook helpers.")
 codex_hooks_app = typer.Typer(help="Codex hook helpers (observe-only tool-activity + session-end).")
 hermes_hooks_app = typer.Typer(help="Hermes hook helpers (observe-only tool-activity + exit-code + turn-boundary).")
 opencode_hooks_app = typer.Typer(help="OpenCode hook helpers (observe-only tool-activity plugin).")
+kimi_code_hooks_app = typer.Typer(
+    help="Kimi Code hook helpers (observe-only tool-activity + the session identity its MCP tools never receive)."
+)
 app.add_typer(cost_app, name="cost")
 app.add_typer(policy_app, name="policy")
 app.add_typer(outcome_app, name="outcome")
@@ -580,6 +595,7 @@ hooks_app.add_typer(claude_code_hooks_app, name="claude-code")
 hooks_app.add_typer(codex_hooks_app, name="codex")
 hooks_app.add_typer(hermes_hooks_app, name="hermes")
 hooks_app.add_typer(opencode_hooks_app, name="opencode")
+hooks_app.add_typer(kimi_code_hooks_app, name="kimi-code")
 app.add_typer(hooks_app, name="hooks")
 console = Console()
 
@@ -2943,23 +2959,35 @@ def _onboard_global_dsh(store_dir: Path, command: str) -> str:
 def _onboard_global_kimi_code(store_dir: Path, command: str) -> str:
     """Configure Kimi Code at USER scope (zero repo files).
 
-    Both legs are written at Kimi Code's user level: the agentacct MCP server goes
-    into ``$KIMI_CODE_HOME/mcp.json`` (the file Kimi Code declares servers in —
-    never ``config.toml``, which carries provider credentials and has no MCP
-    section) and the standing 'record your work' directive goes into
-    ``$KIMI_CODE_HOME/AGENTS.md``, which Kimi Code loads on every session.
+    Three legs, all at Kimi Code's user level: the agentacct MCP server goes into
+    ``$KIMI_CODE_HOME/mcp.json`` (the file Kimi Code declares servers in — never
+    ``config.toml``, which carries provider credentials and has no MCP section),
+    the standing 'record your work' directive goes into
+    ``$KIMI_CODE_HOME/AGENTS.md`` (loaded on every session), and the observe-only
+    hook pack appends its ``[[hooks]]`` rules to ``$KIMI_CODE_HOME/config.toml``.
+
+    The hook leg is not decoration: Kimi Code hands NO session id to the model or
+    to MCP servers, so without it every section a Kimi Code session records lands
+    with an empty client_session_id and joins nothing. Its hook stdin JSON carries
+    ``session_id`` (``session_<uuid>``, the value the local usage importer
+    records), which is the only channel that can supply it.
 
     Returns ``wired`` when the MCP registration was written (or was already
     registered) and the directive written, or ``tools-pending`` when only the
     directive could be installed — an mcp.json agentacct refuses to overwrite
     (not a JSON object) or a write error. Never claims a write it did not make.
+    The hook leg reports its own outcome honestly and never changes this value: a
+    config.toml agentacct must not touch does not make the MCP leg a failure.
     """
     home = _kimi_code_home_dir()
     # 1. standing "record your work" instructions -> $KIMI_CODE_HOME/AGENTS.md
     setup_instructions(
         agent="kimi-code", user=True, path=None, remove=False, dry_run=False, store_dir=store_dir
     )
-    # 2. user-level MCP registration -> $KIMI_CODE_HOME/mcp.json
+    # 2. observe-only hooks -> $KIMI_CODE_HOME/config.toml (+ the wrapper under
+    #    $KIMI_CODE_HOME/hooks/). Best-effort: a refusal must not undo legs 1-3.
+    _onboard_kimi_code_hooks(home, store_dir, command)
+    # 3. user-level MCP registration -> $KIMI_CODE_HOME/mcp.json
     try:
         path, action = _write_kimi_code_home_mcp(store_dir, command)
     except (typer.BadParameter, OSError, UnicodeError) as exc:
@@ -2976,9 +3004,37 @@ def _onboard_global_kimi_code(store_dir: Path, command: str) -> str:
         verb = "Updated" if action == "updated" else "Wrote"
         console.print(f"{verb} the agentacct MCP server in {path} (user level — every Kimi Code session).")
     console.print(
-        "Start a NEW Kimi Code session so it loads the server + $KIMI_CODE_HOME/AGENTS.md instructions."
+        "Start a NEW Kimi Code session so it loads the server + $KIMI_CODE_HOME/AGENTS.md instructions + the "
+        "hook rules (the hooks are what give its sections a real session id)."
     )
     return "wired"
+
+
+def _onboard_kimi_code_hooks(home: Path, store_dir: Path, command: str) -> str:
+    """Best-effort hook leg of the kimi-code global onboarding.
+
+    Returns the raw config action (``wrote`` / ``updated`` / ``unchanged`` /
+    ``skipped-unparsed`` / ``failed``) and prints exactly one honest line about
+    it. Never raises: a hook refusal must not undo the MCP + directive legs."""
+    try:
+        action, wrapper_path = _install_kimi_code_hook(home, Path(store_dir), command)
+    except OSError as exc:
+        console.print(f"Kimi Code hooks: NOT written ({exc}). Re-run: agentacct hooks kimi-code install")
+        return "failed"
+    config_path = home / KIMI_CODE_CONFIG_RELATIVE_PATH
+    if action == "skipped-unparsed":
+        console.print(
+            f"Kimi Code hooks: LEFT UNCHANGED ({config_path}) — it is not a TOML document agentacct can safely "
+            "merge into, so no hook was wired and its sections will keep arriving without a session id. Add "
+            "these rules yourself, then re-run:"
+        )
+        print(kimi_code_hooks_toml_block(kimi_code_hook_command(wrapper_path)).rstrip())
+        return action
+    verb = {"wrote": "Wrote", "updated": "Updated", "unchanged": "Left unchanged"}.get(action, action)
+    console.print(
+        f"Kimi Code hooks: {verb} ({config_path}) — PreToolUse/SessionStart/SessionEnd wired to {wrapper_path}"
+    )
+    return action
 
 
 def _warn_global_store_mismatches(store_dir: Path, command: str) -> None:
@@ -3312,9 +3368,11 @@ def _onboard_global(*, agent: str, port: int, start_runtime: bool, mcp: bool, as
         for experimental in configured_experimental_clients:
             if experimental == "kimi-code":
                 console.print(
-                    "kimi-code: agentacct MCP server + $KIMI_CODE_HOME/AGENTS.md written (experimental). Start a "
-                    "NEW Kimi Code session so it loads the server — no live Kimi Code session has been observed "
-                    "recording over MCP yet, so recording is not yet verified end-to-end."
+                    "kimi-code: agentacct MCP server + $KIMI_CODE_HOME/AGENTS.md + observe-only hooks "
+                    "(config.toml) written (experimental). Start a NEW Kimi Code session so it loads them — the "
+                    "hooks are what give its sections a session id (Kimi Code passes none to MCP), and no live "
+                    "Kimi Code session has been observed recording end-to-end yet, so that join is not yet "
+                    "verified on this machine."
                 )
             else:
                 console.print(
@@ -5102,6 +5160,200 @@ def _install_hermes_hook(home: Path, store_dir: Path, command: str, *, force: bo
     return action, wrapper_path
 
 
+# A TOP-LEVEL table header: ``[key]`` or ``[[key]]``. TOML requires the header to
+# start its own line, so this is the boundary between one hooks entry and the next.
+_TOML_TABLE_HEADER_RE = re.compile(r"^[ \t]*\[")
+_TOML_HOOKS_HEADER_RE = re.compile(r"^[ \t]*\[\[[ \t]*hooks[ \t]*\]\][ \t]*(#.*)?$")
+
+
+def _kimi_code_hooks_span_command(span: Sequence[str]) -> str | None:
+    """The ``command`` of one ``[[hooks]]`` table span (its header line first).
+
+    The span is re-parsed AS a hooks table so this textual matcher agrees exactly
+    with the TOML parser used for the idempotency decision (a folded or escaped
+    scalar is compared post-decode, not as raw text). Returns None when the span
+    does not parse as one hooks entry."""
+    try:
+        parsed = tomllib.loads("\n".join(["[[hooks]]", *span[1:]]))
+    except tomllib.TOMLDecodeError:
+        return None
+    entries = parsed.get("hooks")
+    if isinstance(entries, list) and entries and isinstance(entries[0], dict):
+        command = entries[0].get("command")
+        return command if isinstance(command, str) else None
+    return None
+
+
+def _kimi_code_hooks_are_current(
+    data: Mapping[str, Any], command: str, wrapper_basename: str, events: Sequence[str]
+) -> bool:
+    """True when every wired event already carries exactly our command once."""
+    entries = data.get("hooks")
+    if not isinstance(entries, list):
+        return False
+    for event in events:
+        ours = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("event") == event
+            and command_runs_hook_wrapper(entry.get("command"), wrapper_basename)
+        ]
+        if len(ours) != 1 or ours[0].get("command") != command:
+            return False
+    return True
+
+
+def _kimi_code_hooks_result_is_safe(
+    before_text: str, after_text: str, *, command: str, wrapper_basename: str, events: Sequence[str]
+) -> bool:
+    """Semantic guard for the config.toml upsert: True only when the edit
+    preserves everything it must and wired exactly our rules.
+
+    Kimi Code's config.toml holds provider credentials and the user's own hook
+    rules, and a single invalid field makes it drop the whole hooks section — so
+    the textual edit is verified against the TOML parser before it is written:
+    the result must parse, every non-hooks top-level key must be unchanged, the
+    user's own hook entries must survive in order, and each wired event must
+    carry exactly our command in an entry using ONLY the four allowed fields."""
+    try:
+        before = tomllib.loads(before_text)
+        after = tomllib.loads(after_text)
+    except tomllib.TOMLDecodeError:
+        return False
+    if set(after) - set(before) - {"hooks"}:
+        return False
+    for key, value in before.items():
+        if key != "hooks" and after.get(key) != value:
+            return False
+    before_hooks = before.get("hooks")
+    before_hooks = before_hooks if isinstance(before_hooks, list) else []
+    after_hooks = after.get("hooks")
+    if not isinstance(after_hooks, list):
+        return False
+
+    def _user_entries(entries: Sequence[Any]) -> list[Any]:
+        return [
+            entry
+            for entry in entries
+            if not (isinstance(entry, dict) and command_runs_hook_wrapper(entry.get("command"), wrapper_basename))
+        ]
+
+    # The user's own rules survive, in their original relative order.
+    if _user_entries(before_hooks) != _user_entries(after_hooks):
+        return False
+    for event in events:
+        ours = [
+            entry
+            for entry in after_hooks
+            if isinstance(entry, dict)
+            and entry.get("event") == event
+            and command_runs_hook_wrapper(entry.get("command"), wrapper_basename)
+        ]
+        if len(ours) != 1 or ours[0].get("command") != command:
+            return False
+        if set(ours[0]) - {"event", "matcher", "command", "timeout"}:
+            return False
+    return True
+
+
+def _write_kimi_code_hooks_config_at(
+    config_path: Path,
+    command: str,
+    wrapper_basename: str,
+    *,
+    events: Sequence[str] = KIMI_CODE_HOOK_EVENTS,
+    timeout: int = KIMI_CODE_HOOK_TIMEOUT_SECONDS,
+) -> tuple[Path, str]:
+    """Append/refresh the ``[[hooks]]`` rules in Kimi Code's config.toml.
+
+    TEXTUAL upsert: config.toml carries provider credentials and is normally
+    commented by hand, and only a TOML READER (``tomllib``) is available, so the
+    file is never reflowed or re-serialized. Only our own prior rules — matched by
+    the wrapper FILE they run, so a reinstall differing by interpreter updates in
+    place instead of double-firing every event — are removed; the user's own rules
+    and every other key are preserved byte-for-byte.
+
+    Our block is APPENDED at the end of the file deliberately: in TOML a
+    top-level key written below a ``[[hooks]]`` table parses as a member of that
+    table, which makes Kimi Code drop the entire hooks section with a warning.
+    Appending last is the one position where that cannot happen.
+
+    A config.toml that does not parse (or whose ``hooks`` key is not an array of
+    tables, where our ``[[hooks]]`` headers could not be appended legally) is
+    REFUSED as ``skipped-unparsed`` rather than rewritten. Idempotent: an already
+    current file is left byte-untouched (``unchanged``)."""
+    block = kimi_code_hooks_toml_block(command, events=events, timeout=timeout)
+    if not config_path.exists():
+        _atomic_write_text(config_path, block, mode=0o600)
+        return config_path, "wrote"
+    # Read RAW bytes (not read_text): universal-newline translation would rewrite
+    # CRLF to LF before we could detect it, defeating the never-reflow promise.
+    text = config_path.read_bytes().decode("utf-8")
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return config_path, "skipped-unparsed"
+    existing_hooks = data.get("hooks")
+    if existing_hooks is not None and not isinstance(existing_hooks, list):
+        # A ``[hooks]`` table (or scalar) is not the vendor's schema; appending
+        # ``[[hooks]]`` to it is a TOML redefinition error.
+        return config_path, "skipped-unparsed"
+    if _kimi_code_hooks_are_current(data, command, wrapper_basename, events):
+        return config_path, "unchanged"
+
+    mode = (config_path.stat().st_mode & 0o777) or 0o600
+    newline = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines()
+    headers = [index for index, line in enumerate(lines) if _TOML_TABLE_HEADER_RE.match(line)]
+    drop = [False] * len(lines)
+    for position, start in enumerate(headers):
+        if not _TOML_HOOKS_HEADER_RE.match(lines[start]):
+            continue
+        end = headers[position + 1] if position + 1 < len(headers) else len(lines)
+        span = lines[start:end]
+        if not command_runs_hook_wrapper(_kimi_code_hooks_span_command(span), wrapper_basename):
+            continue
+        # Trailing blank/comment-only lines inside the span stay: they may
+        # introduce whatever the user wrote below, and deleting user text is
+        # never necessary to remove our own rule.
+        trimmed_end = end
+        while trimmed_end > start + 1 and (
+            lines[trimmed_end - 1].strip() == "" or lines[trimmed_end - 1].lstrip().startswith("#")
+        ):
+            trimmed_end -= 1
+        for index in range(start, trimmed_end):
+            drop[index] = True
+    kept = [line for index, line in enumerate(lines) if not drop[index]]
+    result = newline.join(kept)
+    if result and not result.endswith(("\n", "\r")):
+        result += newline
+    result += block if newline == "\n" else block.replace("\n", newline)
+    if not _kimi_code_hooks_result_is_safe(
+        text, result, command=command, wrapper_basename=wrapper_basename, events=events
+    ):
+        return config_path, "skipped-unparsed"
+    _atomic_write_text(config_path, result, mode=mode)
+    return config_path, "updated"
+
+
+def _install_kimi_code_hook(home: Path, store_dir: Path, command: str, *, force: bool = False) -> tuple[str, Path]:
+    """Write the Kimi Code hook wrapper + append config.toml ``[[hooks]]``. Returns
+    (config_action, wrapper_path). ``home`` is KIMI CODE'S home ($KIMI_CODE_HOME):
+    both the wrapper and config.toml live under it, so a relocated Kimi Code home
+    keeps working. ``command`` is the absolute agentacct executable embedded in the
+    wrapper's candidate list."""
+    wrapper_path = home / KIMI_CODE_HOOK_RELATIVE_PATH
+    wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+    wrapper_source = render_kimi_code_hook_wrapper(command, store_dir=store_dir)
+    if force or not wrapper_path.exists() or wrapper_path.read_text(encoding="utf-8") != wrapper_source:
+        _atomic_write_text(wrapper_path, wrapper_source, mode=0o755)
+    hook_command = kimi_code_hook_command(wrapper_path)
+    config_path = home / KIMI_CODE_CONFIG_RELATIVE_PATH
+    _path, action = _write_kimi_code_hooks_config_at(config_path, hook_command, KIMI_CODE_HOOK_RELATIVE_PATH.name)
+    return action, wrapper_path
+
+
 def _print_hermes_hook_consent_steps() -> None:
     """The one-time consent + restart steps Hermes shell hooks require."""
     console.print(
@@ -5147,6 +5399,196 @@ def hermes_hooks_install(
         raise typer.Exit(1)
     console.print(f"Hermes config.yaml hooks: {action} ({config_path})")
     _print_hermes_hook_consent_steps()
+
+
+@kimi_code_hooks_app.command("pre-tool-use")
+def kimi_code_pre_tool_use(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory the tick and context file are written to (the kimi-code wrapper passes the bound store)."),
+    ] = None,
+) -> None:
+    """Observe a Kimi Code PreToolUse JSON event from stdin (observe-only).
+
+    Two captures from the one event, because Kimi Code's hook stdin is the ONLY
+    place its session id appears:
+
+    * the tool-activity tick (tool NAME + category, plus the cleaned destination
+      path / command for edit and execute tools — never other arguments, never
+      tool output), labelled ``kimi-code``;
+    * the client-context file carrying ``session_id`` (``session_<uuid>`` — the
+      value the local usage importer records), so the MCP server can inherit the
+      real session id instead of receiving none.
+
+    OBSERVE-ONLY: agentacct never makes an allow/block decision for Kimi Code
+    (Kimi Code owns its permission layer). Prints an empty JSON object and exits
+    0, which Kimi Code reads as allow.
+    """
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_tool_activity(raw, store_dir=store_dir, client="kimi-code")
+        except Exception:  # noqa: BLE001 - activity capture must never affect the tool call.
+            pass
+        try:
+            capture_claude_code_client_context(raw, store_dir=store_dir, client="kimi-code")
+        except Exception:  # noqa: BLE001 - context capture must never affect the tool call.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a PreToolUse hook must never block a Kimi Code tool call.
+        print("{}")
+
+
+@kimi_code_hooks_app.command("session-start")
+def kimi_code_session_start(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory for the hook context bridge (the kimi-code wrapper passes the bound store)."),
+    ] = None,
+) -> None:
+    """Observe a Kimi Code SessionStart JSON event from stdin (session identity only).
+
+    Writes the client-context file for this session (startup or resume) so the
+    session id is joinable from the session's first tool call on. Kimi Code is one
+    of the clients whose hook ``session_id`` EQUALS the id the usage importer
+    records, so the context needs no log pairing to be usable.
+
+    Observation-only: nothing is injected into the model's context here (Kimi Code
+    only honors hook output on PreToolUse/Stop/UserPromptSubmit), and the hook
+    prints an empty JSON object.
+    """
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_claude_code_client_context(raw, store_dir=store_dir, client="kimi-code")
+        except Exception:  # noqa: BLE001 - context capture must never affect session startup.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a SessionStart error must never break session startup.
+        print("{}")
+
+
+@kimi_code_hooks_app.command("session-end")
+def kimi_code_session_end(
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="State directory the session-end fact is spooled to and the context file is removed from (the wrapper passes the bound store)."),
+    ] = None,
+) -> None:
+    """Observe a Kimi Code SessionEnd JSON event from stdin.
+
+    Kimi Code's SessionEnd fires once per real session close (matcher ``exit`` or
+    ``archive``), not per turn, so this (a) spools the same content-free
+    ``(client, session_id, reason, time)`` fact as the Claude Code / Codex paths
+    (client ``kimi-code``) for the ``ended_open`` inference, and (b) drops this
+    session's client-context file, so a later session can never inherit a dead
+    session's ids. Never reads conversation content; always prints ``{}``.
+    """
+    from .hooks import capture_session_end
+
+    try:
+        raw = sys.stdin.read()
+        try:
+            capture_session_end(raw, store_dir=store_dir, client="kimi-code")
+        except Exception:  # noqa: BLE001 - capture must never affect anything.
+            pass
+        try:
+            clear_ended_session_hook_context(raw, store_dir=store_dir, client="kimi-code")
+        except Exception:  # noqa: BLE001 - context cleanup must never affect anything.
+            pass
+        print("{}")
+    except Exception:  # noqa: BLE001 - FAIL OPEN: a SessionEnd hook must never disturb shutdown.
+        print("{}")
+
+
+@kimi_code_hooks_app.command("install")
+def kimi_code_hooks_install(
+    home: Annotated[
+        Optional[Path],
+        typer.Option(help="Kimi Code home to install into (hooks/ + config.toml). Defaults to $KIMI_CODE_HOME, else ~/.kimi-code."),
+    ] = None,
+    store_dir: Annotated[
+        Optional[Path],
+        typer.Option(help="Store the hooks spool ticks to. Required so a Kimi Code session anywhere binds the right store on the command line."),
+    ] = None,
+    force: Annotated[bool, typer.Option(help="Rewrite the wrapper even if it already matches.")] = False,
+) -> None:
+    """Install the Kimi Code hooks: the wrapper + the agentacct rules in
+    $KIMI_CODE_HOME/config.toml (PreToolUse tool-activity + session context,
+    SessionStart session context, SessionEnd fact + context cleanup)."""
+    resolved_store = store_dir if store_dir is not None else _resolve_onboard_global_store_dir()[0]
+    command = _resolve_absolute_mcp_command()
+    kimi_home = Path(home) if home is not None else _kimi_code_home_dir()
+    try:
+        action, wrapper_path = _install_kimi_code_hook(kimi_home, Path(resolved_store), command, force=force)
+    except OSError as exc:
+        console.print(f"The Kimi Code hook could not be written ({exc}).")
+        raise typer.Exit(1) from exc
+    console.print(f"Kimi Code hook wrapper: {wrapper_path}")
+    config_path = kimi_home / KIMI_CODE_CONFIG_RELATIVE_PATH
+    if action == "skipped-unparsed":
+        # The wrapper is on disk but nothing references it: never tell the user a
+        # hook is live. Print the exact block to paste, since a config.toml
+        # agentacct refuses to rewrite is still one the user can wire by hand.
+        console.print(
+            f"Kimi Code config.toml: LEFT UNCHANGED ({config_path}) — it is not a TOML document agentacct can "
+            "safely merge into (unparseable, or its hooks key is not an array of tables). No hook was wired. "
+            "Add these rules yourself, then re-run:"
+        )
+        print(kimi_code_hooks_toml_block(kimi_code_hook_command(wrapper_path)).rstrip())
+        raise typer.Exit(1)
+    console.print(f"Kimi Code config.toml hooks: {action} ({config_path})")
+    if action != "unchanged":
+        console.print(
+            "The rules are appended at the END of config.toml on purpose: in TOML a top-level key written BELOW "
+            "a hooks table becomes a member of it, and Kimi Code then drops the whole hooks section. Keep new "
+            "top-level keys above the agentacct hook rules."
+        )
+    # A merge is not the same as a live hook: an entry with a field outside the
+    # vendor's four makes Kimi Code drop the WHOLE hooks section (agentacct's rules
+    # included), so say so instead of letting the merge read as "it will fire".
+    try:
+        unsupported = kimi_code_hooks_unsupported_fields(tomllib.loads(config_path.read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        unsupported = []
+    if unsupported:
+        console.print(
+            f"WARNING: {config_path} has a hooks entry using unsupported field(s) {', '.join(unsupported)}. Kimi "
+            "Code fails to load the whole config and drops EVERY hook rule, agentacct's included. Keep only "
+            "event/matcher/command/timeout, then re-run: agentacct hooks kimi-code doctor"
+        )
+    console.print(
+        "Start a NEW Kimi Code session so it loads the rules, then check with: agentacct hooks kimi-code doctor"
+    )
+
+
+@kimi_code_hooks_app.command("doctor")
+def kimi_code_doctor(
+    home: Annotated[
+        Optional[Path],
+        typer.Option(help="Kimi Code home to inspect (hooks/ + config.toml). Defaults to $KIMI_CODE_HOME, else ~/.kimi-code."),
+    ] = None,
+) -> None:
+    """Check the Kimi Code hook wrapper, its agentacct resolvability, and the
+    hook rules in config.toml."""
+    kimi_home = Path(home) if home is not None else _kimi_code_home_dir()
+    try:
+        checks = kimi_code_hook_doctor_checks(kimi_home)
+    except OSError as exc:
+        console.print(f"Kimi Code hook config could not be read ({exc}).")
+        raise typer.Exit(1) from exc
+    table = Table(title="Kimi Code hook doctor")
+    table.add_column("Status")
+    table.add_column("Check")
+    table.add_column("Details")
+    for check in checks:
+        table.add_row(check["status"], check["name"], check["details"])
+    console.print(table)
+    if any(check["status"] == "warn" for check in checks):
+        console.print(
+            "Hook commands must resolve without your shell profile PATH, and config.toml must stay valid TOML: "
+            "Kimi Code drops the WHOLE hooks section on a load error and fails open, so a broken rule is silent."
+        )
 
 
 @opencode_hooks_app.command("tool-activity")

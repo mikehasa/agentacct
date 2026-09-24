@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -162,7 +163,14 @@ _MAX_HOOK_ANCESTOR_PIDS = 16
 # with ZERO carrying a client_session_id, because the validator below hardcoded
 # "claude-code" and dropped every Codex context before it could be inherited --
 # which is why 61% of work items never joined to usage.
-HOOK_CONTEXT_CLIENTS = ("claude-code", "codex")
+#
+# kimi-code is here for the same measured reason: its MCP tools ARE called
+# (sections/checks land in the store) but Kimi Code passes no session id to the
+# model or the MCP server, so every section arrived with no client_session_id
+# and joined nothing. Its hooks DO carry the session id (``session_<uuid>`` --
+# the same value the kimi-code usage importer records), so the hook bridge is
+# the one channel that can supply it.
+HOOK_CONTEXT_CLIENTS = ("claude-code", "codex", "kimi-code")
 
 
 def _client_context_slug(client: str) -> str:
@@ -381,22 +389,87 @@ def write_claude_code_hook_context(store_dir: Path | str, context: dict[str, Any
         path = claude_code_hook_context_path(store_dir, client)
         path.parent.mkdir(parents=True, exist_ok=True)
         _write_json_atomic(path, payload)
+        _write_per_session_context(store_dir, client, context, payload, now=current)
         return path
     # Legacy single slot: dual-written so old MCP server processes (which read
     # only this file) keep today's behavior until they restart on new code.
     path = claude_code_hook_context_path(store_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_json_atomic(path, payload)
-    session_id = context.get("client_session_id")
-    if isinstance(session_id, str) and session_id:
-        try:
-            context_dir = claude_code_hook_context_dir(store_dir)
-            context_dir.mkdir(parents=True, exist_ok=True)
-            _write_json_atomic(context_dir / _hook_context_filename(session_id), payload)
-            _prune_hook_context_dir(context_dir, now=current)
-        except Exception:  # noqa: BLE001 - per-session bookkeeping must never break the legacy slot write.
-            pass
+    _write_per_session_context(store_dir, client, context, payload, now=current)
     return path
+
+
+def _write_per_session_context(
+    store_dir: Path | str,
+    client: str,
+    context: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    now: float,
+) -> None:
+    """Write this session's own context file. Never raises.
+
+    The per-client SINGLE slot (``client-context/<client>.json``) holds only the
+    newest session, so with two concurrent sessions of one client it cannot say
+    which id belongs to which process. The per-session file is what makes
+    pid-lineage disambiguation possible at all — without it the consumer sees one
+    candidate and inherits it, which is exactly the wrong-id outcome the
+    selection rules exist to prevent. Written for every bridged client, not just
+    Claude Code, for that reason.
+    """
+    session_id = context.get("client_session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return
+    try:
+        context_dir = claude_code_hook_context_dir(store_dir, client)
+        context_dir.mkdir(parents=True, exist_ok=True)
+        _write_json_atomic(context_dir / _hook_context_filename(session_id), payload)
+        _prune_hook_context_dir(context_dir, now=now)
+    except Exception:  # noqa: BLE001 - per-session bookkeeping must never break the slot write.
+        pass
+
+
+def clear_hook_context_for_session(store_dir: Path | str, session_id: str, *, client: str) -> list[Path]:
+    """Drop one ENDED session's context slots. Never raises; returns what was removed.
+
+    Called from a SessionEnd hook: once a session is over, keeping its ids on
+    disk can only let a LATER session inherit them. Only THIS session's data is
+    touched — the per-session file for ``session_id``, and the single
+    ``client-context/<client>.json`` slot only when that slot actually holds this
+    session (a different live session's id in the slot is never deleted).
+    """
+    removed: list[Path] = []
+    if not isinstance(session_id, str) or not session_id or len(session_id) > _MAX_CONTEXT_ID_LENGTH:
+        return removed
+    if client not in HOOK_CONTEXT_CLIENTS:
+        # An unknown client must never fall back to another client's slot.
+        return removed
+    slug = _client_context_slug(client)
+    per_session = claude_code_hook_context_dir(store_dir, slug) / _hook_context_filename(session_id)
+    slot = claude_code_hook_context_path(store_dir, slug)
+    try:
+        if per_session.is_file():
+            per_session.unlink()
+            removed.append(per_session)
+    except OSError:
+        pass
+    try:
+        if slot.is_file():
+            try:
+                payload = json.loads(slot.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                return removed
+            if (
+                isinstance(payload, dict)
+                and payload.get("client_session_id") == session_id
+                and payload.get("client") == slug
+            ):
+                slot.unlink()
+                removed.append(slot)
+    except OSError:
+        pass
+    return removed
 
 
 # Shared with the CLI store resolver (store_resolution.resolve_store_dir) so
@@ -1497,6 +1570,387 @@ def codex_hooks_json_block(wrapper_path: Path | str, *, python_executable: str |
 
 
 # ---------------------------------------------------------------------------
+# Kimi Code hook pack (observe-only)
+# ---------------------------------------------------------------------------
+#
+# Kimi Code CLI dispatches shell hooks from the ``[[hooks]]`` array in
+# ``$KIMI_CODE_HOME/config.toml`` (default ``~/.kimi-code/config.toml``; there is
+# NO per-project hook file) and writes one snake_case JSON payload to stdin:
+# ``hook_event_name`` / ``session_id`` / ``session_title`` / ``client_type`` /
+# ``cwd``, plus ``tool_name`` + ``tool_input`` on PreToolUse. That stdin JSON is
+# the ONLY channel carrying the session id: measured on this machine, a live
+# Kimi Code session called the agentacct MCP tools but every section arrived with
+# no client_session_id (Kimi passes no session id to the model or to MCP
+# servers), so nothing joined to imported usage. Its hook ``session_id`` has the
+# shape ``session_<uuid>``, which is exactly the value the kimi-code usage
+# importer records, so a tick or an inherited context attributes with no log
+# pairing -- the same mechanism as the Claude Code / Codex bridges above.
+#
+# ``[[hooks]]`` allows exactly four fields (``event`` / ``matcher`` / ``command``
+# / ``timeout``); an extra field makes Kimi Code fail to load the WHOLE config
+# file, which is why ``kimi_code_hooks_toml_block`` emits only those four. ``matcher`` is a
+# regex over the event's target (tool name for PreToolUse, ``startup|resume`` for
+# SessionStart, ``exit|archive`` for SessionEnd); it is omitted so every rule
+# matches everything -- a bare ``"*"`` (the Claude/Codex shape) is not a valid
+# regex.
+#
+# Event mapping:
+#   PreToolUse   -> tool-activity tick + context refresh
+#   SessionStart -> context refresh (startup/resume)
+#   SessionEnd   -> content-free session-end fact + this session's context dropped
+#
+# Every path is observe-only and fail-open: the wrapper always exits 0 with an
+# empty JSON object, so agentacct can never block or veto a Kimi Code action
+# (Kimi Code owns its own permission layer).
+
+KIMI_CODE_HOOK_RELATIVE_PATH = Path("hooks/agentacct_kimi_code_hook.py")
+KIMI_CODE_CONFIG_RELATIVE_PATH = Path("config.toml")
+# Both paths are relative to KIMI CODE'S OWN HOME ($KIMI_CODE_HOME, default
+# ~/.kimi-code) because that env var relocates config.toml itself -- unlike
+# Codex/Hermes, whose hook pack hangs off $HOME. The wrapper lives under that
+# home (never the store): a moved store must not vanish the wrapper, because a
+# hook command that fails to start cannot fail open.
+KIMI_CODE_HOOK_EVENTS = ("SessionStart", "PreToolUse", "SessionEnd")
+# Well under the vendor default of 30 and far above the wrapper's own 5 s child
+# timeout, so agentacct fails open BEFORE Kimi Code times the hook out.
+KIMI_CODE_HOOK_TIMEOUT_SECONDS = 10
+_KIMI_CODE_INSTALL_REMEDIATION = (
+    "re-run: agentacct hooks kimi-code install --force (from the environment where agentacct is installed)"
+)
+
+_KIMI_CODE_HOOK_WRAPPER_TEMPLATE = '''#!/usr/bin/env python3
+"""Kimi Code hook wrapper for agentacct (observe-only).
+
+One wrapper serves the installed Kimi Code hook events (dispatch on the event's
+own `hook_event_name`):
+- PreToolUse:   spool the tool NAME + category for the Receipt's Actions
+                dimension, and refresh the client-context file carrying this
+                session's id (observe-only; agentacct never vetoes a tool call).
+- SessionStart: refresh the same context file with the session identity.
+- SessionEnd:   spool a content-free session-end fact and drop this session's
+                context file so a later session cannot inherit a dead id.
+
+Shells out to the installed `agentacct` CLI. Fail-open: if no agentacct
+executable can be started, or the CLI exits without output, this wrapper prints
+an empty JSON object `{}` and exits 0 (Kimi Code reads that as "allow", so a
+broken or moved install can never block a Kimi Code tool call).
+Reinstall with: agentacct hooks kimi-code install --force
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+AGENTACCT_CANDIDATES = __AGENTACCT_CANDIDATES__
+AGENTACCT_HOOK_ARGS = __AGENTACCT_HOOK_ARGS__
+EVENT_SUBCOMMANDS = __EVENT_SUBCOMMANDS__
+
+
+def resolve_agentacct():
+    for candidate in AGENTACCT_CANDIDATES:
+        if not candidate:
+            continue
+        if os.path.basename(candidate) != candidate:
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        else:
+            found = shutil.which(candidate)
+            if found:
+                return found
+    return None
+
+
+def no_op(reason=""):
+    if reason:
+        sys.stderr.write("agentacct kimi-code hook: %s; failing open\\n" % reason)
+    sys.stdout.write("{}\\n")
+    return 0
+
+
+def main():
+    raw = sys.stdin.buffer.read().decode("utf-8", "replace")
+    hook_event = ""
+    try:
+        event = json.loads(raw)
+        if isinstance(event, dict):
+            value = event.get("hook_event_name")
+            if isinstance(value, str):
+                hook_event = value
+    except ValueError:
+        pass
+    subcommand = EVENT_SUBCOMMANDS.get(hook_event)
+    if subcommand is None:
+        return no_op()  # not one of ours (or unparseable): silent no-op
+    executable = resolve_agentacct()
+    if executable is None:
+        return no_op("agentacct executable not found (re-run: agentacct hooks kimi-code install --force)")
+    try:
+        proc = subprocess.run(
+            [executable, "hooks", "kimi-code", subcommand, *AGENTACCT_HOOK_ARGS],
+            input=raw,
+            text=True,
+            capture_output=True,
+            # A bounded wait is part of the never-block contract: a hung child
+            # (stalled store mount, held SQLite lock, cold-import stall) would
+            # otherwise hold the Kimi Code event until the vendor timeout. 5 s
+            # is well under the installed 10 s rule timeout, so agentacct's own
+            # fail-open happens first.
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        return no_op("agentacct timed out")
+    except OSError as exc:
+        return no_op("agentacct failed to start (%s)" % exc)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    if proc.returncode == 0 and proc.stdout.strip():
+        sys.stdout.write(proc.stdout)
+        return 0
+    return no_op("agentacct exited with code %s without output" % proc.returncode)
+
+
+if __name__ == "__main__":
+    try:
+        exit_code = main()
+    except Exception as exc:  # fail-open: a wrapper bug must never break Kimi Code.
+        exit_code = no_op("unexpected kimi-code hook wrapper error (%s: %s)" % (type(exc).__name__, exc))
+    raise SystemExit(exit_code)
+'''
+
+# The Kimi Code event -> agentacct CLI subcommand map the wrapper dispatches on.
+KIMI_CODE_HOOK_EVENT_SUBCOMMANDS: dict[str, str] = {
+    "PreToolUse": "pre-tool-use",
+    "SessionStart": "session-start",
+    "SessionEnd": "session-end",
+}
+
+
+def render_kimi_code_hook_wrapper(
+    agentacct_executable: str | None = None, *, store_dir: Path | str | None = None
+) -> str:
+    candidates: list[str] = []
+    if agentacct_executable:
+        candidates.append(str(agentacct_executable))
+    for bare_name in ("agentacct", "agent-chronicle", "agent-sentinel"):
+        if bare_name not in candidates:
+            candidates.append(bare_name)
+    hook_args: list[str] = []
+    if store_dir is not None:
+        # A hook fires with the SESSION's project dir as cwd, which need not hold
+        # the store the MCP server records into, so the store binds on the
+        # command line (mirrors the Codex/Hermes wrappers).
+        hook_args = ["--store-dir", str(store_dir)]
+    rendered = _KIMI_CODE_HOOK_WRAPPER_TEMPLATE.replace("__AGENTACCT_CANDIDATES__", repr(candidates))
+    rendered = rendered.replace("__AGENTACCT_HOOK_ARGS__", repr(hook_args))
+    return rendered.replace("__EVENT_SUBCOMMANDS__", repr(dict(KIMI_CODE_HOOK_EVENT_SUBCOMMANDS)))
+
+
+def kimi_code_hook_command(wrapper_path: Path | str, *, python_executable: str | None = None) -> str:
+    """The shell command Kimi Code runs for our wrapper (python + wrapper path).
+
+    Shell-quoted so a path with spaces stays one token, and a valid TOML basic
+    string once ``kimi_code_hooks_toml_block`` JSON-encodes it."""
+    python_command = python_executable or sys.executable or "python3"
+    return f"{shlex.quote(python_command)} {shlex.quote(str(wrapper_path))}"
+
+
+def kimi_code_hooks_toml_block(
+    command: str,
+    *,
+    events: Sequence[str] = KIMI_CODE_HOOK_EVENTS,
+    timeout: int = KIMI_CODE_HOOK_TIMEOUT_SECONDS,
+) -> str:
+    """The ``[[hooks]]`` TOML text wiring every Kimi Code event to ``command``.
+
+    EXACTLY the four allowed fields are emitted (``event``, ``command``,
+    ``timeout`` -- and no ``matcher``, which matches everything): any extra field
+    makes Kimi Code fail to load the entire config file. The command is written as
+    a JSON-encoded double-quoted scalar, which is also a valid TOML basic string,
+    so a path with spaces or quotes round-trips. This text is both what the
+    installer appends and what it prints for manual pasting when it must refuse to
+    rewrite an unparseable config.toml."""
+    lines: list[str] = []
+    for event in events:
+        lines.append("[[hooks]]")
+        lines.append(f"event = {json.dumps(event)}")
+        lines.append(f"command = {json.dumps(command)}")
+        lines.append(f"timeout = {int(timeout)}")
+    return "\n".join(lines) + "\n"
+
+
+def clear_ended_session_hook_context(
+    raw: str, *, store_dir: Path | str | None = None, client: str = "kimi-code"
+) -> list[Path]:
+    """Drop the ended session's context files for a SessionEnd hook. Never raises.
+
+    Kimi Code's SessionEnd fires once per real session close (reason ``exit`` or
+    ``archive``) -- not per turn -- so the session's ids stop being inheritable
+    the moment it ends. The content-free session-end FACT is recorded separately
+    by ``capture_session_end``; this only removes context slots.
+    """
+    try:
+        event = json.loads(raw or "{}")
+        if not isinstance(event, dict):
+            return []
+        session_id = event.get("session_id")
+        if not isinstance(session_id, str) or not session_id:
+            return []
+        target = Path(store_dir) if store_dir is not None else _hook_store_dir_from_event(event)
+        if target is None:
+            return []
+        return clear_hook_context_for_session(target, session_id, client=client)
+    except Exception:  # noqa: BLE001 - cleanup must never affect the hook.
+        return []
+
+
+def command_runs_hook_wrapper(command: object, wrapper_basename: str) -> bool:
+    """True when a hook command RUNS the agentacct wrapper as its script.
+
+    Both the bare wrapper (``/path/wrapper.py``) and a python interpreter running
+    it (``python3 /path/wrapper.py``, our own emitted form) count. A command that
+    merely names the wrapper file as an ARGUMENT to another program (``watchdog
+    --watch /path/wrapper.py``) is NOT ours and must never be replaced. Used to
+    recognize our own prior rules, so a reinstall updates in place instead of
+    double-firing every event.
+    """
+    text = command if isinstance(command, str) else ""
+    if not text:
+        return False
+    try:
+        tokens = shlex.split(text)
+    except ValueError:
+        tokens = text.split()
+    if not tokens:
+        return False
+
+    def _base(token: str) -> str:
+        return token.replace("\\", "/").rsplit("/", 1)[-1]
+
+    if _base(tokens[0]) == wrapper_basename:
+        return True
+    if len(tokens) >= 2 and _base(tokens[1]) == wrapper_basename and _base(tokens[0]).startswith("python"):
+        return True
+    return False
+
+
+def kimi_code_hooks_unsupported_fields(data: Mapping[str, Any]) -> list[str]:
+    """Field names outside the vendor's four that appear in any ``[[hooks]]`` entry.
+
+    ``[[hooks]]`` allows ONLY ``event`` / ``matcher`` / ``command`` / ``timeout``,
+    and an unsupported field makes Kimi Code fail to load the whole config file —
+    it then drops every hook rule with only a warning, so the breakage is silent.
+    A top-level key written below a ``[[hooks]]`` table parses as a MEMBER of that
+    table and shows up here, which is how that hazard is detected. Empty list means
+    every entry is schema-clean.
+    """
+    entries = data.get("hooks")
+    if not isinstance(entries, list):
+        return []
+    return sorted(
+        {
+            key
+            for entry in entries
+            if isinstance(entry, dict)
+            for key in entry
+        }
+        - {"event", "matcher", "command", "timeout"}
+    )
+
+
+def kimi_code_hook_doctor_checks(home: Path | str) -> list[dict[str, str]]:
+    """Doctor rows for the Kimi Code hook pack: (status, name, details).
+
+    ``home`` is KIMI CODE'S home ($KIMI_CODE_HOME), not $HOME: both the wrapper
+    and config.toml live under it.
+    """
+    root = Path(home)
+    wrapper_path = root / KIMI_CODE_HOOK_RELATIVE_PATH
+    config_path = root / KIMI_CODE_CONFIG_RELATIVE_PATH
+    checks: list[dict[str, str]] = [
+        {"status": "ok" if wrapper_path.is_file() else "warn", "name": "hook wrapper", "details": str(wrapper_path)}
+    ]
+    wrapper_basename = KIMI_CODE_HOOK_RELATIVE_PATH.name
+    if wrapper_path.is_file():
+        try:
+            wrapper_text = wrapper_path.read_text(encoding="utf-8")
+            status, details = diagnose_wrapper_executables(
+                wrapper_text, project_dir=root, remediation=_KIMI_CODE_INSTALL_REMEDIATION
+            )
+        except (OSError, UnicodeDecodeError) as exc:
+            status, details = "warn", f"unreadable wrapper: {exc}"
+        checks.append({"status": status, "name": "wrapper executable", "details": details})
+    if not config_path.is_file():
+        checks.append(
+            {
+                "status": "warn",
+                "name": "config.toml hooks",
+                "details": f"{config_path} does not exist — run: agentacct hooks kimi-code install",
+            }
+        )
+        return checks
+    try:
+        raw_bytes = config_path.read_bytes()
+    except OSError as exc:
+        checks.append({"status": "warn", "name": "config.toml hooks", "details": f"unreadable: {exc}"})
+        return checks
+    try:
+        data = tomllib.loads(raw_bytes.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        checks.append(
+            {
+                "status": "warn",
+                "name": "config.toml hooks",
+                "details": f"{config_path} is not valid TOML ({exc}); Kimi Code cannot load it at all",
+            }
+        )
+        return checks
+    entries = data.get("hooks")
+    if not isinstance(entries, list):
+        checks.append(
+            {
+                "status": "warn",
+                "name": "config.toml hooks",
+                "details": "no [[hooks]] array in config.toml — no agentacct hook is wired",
+            }
+        )
+        return checks
+    ours = [entry for entry in entries if isinstance(entry, dict) and command_runs_hook_wrapper(entry.get("command"), wrapper_basename)]
+    missing = sorted(set(KIMI_CODE_HOOK_EVENTS) - {str(entry.get("event")) for entry in ours})
+    if missing:
+        checks.append(
+            {
+                "status": "warn",
+                "name": "config.toml hooks",
+                "details": f"no agentacct rule for {', '.join(missing)} — {_KIMI_CODE_INSTALL_REMEDIATION}",
+            }
+        )
+    else:
+        checks.append(
+            {"status": "ok", "name": "config.toml hooks", "details": f"wired for {', '.join(KIMI_CODE_HOOK_EVENTS)}"}
+        )
+    # Field-count check: [[hooks]] accepts exactly event/matcher/command/timeout,
+    # and an extra field makes Kimi Code drop the WHOLE hooks section. A
+    # top-level key that landed below a [[hooks]] table parses as a member of it,
+    # which is exactly how that hazard shows up here.
+    extra = kimi_code_hooks_unsupported_fields(data)
+    if extra:
+        checks.append(
+            {
+                "status": "warn",
+                "name": "hooks entry fields",
+                "details": (
+                    f"unsupported field(s) {', '.join(extra)} in a [[hooks]] entry — Kimi Code fails to load the "
+                    "whole config (a top-level key written below a [[hooks]] table lands there); keep only "
+                    "event/matcher/command/timeout"
+                ),
+            }
+        )
+    return checks
+
+
+# ---------------------------------------------------------------------------
 # Hermes shell-hook adapter (observe-only)
 # ---------------------------------------------------------------------------
 #
@@ -2271,8 +2725,16 @@ def _first_on_path(names: list[str]) -> str | None:
     return None
 
 
-def diagnose_wrapper_executables(wrapper_text: str, *, project_dir: Path | str | None = None) -> tuple[str, str]:
-    """Judge whether the hook wrapper can start agentacct at hook time."""
+def diagnose_wrapper_executables(
+    wrapper_text: str, *, project_dir: Path | str | None = None, remediation: str = _INSTALL_REMEDIATION
+) -> tuple[str, str]:
+    """Judge whether the hook wrapper can start agentacct at hook time.
+
+    ``remediation`` names the install command specific to this hook pack: each
+    client's wrapper is installed by its own ``agentacct hooks <client> install``,
+    so echoing Claude Code's command in a Codex/Kimi Code doctor would send the
+    user to the wrong fix.
+    """
     base = Path(project_dir) if project_dir is not None else Path(".")
     candidates = wrapper_executable_candidates(wrapper_text)
     if not candidates:
@@ -2289,11 +2751,11 @@ def diagnose_wrapper_executables(wrapper_text: str, *, project_dir: Path | str |
     if path_like:
         detail = f"embedded path missing: {path_like[0]}"
         if resolved_bare:
-            detail += f"; PATH fallback works in this shell ({resolved_bare}) but Claude Code hooks may not share this PATH"
-        return "warn", f"{detail} — {_INSTALL_REMEDIATION}"
+            detail += f"; PATH fallback works in this shell ({resolved_bare}) but agent hooks may not share this PATH"
+        return "warn", f"{detail} — {remediation}"
     if resolved_bare:
-        return "warn", f"relies on PATH lookup ({resolved_bare} in this shell), which Claude Code hooks may not share — {_INSTALL_REMEDIATION}"
-    return "warn", f"agentacct not resolvable (no embedded absolute path, not on PATH); the hook cannot start agentacct at hook time — {_INSTALL_REMEDIATION}"
+        return "warn", f"relies on PATH lookup ({resolved_bare} in this shell), which agent hooks may not share — {remediation}"
+    return "warn", f"agentacct not resolvable (no embedded absolute path, not on PATH); the hook cannot start agentacct at hook time — {remediation}"
 
 
 def diagnose_hook_command(command: str, project_dir: Path | str) -> tuple[str, str]:
