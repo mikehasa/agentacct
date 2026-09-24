@@ -337,6 +337,7 @@ final class WorksetsPresentationTests: XCTestCase {
         XCTAssertEqual(WorksetFormat.sourceLabel("opencode"), "OpenCode")
         XCTAssertEqual(WorksetFormat.sourceLabel("hermes"), "Hermes")
         XCTAssertEqual(WorksetFormat.sourceLabel("kimi-code"), "Kimi Code")
+        XCTAssertEqual(WorksetFormat.sourceLabel("dsh"), "DeepSeek Harness")
         XCTAssertEqual(WorksetFormat.sourceLabel("some-new-agent"), "some-new-agent")  // unknown passes through
     }
 

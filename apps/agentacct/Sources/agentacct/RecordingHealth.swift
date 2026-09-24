@@ -307,6 +307,7 @@ func recordingHealthClientName(_ id: String) -> String {
     case "opencode": return "OpenCode"
     case "openclaw": return "OpenClaw"
     case "hermes": return "Hermes"
+    case "dsh": return "DeepSeek Harness"
     case "kimi-code": return "Kimi Code"
     case "cursor": return "Cursor"
     default: return id

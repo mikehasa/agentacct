@@ -19,6 +19,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (MCP registers by hand in `~/.kimi-code/mcp.json`), and the CLI, TUI, local
   API, and macOS app show Kimi Code in their client labels.
 
+### Fixed
+
+- The macOS app shows "DeepSeek Harness" for `dsh` sessions in the recording
+  health, work group, and provider-limit client labels instead of the raw
+  client id.
+
 ## [0.12.0] — 2026-09-23
 
 Recent activity across agents and projects, daily client/model usage exploration, and persisted Work Receipts that open without waiting for a full rebuild — plus Opus 5.5 pricing, historical cost repair, and accurate Codex session recency.
