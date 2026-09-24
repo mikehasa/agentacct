@@ -238,6 +238,7 @@ def test_tasks_projection_uses_root_task_boundary_and_nests_run_id_steps(tmp_pat
                 "client": "codex",
                 "client_session_id": "linked-review-session",
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Built the page section and linked it to its session. Done.",
             },
         }
     )
@@ -253,6 +254,7 @@ def test_tasks_projection_uses_root_task_boundary_and_nests_run_id_steps(tmp_pat
                 "section_title": "Id-less sibling step",
                 "client": "codex",
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Built the page section and linked it to its session. Done.",
             },
         }
     )

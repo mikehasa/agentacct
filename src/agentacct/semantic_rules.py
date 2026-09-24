@@ -43,6 +43,27 @@ MINIMUM_BLOCKER_CHARACTERS = 20
 
 TERMINAL_STATUSES = frozenset({"completed", "blocked", "handed_off"})
 
+# The agent-reported progress note: a short account a reader with no background
+# can follow, ending in a clause that says where the work stopped. Caps are
+# characters the tool enforces, never a word count the agent polices itself.
+# Measured in the 2026-09-20 blind trials: without a stopping clause, readers
+# took unfinished work as concluded on 6 of 6 tasks; with one, on 0 of 6.
+GOAL_MAX_CHARACTERS = 120
+PROGRESS_MAX_CHARACTERS = 260
+MINIMUM_PROGRESS_CHARACTERS = 20
+
+# Statuses whose close must carry `progress`. `blocked` is left out: its
+# required `blocker` already states where the work stopped.
+PROGRESS_REQUIRED_STATUSES = frozenset({"completed", "handed_off"})
+
+# How the final clause of `progress` may open. Silence reads as success to a
+# stranger, so the note must end by naming the state in words a reader cannot
+# mistake for an outcome claim about the whole task.
+STOPPING_CLAUSE_OPENERS = ("done", "stopped", "next", "blocked", "handed off", "waiting")
+
+_CLAUSE_BOUNDARY = re.compile(r"(?<=[.;!?])\s+")
+_CLAUSE_LEAD = re.compile(r"^[\s\"'(\[*_`-]+")
+
 
 class SemanticRecordError(ValueError):
     """A record cannot be stored because the UI could not render it.
@@ -205,6 +226,84 @@ def require_terminal_outcome(
     )
 
 
+def stopping_clause(progress: str) -> str:
+    """The final clause of a progress note: the text after its last `.`/`;`/`!`/`?`
+    boundary that still has something to read."""
+    clauses = [clause for clause in _CLAUSE_BOUNDARY.split(progress.strip()) if clause.strip(" .;!?")]
+    return clauses[-1].strip() if clauses else ""
+
+
+def _opens_with_stopping_word(clause: str) -> bool:
+    """True when the clause opens with a stopping word as a whole word.
+
+    "Next: open the PR" and "Done." qualify; "Next.js now builds" does not,
+    because a word that runs on past its own period is a different word.
+    """
+    lead = _CLAUSE_LEAD.sub("", clause).lower()
+    for opener in STOPPING_CLAUSE_OPENERS:
+        if not lead.startswith(opener):
+            continue
+        rest = lead[len(opener):]
+        if not rest or rest[0] in " \t\n:;,—–-":
+            return True
+        if rest[0] in ".!?" and not rest[1:].strip(" \t\n\"')]*_`"):
+            return True
+    return False
+
+
+def require_progress_note(
+    status: str,
+    *,
+    progress: Any,
+    goal: Any = None,
+    section_id: str = "",
+    source: str = "",
+) -> None:
+    """The agent-reported goal and progress note, when supplied or required.
+
+    `goal` is optional and only capped. `progress` is required when a section
+    closes as completed or handed_off, and whenever it is supplied its last
+    clause must say where the work stopped. Both caps are checked on the text
+    as it will be stored, so every lane refuses the same record.
+    """
+    goal_text = collapse_narrative_text(goal) if isinstance(goal, str) else ""
+    if len(goal_text) > GOAL_MAX_CHARACTERS:
+        raise SemanticRecordError(
+            f"goal must be at most {GOAL_MAX_CHARACTERS} characters (received {len(goal_text)}). "
+            "State what the work is for in one short line, for example "
+            "goal=\"Stop duplicate charges when a checkout retries\"."
+        )
+    progress_text = collapse_narrative_text(progress) if isinstance(progress, str) else ""
+    example = (
+        f'agentacct_record_section(source="{source}", section_id="{section_id}", '
+        f'section_status="{status}", progress="<what got done, in plain words>. '
+        '<Stopped/Next/Blocked on/Handed off/Done/Waiting ...>.")'
+    )
+    if not progress_text:
+        if status not in PROGRESS_REQUIRED_STATUSES:
+            return
+        raise SemanticRecordError(
+            f"section_status={status} requires `progress` (at least {MINIMUM_PROGRESS_CHARACTERS}, "
+            f"at most {PROGRESS_MAX_CHARACTERS} characters): what got done, in words a reader with no "
+            "background can follow, ending with a clause that says where the work stopped. "
+            f"Received: no progress. Re-send the same section_id with it, for example: {example}."
+        )
+    if len(progress_text) < MINIMUM_PROGRESS_CHARACTERS or len(progress_text) > PROGRESS_MAX_CHARACTERS:
+        raise SemanticRecordError(
+            f"progress must be {MINIMUM_PROGRESS_CHARACTERS}-{PROGRESS_MAX_CHARACTERS} characters "
+            f"(received {len(progress_text)}). Keep what got done and the stopping clause; drop "
+            f"process detail, which belongs in `summary`. Example: {example}."
+        )
+    if not _opens_with_stopping_word(stopping_clause(progress_text)):
+        openers = ", ".join(f'"{opener.capitalize()}"' for opener in STOPPING_CLAUSE_OPENERS)
+        raise SemanticRecordError(
+            "progress must end with a clause that says where the work stopped, opening with one of "
+            f"{openers}: for example \"... Stopped after the unit tests; next: open the PR.\" "
+            "Without it a reader takes unfinished work as finished. "
+            f"Re-send the same section_id, for example: {example}."
+        )
+
+
 def require_reproducible_check(
     *,
     name: str,
@@ -329,6 +428,13 @@ def validate_semantic_record(
             section_id=str(fields.get("section_id") or ""),
             source=str(fields.get("source") or ""),
             title=collapse_display_text(title) if isinstance(title, str) else None,
+        )
+        require_progress_note(
+            status,
+            progress=fields.get("progress"),
+            goal=fields.get("goal"),
+            section_id=str(fields.get("section_id") or ""),
+            source=str(fields.get("source") or ""),
         )
         return
     if semantic_kind == "evidence":

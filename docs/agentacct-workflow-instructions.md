@@ -58,7 +58,17 @@ Call agentacct_record_section with:
   source: <client-or-agent-name>
   run_id: <same task/session id>
   summary: what changed, with tests/builds/diffs/tool calls actually observed
+  progress: what got done in plain words, ending with where the work stopped
+    ("Checkout retries now reuse the first charge. Stopped before refunds; next: cover them.")
 ```
+
+`progress` is required with `completed` and `handed_off` (20-260 characters). It
+is written for a reader with no background, and its last clause must open with
+Done, Stopped, Next, Blocked, Handed off, or Waiting: without that clause, readers
+in blind trials took unfinished work as finished. Leave size, cost, and pass/fail
+out of it; the app counts those. An optional `goal` (up to 120 characters), sent
+with `section_status: started`, states what the work is for; the first goal a
+section records is the one kept.
 
 When the user signals the whole job is done — "ship it" or a merge — record this
 `completed` as a session-level summary of the whole deliverable, so the session's
@@ -95,6 +105,7 @@ Call agentacct_record_section with:
   source: <client-or-agent-name>
   run_id: <same task/session id>
   summary: what is complete and what remains
+  progress: what got done, ending "Handed off ..." or "Next: ..."
   next_step: the concrete continuation point
 ```
 

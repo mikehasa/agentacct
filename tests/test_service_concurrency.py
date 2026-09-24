@@ -45,6 +45,7 @@ def _section_event(section_id: str) -> dict:
             "client_session_id": "concurrent-session",
             "section_title": "Fixture section title",
             "summary": "Recorded outcome for this fixture section.",
+            "progress": "Wrote the step under concurrent load. Nothing else is pending. Done.",
         },
     }
 

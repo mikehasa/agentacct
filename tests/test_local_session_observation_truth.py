@@ -85,6 +85,7 @@ def _section(event_id: str, *, session: str | None = None) -> dict:
             "client": "codex",
             "client_session_id": session,
             "summary": "Recorded outcome for this fixture section.",
+            "progress": "Joined the observed session to its recorded step. Done.",
         },
     }
 

@@ -42,6 +42,9 @@ def _section(server: SentinelMCPServer, **overrides: Any) -> dict[str, Any]:
         "section_id": "rules-section",
         "section_status": "started",
         "section_title": "Enforce display rules",
+        # Well-formed at every status, so a test that omits it still reaches the
+        # rule it is about; the progress rule has its own tests.
+        "progress": "Wired the display rules into every write lane. Done; next: replay the ledger.",
     }
     arguments.update(overrides)
     return _call(server, "agentacct_record_section", arguments)

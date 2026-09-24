@@ -1026,6 +1026,7 @@ def test_local_api_derived_work_ledger_endpoints_do_not_count_usage_debug_cost(t
                 "section_status": "completed",
                 "section_title": "MCP v1 convergence",
                 "summary": "Converged MCP fields into the work ledger.",
+                "progress": "Moved the MCP fields into the work ledger. Done; next: drop the old reader.",
                 "client": "codex",
                 "client_session_id": "codex-session",
             },
@@ -1113,6 +1114,7 @@ def test_local_api_public_work_items_redact_paths_and_commands(tmp_path):
                     "C:\\Users\\alice\\private-repo\\secret.py",
                 ],
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Served the step through the local API and checked the payload. Done.",
             },
         },
     )
@@ -1467,6 +1469,7 @@ def test_local_api_payloads_carry_additive_cache_triple_keys(tmp_path):
                 "client": "codex",
                 "client_session_id": "codex-batcha-session",
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Served the step through the local API and checked the payload. Done.",
             },
         },
     )

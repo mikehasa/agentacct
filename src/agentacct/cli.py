@@ -7501,6 +7501,17 @@ def evidence_work_event(
     client_session_id: Annotated[Optional[str], typer.Option(help="Optional exact client session identifier.")] = None,
     title: Annotated[Optional[str], typer.Option(help="Optional short title.")] = None,
     summary: Annotated[Optional[str], typer.Option(help="Optional human-readable claim; never usage/billing truth.")] = None,
+    goal: Annotated[Optional[str], typer.Option(help="Optional one-line statement of what the work is for.")] = None,
+    progress: Annotated[
+        Optional[str],
+        typer.Option(
+            help=(
+                "What got done, ending with a clause that says where the work stopped "
+                "(Done/Stopped/Next/Blocked/Handed off/Waiting ...). Required for a section "
+                "with --status completed or handed_off."
+            )
+        ),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
     """Record a transport-neutral semantic claim through the CLI transport."""
@@ -7535,7 +7546,9 @@ def evidence_work_event(
         work_id=work_id,
         section_id=section_id,
         title=title,
+        objective=goal,
         summary=summary,
+        progress=progress,
         client=client,
         client_session_id=client_session_id,
         original_event_type=event_type,

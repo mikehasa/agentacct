@@ -1018,6 +1018,8 @@ def build_work_items(
                 "files": [],
                 "blocker": None,
                 "next_step": None,
+                "goal": None,
+                "progress": None,
             },
         )
         item["title"] = event.get("title") or item["title"]
@@ -1145,6 +1147,11 @@ def build_work_items(
             item["next_step"] = event.get("next_step") or item["next_step"]
             if event.get("status") == "blocked":
                 item["current_blocked_event_id"] = event.get("event_id")
+        # The first goal a section records is the one kept, so a late event
+        # cannot rewrite what the work set out to do. Progress is the newest
+        # account; an event that omits it keeps the last one.
+        item["goal"] = item["goal"] or event.get("goal")
+        item["progress"] = event.get("progress") or item["progress"]
         item["started_at"] = _min_timestamp(item.get("started_at"), event.get("created_at"))
         item["updated_at"] = _max_timestamp(item.get("updated_at"), event.get("created_at"))
         _extend_unique(item["files"], event.get("files"))
@@ -4049,6 +4056,10 @@ def _work_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "files": files,
         "blocker": _optional_str(metadata.get("blocker")),
         "next_step": _optional_str(metadata.get("next_step")),
+        # The MCP lane names it `goal`; the HTTP and CLI Work Event lanes store
+        # the same field as `objective`.
+        "goal": _optional_str(metadata.get("goal")) or _optional_str(metadata.get("objective")),
+        "progress": _optional_str(metadata.get("progress")),
     }
 
 

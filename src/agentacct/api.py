@@ -298,6 +298,7 @@ class WorkEventRecordRequest(BaseModel):
     summary: str | None = Field(default=None, max_length=1200)
     blocker: str | None = Field(default=None, max_length=1200)
     next_step: str | None = Field(default=None, max_length=1200)
+    progress: str | None = Field(default=None, max_length=1200)
     client: str | None = Field(default=None, max_length=80)
     client_session_id: str | None = Field(default=None, max_length=240)
     client_transcript_id: str | None = Field(default=None, max_length=240)
@@ -4361,6 +4362,7 @@ def create_local_api_app(
             summary=request.summary,
             blocker=request.blocker,
             next_step=request.next_step,
+            progress=request.progress,
             client=request.client,
             client_session_id=request.client_session_id,
             client_transcript_id=request.client_transcript_id,
@@ -4371,7 +4373,13 @@ def create_local_api_app(
             files=tuple(request.files),
             original_event_type=event_type,
         )
-        recorded = service.record_event(work_event.to_v1_event(), transport="http")
+        try:
+            recorded = service.record_event(work_event.to_v1_event(), transport="http")
+        except ValueError as exc:
+            # A semantic-rule refusal (a closed section without its summary or
+            # progress note, a check nothing can re-run) is the caller's to fix,
+            # and its message says how; surface it rather than a server error.
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {
             "work_event": WorkEvent.from_v1_event(recorded, transport="http").to_dict(),
             "v1_event": recorded,

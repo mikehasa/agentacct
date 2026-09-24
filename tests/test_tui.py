@@ -78,6 +78,7 @@ def _record_section(service, *, session, section_id, title, status, at, client="
             # A terminal section must carry its outcome (RULES.md R4), so the
             # builder supplies one when the caller leaves the default empty.
             "summary": (summary or ("Recorded outcome for this fixture section." if status in {"completed", "handed_off"} else summary)),
+            "progress": ("Finished the step and listed the files it touched. Done." if status in {"completed", "handed_off"} else None),
             "kind": kind,
             "files": ["src/mod.py"], "blocker": blocker, "next_step": None,
         },

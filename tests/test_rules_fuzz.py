@@ -244,6 +244,7 @@ def test_stored_value_is_stable_across_a_second_write(tmp_path) -> None:
         "section_status": "completed",
         "section_title": "  Padded   title\twith\tcontrol ",
         "summary": "Outcome first: the migration ran.\n\n\n\n- detail one\n- detail two",
+        "progress": "Ran the migration against the fixture store. Done.",
         "idempotency_key": "stable-1",
     }
     first = json.loads(
@@ -309,6 +310,7 @@ def test_mcp_is_never_more_permissive_than_the_http_model(tmp_path) -> None:
             arguments["summary"] = extra["summary"]
         if arguments["section_status"] in {"completed", "handed_off"} and not arguments.get("summary"):
             arguments["summary"] = "A real outcome summary for the lane agreement case."
+            arguments["progress"] = "Recorded the lane agreement case. Done."
         mcp_ok, message = _mcp_verdict(tmp_path, "agentacct_record_section", arguments)
 
         if not http_ok:
@@ -381,6 +383,7 @@ def test_complete_records_are_accepted_on_every_lane(tmp_path) -> None:
             "section_status": "completed",
             "section_title": "Add a rate limiter to the login endpoint",
             "summary": "Added a 5-per-minute limiter and covered it with three tests.",
+            "progress": "Login now allows five tries a minute, with tests. Done; next: tune the limit.",
             "files": ["src/login.py"],
         },
     }

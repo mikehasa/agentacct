@@ -23,6 +23,8 @@ from .hooks import (
 from .install_guide import MCP_SERVER_INSTRUCTIONS
 from .service import RESERVED_CLIENT_CONTEXT_PROVENANCE_KEYS, SentinelService
 from .semantic_rules import (
+    GOAL_MAX_CHARACTERS,
+    PROGRESS_MAX_CHARACTERS,
     SemanticRecordError,
     collapse_display_text,
     collapse_narrative_text,
@@ -268,6 +270,26 @@ TOOLS: list[dict[str, Any]] = [
                         f"{INSPECTOR_SUMMARY_CHARACTERS} characters before it stops being a summary and "
                         "becomes a report; the cap is higher so nothing is lost, but past that length a "
                         "reader skims rather than reads."
+                    ),
+                },
+                "goal": {
+                    "type": ["string", "null"],
+                    "maxLength": GOAL_MAX_CHARACTERS,
+                    "description": (
+                        "Optional. What this work is for, in one line a reader with no background "
+                        "understands: 'Stop duplicate charges when a checkout retries'. Send it with "
+                        "section_status=started; the first goal a section records is the one kept."
+                    ),
+                },
+                "progress": {
+                    "type": ["string", "null"],
+                    "maxLength": PROGRESS_MAX_CHARACTERS,
+                    "description": (
+                        "Required with completed and handed_off. What got done, in plain words for a "
+                        "reader who has never seen the project, ending with a clause that says where "
+                        "the work stopped, opening with Done, Stopped, Next, Blocked, Handed off or "
+                        "Waiting: 'Retries now reuse the first charge id. Stopped before the refund "
+                        "path; next: cover it.' No size, cost or pass/fail: the app counts those."
                     ),
                 },
                 "client": {
@@ -720,7 +742,7 @@ SEMANTIC_RULES_VALIDATED_KEY = "semantic_rules_validated"
 MANGLED_TOOL_CALL_METADATA_KEY = "mangled_tool_call_suspected_fields"
 
 # The free-text arguments a mangled parameter can be absorbed into, per tool.
-SECTION_NARRATIVE_KEYS = ("summary", "blocker", "next_step", "section_title", "title")
+SECTION_NARRATIVE_KEYS = ("summary", "progress", "goal", "blocker", "next_step", "section_title", "title")
 MACHINE_CHECK_NARRATIVE_KEYS = ("summary", "before_summary", "after_summary", "resolution_summary", "command")
 
 # Property names that are NOT eligible to be suspected, however they appear in
@@ -1678,6 +1700,8 @@ class SentinelMCPServer:
                 "phase",
                 "kind",
                 "summary",
+                "goal",
+                "progress",
                 "client",
                 "client_session_id",
                 "client_transcript_id",
@@ -1707,6 +1731,8 @@ class SentinelMCPServer:
             section_summary = _narrative_text(arguments, "summary", max_length=1200)
             section_blocker = _narrative_text(arguments, "blocker", max_length=1200)
             section_next_step = _narrative_text(arguments, "next_step", max_length=1200)
+            section_goal = _narrative_text(arguments, "goal", max_length=GOAL_MAX_CHARACTERS)
+            section_progress = _narrative_text(arguments, "progress", max_length=PROGRESS_MAX_CHARACTERS)
             mangled_fields = _detect_mangled_tool_call_fields(
                 "agentacct_record_section", arguments, SECTION_NARRATIVE_KEYS
             )
@@ -1722,6 +1748,8 @@ class SentinelMCPServer:
                 "files": _optional_project_relative_files(arguments, project_dir=section_project_dir),
                 "blocker": section_blocker,
                 "next_step": section_next_step,
+                "goal": section_goal,
+                "progress": section_progress,
                 # Server-authored; listed even when empty so a caller cannot
                 # stamp the marker through free-form metadata.
                 MANGLED_TOOL_CALL_METADATA_KEY: mangled_fields or None,
@@ -1995,6 +2023,8 @@ class SentinelMCPServer:
                     "section_id": item.get("section_id"),
                     "title": item.get("title"),
                     "status": item.get("latest_status"),
+                    "goal": item.get("goal"),
+                    "progress": item.get("progress"),
                     "blocker": item.get("blocker"),
                     "next_step": item.get("next_step"),
                     "checks": len(item.get("evidence_events") or []),

@@ -6,8 +6,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A progress note on recorded work. `agentacct_record_section` takes `progress`:
+  what got done, in plain words for a reader with no background, ending with a
+  clause that says where the work stopped (opening with Done, Stopped, Next,
+  Blocked, Handed off, or Waiting). It is **required** when a section closes as
+  `completed` or `handed_off`, on every write lane (MCP, `POST /work-events`,
+  and `agentacct evidence work-event --progress`); a close without it is
+  refused with a corrected example, like a missing `summary`. An optional
+  `goal` (up to 120 characters) states what the work is for; the first goal a
+  section records is kept, and progress keeps the newest note. Both are carried
+  onto work items, `/v1/sessions`, and `agentacct_work_status`. Nothing renders
+  them yet: the Work views will add them once notes have accumulated.
+
 ### Fixed
 
+- `POST /work-events` answers a refused record (for example a closed section
+  without its summary) with HTTP 400 and the rule's message, instead of a
+  server error.
 - Evidence spool compaction no longer reads a concurrent refreshable-usage
   write as lost evidence. Its containment check excluded main-spool rows that
   arrived after the snapshot but not refreshable-usage records, so a live

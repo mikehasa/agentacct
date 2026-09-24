@@ -56,6 +56,7 @@ def _seed_task(store_root: Path) -> tuple[TestClient, str]:
                 "client": "codex",
                 "client_session_id": session_id,
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Completed the step shown on the task detail page. Done.",
             },
         }
     )

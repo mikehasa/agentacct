@@ -531,6 +531,8 @@ def _project_step(item: dict[str, Any], models: list[dict[str, Any]]) -> dict[st
         "files": item.get("files"),
         "blocker": item.get("blocker"),
         "next_step": item.get("next_step"),
+        "goal": item.get("goal"),
+        "progress": item.get("progress"),
         "usage": {
             "total_tokens": item.get("usage_total"),
             "fresh_tokens": item.get("usage_fresh_total"),

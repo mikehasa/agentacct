@@ -96,6 +96,7 @@ def _record_usage_and_work(store: Path, session_id: str) -> None:
                 "client": "codex",
                 "client_session_id": session_id,
                 "summary": "Recorded outcome for this fixture section.",
+                "progress": "Bridged the captured work into the product view. Done.",
             },
         }
     )
