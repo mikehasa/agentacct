@@ -80,6 +80,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Kimi Code's own index bookkeeping no longer reads as a damaged source. Its
+  `session_index.jsonl` is append-only, so a deleted session stays in it two
+  ordinary ways — a tombstone row (`{"sessionId": …, "deleted": true}`, which
+  carries no `sessionDir`) beside the session's original row, still pointing at
+  the directory the client removed — and a half-written final row can also be
+  left behind by a process killed mid-append (no closing newline). Those rows
+  are now skipped quietly, and a session whose `sessionDir` is gone is treated
+  as stale rather than broken, so `usage import-local --client kimi-code` and
+  `usage health` stop reporting `kimi_code_index_unreadable` /
+  `kimi_code_state_unreadable` for them (a watcher on a store with deleted
+  sessions used to degrade Kimi Code permanently, hiding real errors). Genuine
+  damage still reports exactly those codes: a newline-terminated row that is
+  not a JSON object, an unreadable or over-cap index, a `sessionDir` that
+  escapes the configured home, and a session whose `state.json` is unreadable.
 - `agentacct setup mcp --agent kimi-code` no longer bakes this project's store
   and a bare `agentacct` command name into Kimi Code's **user-level**
   `$KIMI_CODE_HOME/mcp.json`. Run from inside a project, it used to write that

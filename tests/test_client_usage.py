@@ -4661,6 +4661,61 @@ def _write_kimi_code_index(home: Path, session_dirs: list[Path]) -> None:
     )
 
 
+def _write_kimi_code_raw_index(home: Path, index_text: str) -> None:
+    """Write the index bytes verbatim, so a test can pin a real row shape."""
+
+    (home / "session_index.jsonl").write_text(index_text, encoding="utf-8")
+
+
+def _kimi_code_index_row(session_dir: Path) -> str:
+    """One index row in the shape the client itself writes: compact, this order."""
+
+    return json.dumps(
+        {
+            "sessionId": session_dir.name,
+            "sessionDir": str(session_dir),
+            "workDir": "/home/u/proj",
+        },
+        separators=(",", ":"),
+    )
+
+
+def _write_kimi_code_single_row_session(
+    home: Path,
+    session_id: str,
+    *,
+    input_tokens: int = 11,
+    output_tokens: int = 22,
+) -> Path:
+    """Write one healthy session whose only usage row sums to the given counters."""
+
+    return _write_kimi_code_session(
+        home,
+        session_id,
+        wires={
+            "main": [
+                _kimi_code_usage_row(
+                    agent_id="main",
+                    model="kimi-code/k3-256k",
+                    time_ms=1_769_753_001_000,
+                    usage={"inputOther": input_tokens, "output": output_tokens},
+                )
+            ]
+        },
+    )
+
+
+def _import_kimi_code_fixture(home: Path):
+    """Import one Kimi Code fixture home; return its events and its diagnostics."""
+
+    result = discover_client_usage_with_diagnostics(
+        client="kimi-code",
+        kimi_home=home,
+        limit_sessions=10,
+    )
+    return result.events, result.diagnostics.get("kimi-code", {})
+
+
 def _make_kimi_code_home(
     root: Path,
     *,
@@ -4961,6 +5016,177 @@ def test_discover_kimi_code_usage_reports_diagnostics_on_corrupt_source(
     assert by_session["session_capped"].input_tokens == 70
     assert by_session["session_capped"].output_tokens == 80
     assert by_session["session_capped"].source_parse_complete is False
+
+
+def test_discover_kimi_code_usage_skips_a_tombstone_index_row(tmp_path):
+    home = tmp_path / "kimi-home"
+    live_dir = _write_kimi_code_single_row_session(home, "session_live")
+    # Deleting a session leaves its index row in place, marked deleted: the
+    # tombstone names the session id alone and carries no sessionDir.  That is
+    # how the client records a deletion, so it is not a damaged index row.
+    _write_kimi_code_raw_index(
+        home,
+        _kimi_code_index_row(live_dir)
+        + "\n"
+        + '{"sessionId":"session_deleted","deleted":true}'
+        + "\n",
+    )
+
+    events, diagnostics = _import_kimi_code_fixture(home)
+
+    assert (diagnostics.get("error_codes") or []) == []
+    assert diagnostics.get("error_count", 0) == 0
+    assert {event.client_session_id for event in events} == {"session_live"}
+
+
+def test_discover_kimi_code_usage_skips_an_index_row_for_a_missing_session_dir(
+    tmp_path,
+):
+    home = tmp_path / "kimi-home"
+    live_dir = _write_kimi_code_single_row_session(home, "session_live")
+    stale_dir = home / "sessions" / "wd_proj_abc123" / "session_stale"
+    assert not stale_dir.exists()
+    # A session deleted from disk leaves its (unmarked) index row behind,
+    # pointing at the directory that is gone: stale, not broken.
+    _write_kimi_code_raw_index(
+        home,
+        _kimi_code_index_row(live_dir)
+        + "\n"
+        + _kimi_code_index_row(stale_dir)
+        + "\n",
+    )
+
+    events, diagnostics = _import_kimi_code_fixture(home)
+
+    assert (diagnostics.get("error_codes") or []) == []
+    assert diagnostics.get("error_count", 0) == 0
+    assert {event.client_session_id for event in events} == {"session_live"}
+
+
+def test_discover_kimi_code_usage_ignores_an_unterminated_index_tail(tmp_path):
+    home = tmp_path / "kimi-home"
+    live_dir = _write_kimi_code_single_row_session(home, "session_live")
+    # The index is appended row by row, so a client killed mid-append leaves a
+    # half-written final row with no closing newline.  That tail is a write in
+    # progress (the usual JSONL reading), not damage.
+    _write_kimi_code_raw_index(
+        home,
+        _kimi_code_index_row(live_dir)
+        + "\n"
+        + '{"sessionId":"session_writing","sessionDir":"'
+        + str(home / "sessions" / "wd_proj_abc123" / "session_writing")
+    )
+
+    events, diagnostics = _import_kimi_code_fixture(home)
+
+    assert (diagnostics.get("error_codes") or []) == []
+    assert diagnostics.get("error_count", 0) == 0
+    assert {event.client_session_id for event in events} == {"session_live"}
+
+
+def test_discover_kimi_code_usage_still_reports_a_corrupt_index_row(tmp_path):
+    home = tmp_path / "kimi-home"
+    first_dir = _write_kimi_code_single_row_session(
+        home, "session_first", input_tokens=11, output_tokens=22
+    )
+    second_dir = _write_kimi_code_single_row_session(
+        home, "session_second", input_tokens=33, output_tokens=44
+    )
+    # Both damaged rows are newline-terminated, so both are complete rows: a
+    # truncated tail must not excuse a finished row that cannot be read.  The
+    # rows around them still import.
+    _write_kimi_code_raw_index(
+        home,
+        _kimi_code_index_row(first_dir)
+        + "\n"
+        + '{"sessionId": "session_broken", "sessionDir": '
+        + "\n"
+        + _kimi_code_index_row(second_dir)
+        + "\n"
+        + "12345"
+        + "\n",
+    )
+
+    events, diagnostics = _import_kimi_code_fixture(home)
+
+    assert "kimi_code_index_unreadable" in (diagnostics.get("error_codes") or [])
+    assert diagnostics.get("error_count", 0) == 2
+    by_session = {event.client_session_id: event for event in events}
+    assert set(by_session) == {"session_first", "session_second"}
+    assert by_session["session_first"].input_tokens == 11
+    assert by_session["session_second"].input_tokens == 33
+
+
+def test_discover_kimi_code_usage_still_reports_a_corrupt_state_file(tmp_path):
+    home = tmp_path / "kimi-home"
+    live_dir = _write_kimi_code_single_row_session(home, "session_live")
+    stale_dir = home / "sessions" / "wd_proj_abc123" / "session_stale"
+    bad_state_dir = _write_kimi_code_session(
+        home,
+        "session_bad_state",
+        state_text='{"id": "session_bad_state", "title": ',
+    )
+    # The two deletion shapes beside it add no diagnostic of their own, so the
+    # one remaining code is the session whose state.json really is unreadable.
+    _write_kimi_code_raw_index(
+        home,
+        _kimi_code_index_row(live_dir)
+        + "\n"
+        + _kimi_code_index_row(stale_dir)
+        + "\n"
+        + '{"sessionId":"session_stale","deleted":true}'
+        + "\n"
+        + _kimi_code_index_row(bad_state_dir)
+        + "\n",
+    )
+
+    events, diagnostics = _import_kimi_code_fixture(home)
+
+    assert (diagnostics.get("error_codes") or []) == ["kimi_code_state_unreadable"]
+    assert diagnostics.get("error_count", 0) == 1
+    assert {event.client_session_id for event in events} == {"session_live"}
+
+
+def test_discover_kimi_code_usage_reads_real_index_shapes_for_deleted_sessions(
+    tmp_path,
+):
+    """The byte shapes the real store writes for a deleted session are not damage.
+
+    Captured on this machine on 2026-09-24 and reproduced here with placeholder
+    values (the session id is synthetic; only the row shape is real): Kimi Code
+    writes compact JSON in this key order, keeps the deleted session's own row
+    pointing at the session directory it removed, and then appends a tombstone
+    row naming that session id alone.  Only the live session may import, and
+    neither deletion shape may raise a diagnostic.
+    """
+
+    home = tmp_path / "kimi-home"
+    live_dir = _write_kimi_code_single_row_session(home, "session_live")
+    deleted_session_id = "session_1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+    deleted_dir = home / "sessions" / "wd_proj_abc123" / deleted_session_id
+    _write_kimi_code_raw_index(
+        home,
+        '{"sessionId":"session_live","sessionDir":"'
+        + str(live_dir)
+        + '","workDir":"/home/u/proj"}\n'
+        + '{"sessionId":"'
+        + deleted_session_id
+        + '","sessionDir":"'
+        + str(deleted_dir)
+        + '","workDir":"/home/u/proj"}\n'
+        + '{"sessionId":"'
+        + deleted_session_id
+        + '","deleted":true}\n',
+    )
+
+    events, diagnostics = _import_kimi_code_fixture(home)
+
+    assert (diagnostics.get("error_codes") or []) == []
+    assert diagnostics.get("error_count", 0) == 0
+    assert [event.client_session_id for event in events] == ["session_live"]
+    assert events[0].input_tokens == 11
+    assert events[0].output_tokens == 22
+    assert events[0].source_parse_complete is True
 
 
 def test_discover_kimi_code_usage_respects_session_limit(tmp_path):

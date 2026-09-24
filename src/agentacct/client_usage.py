@@ -4069,7 +4069,9 @@ def discover_kimi_code_usage(
     Session dirs come from ``session_index.jsonl`` when present, else from a
     ``sessions/*/state.json`` scan.  A session whose metadata or wires are
     unreadable/capped is imported from what remains and recorded as a stable
-    diagnostic code, never as a silent empty total.
+    diagnostic code, never as a silent empty total.  Rows the index keeps for a
+    session the user deleted — a tombstone, or a row whose directory is gone —
+    name no session to import and are skipped without a diagnostic.
 
     Homes are resolved exactly as ``source_discovery`` resolves them — an
     explicit ``kimi_home``, else a comma-separated ``$KIMI_CODE_HOME``, else the
@@ -4348,10 +4350,19 @@ def _kimi_code_session_dirs_from_index(
 ) -> list[Path]:
     """Session dirs named by ``session_index.jsonl`` (empty ⇒ fall back to a scan).
 
-    A row that cannot be read is reported as ``kimi_code_index_unreadable`` and
-    skipped rather than failing the session tree beside it; an index that is
-    absent (or is an unfollowable link, which is never followed) simply yields no
-    dirs so the caller scans ``sessions/*/*/state.json`` instead.
+    The index is append-only, so it keeps rows for sessions that no longer
+    exist — and Kimi Code marks a deleted session in place rather than dropping
+    its row.  Both are ordinary shapes, not damage, and are skipped quietly: a
+    tombstone row (``{"sessionId": …, "deleted": true}``, which carries no
+    ``sessionDir``), a row that names no session directory at all, and a row
+    whose session directory is gone (the session was deleted under it).
+
+    Damage is still reported as ``kimi_code_index_unreadable`` and skipped
+    rather than failing the session tree beside it: a newline-terminated row
+    that is not a JSON object, or a cap/read failure over the whole index.  An
+    index that is absent (or is an unfollowable link, which is never followed)
+    simply yields no dirs so the caller scans ``sessions/*/*/state.json``
+    instead.
     """
 
     source = _regular_source_file(home / "session_index.jsonl", root=home)
@@ -4364,28 +4375,55 @@ def _kimi_code_session_dirs_from_index(
     if raw_index is None:
         note_error("kimi_code_index_unreadable")
         return []
+    lines = raw_index.splitlines()
+    # JSONL writers append one row per write, so a writer that dies mid-append
+    # leaves its final row unterminated.  Without a closing newline that last
+    # segment may still be growing, so an unreadable one is dropped quietly
+    # (the usual JSONL reading of a partial tail); every row the writer DID
+    # terminate is a complete row, and an unreadable one stays damage.
+    partial_tail = not raw_index.endswith((b"\n", b"\r"))
     session_dirs: list[Path] = []
-    for line in raw_index.splitlines():
-        line = line.strip()
+    for position, raw_line in enumerate(lines):
+        line = raw_line.strip()
         if not line:
             continue
         try:
             row = json.loads(line)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            note_error("kimi_code_index_unreadable")
+            row = None
+        if not isinstance(row, dict):
+            if not (partial_tail and position == len(lines) - 1):
+                note_error("kimi_code_index_unreadable")
             continue
-        session_dir = row.get("sessionDir") if isinstance(row, dict) else None
+        if row.get("deleted"):
+            # A tombstone: the session was deleted and its index row was kept as
+            # a marker.  Nothing to import, and nothing wrong with the index.
+            continue
+        session_dir = row.get("sessionDir")
         if not isinstance(session_dir, str) or not session_dir.strip():
             # A row without a session directory cannot be imported; its own
             # sessionId is not a path, so there is nothing to fall back to.
-            note_error("kimi_code_index_unreadable")
             continue
         # The client records the path it was configured with, so a home reached
         # through a linked ancestor (macOS /tmp -> /private/tmp) names its
         # sessions that way too.  Resolve the row to the same real path the home
         # was resolved to before it is re-proved beneath that home — the
         # no-follow walk, not this spelling, is the trust boundary.
-        session_dirs.append(Path(os.path.realpath(session_dir)))
+        resolved_dir = Path(os.path.realpath(session_dir))
+        try:
+            resolved_dir.relative_to(home)
+        except ValueError:
+            # A row naming a path outside the configured home is not judged here:
+            # it still reaches the session reader, which refuses it as it always
+            # has (the refusal is never traded for a quiet skip).
+            session_dirs.append(resolved_dir)
+            continue
+        if not os.path.lexists(resolved_dir):
+            # Stale row: the session (and its directory) was deleted while the
+            # index kept the row.  A missing session directory is the client's
+            # own housekeeping, not a broken read.
+            continue
+        session_dirs.append(resolved_dir)
     return session_dirs
 
 
