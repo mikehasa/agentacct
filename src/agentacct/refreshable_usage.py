@@ -49,6 +49,9 @@ _SQLITE_INT64_MAX = 2**63 - 1
 # of these describe a refreshable cumulative snapshot once normalized.  Keep
 # this public so adapter/rebuild tests can prove the allowlist rather than
 # accidentally broadening it with a substring or default-value match.
+# kimi-code has no entry of its own: its wire.jsonl usage.record events are
+# per-request deltas summed at import, the exact claude-code shape, so
+# kimi-code rows carry "claude_assistant_message_usage_rows".
 CUMULATIVE_USAGE_SEMANTICS = frozenset(
     {
         CANONICAL_CUMULATIVE_USAGE_SEMANTICS,

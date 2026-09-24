@@ -142,6 +142,8 @@ def _import_local_usage(store_root, home, *, client="all", refresh=True, estimat
         opencode_home=home / ".local" / "share" / "opencode",
         hermes_home=home / ".hermes",
         openclaw_home=home / ".openclaw",
+        dsh_home=home / ".dsh",
+        kimi_home=home / ".kimi-code",
         cursor_home=home / "cursor-home",
         refresh=refresh,
         estimate_costs=estimate_costs,
@@ -1597,6 +1599,7 @@ def test_usage_sources_change_fingerprint_is_glob_only_and_sorted(monkeypatch):
         hermes_home=None,
         openclaw_home=None,
         dsh_home=None,
+        kimi_home=None,
         cursor_home=None,
     )
 

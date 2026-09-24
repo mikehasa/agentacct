@@ -1599,6 +1599,7 @@ enum WorksetFormat {
         case "codex", "openai-codex", "codex-cli": return "Codex"
         case "opencode", "open-code": return "OpenCode"
         case "hermes": return "Hermes"
+        case "kimi-code", "kimi": return "Kimi Code"
         default: return client.isEmpty ? "unknown" : client
         }
     }

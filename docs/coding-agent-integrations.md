@@ -15,6 +15,7 @@ Client support is capability-based, not a binary badge:
 | OpenClaw | Manual profile command preview | JSONL importer | Typed plugin hooks and `sessions.json` routing are not integrated yet | Usage plus MCP work when separately configured |
 | DeepSeek Harness (dsh) | Global onboard writes the home patch (`$DSH_HOME/cordis.patch.yml`) + `AGENTS.md`; project setup previews | Zstandard-compressed JSONL importer | Typed plugin hooks are not integrated; MCP self-report verified live on one machine (dsh 0.1.5-rc.1), usage-import fixture-only | Usage + MCP work once dsh loads the home patch |
 | Cursor | Portable MCP definition only | Primary `state.vscdb` composer observations only; no token importer | Metadata payload normalization exists, but onboarding does not install it | A metadata-only composer Task after explicit refresh/manual capture; usage, cache, and cost unavailable |
+| Kimi Code | Manual `mcp.json` registration preview; no writer | `session_index.jsonl` plus per-agent `wire.jsonl` `usage.record` importer (per-request token deltas; cost only as a pricing estimate) | No typed plugin hook adapter | Usage import; MCP work context once the user applies the previewed entry |
 | Other MCP clients | Portable stdio definition | None unless a client-specific importer exists | None | MCP work context only |
 
 This prose overview is not the support source of truth. agentacct now exposes a machine-readable, per-capability manifest that keeps runtime detection, ingestion health, and implementation evidence separate:
@@ -63,6 +64,7 @@ Currently implemented local import paths:
 - OpenClaw JSONL session logs
 - DeepSeek Harness (dsh) Zstandard-compressed JSONL session logs (`session.vN.jsonl.zstd` under `~/.dsh`; input/output/cache/reasoning tokens, no cost recorded)
 - Cursor primary `User/globalStorage/state.vscdb` composer identities, timestamps, explicit model metadata, and exact child links (observation-only; no usage/cost rows)
+- Kimi Code `session_index.jsonl` plus per-agent `wire.jsonl` `usage.record` events under `~/.kimi-code` (per-request input/cache-read/cache-write/output token deltas summed into session totals; no cost recorded)
 
 Measured imports are labeled `client_reported`, and pricing-table estimates are labeled `estimated_from_tokens`. Cursor is deliberately different: the same command surface saves only trusted session observations, so missing usage remains unavailable rather than a measured zero. It rejects symlinked source components, active WAL state, schema drift, corrupt JSON/SQLite, replacement races, and invalid parent graphs; it never falls back to `state.vscdb.backup` or ai-tracking stores. Other agents need client-specific importers because every client can store sessions in a different format.
 
@@ -209,6 +211,22 @@ agentacct onboard --agent dsh
 Global onboard writes both legs at the HOME level, which every profile the dsh CLI boots layers on top of (the plain `dsh` command has no default profile — `--profile` is required): the `@deepseek-ai/dsh-mcp-client` registration goes to `$DSH_HOME/cordis.patch.yml` (the home patch applied over every profile) and the record-your-work directive goes to `$DSH_HOME/AGENTS.md` (loaded by dsh-base's agent-instructions on every base-backed session). dsh hot-reloads the patch and exposes the tools as `mcp__agentacct__*`, so a dsh session records like Codex/OpenCode. `agentacct setup mcp --agent dsh` previews the same registration without writing.
 
 Verified: a live dsh 0.1.5-rc.1 session loaded the bundled `@deepseek-ai/dsh-mcp-client` plugin in-box (no `dsh plugin add` step needed) and recorded a work section over MCP with `source=dsh` — on one machine and version, with the recording task explicitly requested. Onboarding still prints a one-line `dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client` fallback for environments where the plugin does not resolve.
+
+### Kimi Code
+
+```bash
+agentacct usage import-local --client kimi-code --dry-run --json
+```
+
+Local usage import reads Kimi Code's own session stores read-only. `~/.kimi-code/session_index.jsonl` indexes the sessions; each session directory (`sessions/wd_<workspace hash>/<session id>/`) holds per-agent `agents/<agentId>/wire.jsonl` streams whose `usage.record` events carry one row per LLM request. Those values are per-request increments, never cumulative, so the importer sums them into session totals: `inputOther` → input, `output` → output, `inputCacheRead` → cache read, `inputCacheCreation` → cache write. Prompt and message content is never read or stored.
+
+To select a non-default Kimi Code home explicitly (the default is `~/.kimi-code`):
+
+```bash
+agentacct usage import-local --client kimi-code --kimi-home "/path/to/.kimi-code" --dry-run --json
+```
+
+Kimi Code MCP registration is manual: it declares servers as `mcpServers` entries in `~/.kimi-code/mcp.json` (`$KIMI_CODE_HOME/mcp.json`; project level `.kimi-code/mcp.json`) — never in `config.toml`, which carries provider credentials — and agentacct ships no writer for that file. `agentacct setup mcp --agent kimi-code` previews the exact entry for the user to apply by hand or through `/mcp-config`, then start a new session. Standing directives go to `$KIMI_CODE_HOME/AGENTS.md` (`agentacct setup instructions --agent kimi-code`). There is no typed Kimi Code plugin hook adapter and no generic Evidence v2 manifest adapter. The import lanes carry dated evidence from 2026-09-23 — a committed real-capture fixture (the two `usage.record` lines of a controlled run kept byte-verbatim, container metadata sanitized, expected import 596 input / 190 output / 44,800 cache read / 0 cache write on `DeepSeek/deepseek-flash`) plus a same-day single-machine live smoke in which the importer and an independent sum of the wire files agreed exactly on all six session×model lanes — so those lanes are `verified_partial` rather than synthetic-only. Cache write stays experimental: every captured and live lane reported 0, so a non-zero path has never been observed. Multi-version and long-run stability are not claimed.
 
 ### Generic MCP-capable agents
 

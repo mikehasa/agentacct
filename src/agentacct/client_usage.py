@@ -76,9 +76,9 @@ from .tool_activity import (
 )
 from .mechanical_capture import classify_command, command_digest
 
-UsageClientName = Literal["codex", "claude-code", "opencode", "hermes", "openclaw", "dsh"]
+UsageClientName = Literal["codex", "claude-code", "opencode", "hermes", "openclaw", "dsh", "kimi-code"]
 ObservedClientName = Literal[
-    "codex", "claude-code", "opencode", "hermes", "openclaw", "dsh", "cursor"
+    "codex", "claude-code", "opencode", "hermes", "openclaw", "dsh", "kimi-code", "cursor"
 ]
 # Local clients agentacct can inspect. Cursor is intentionally observation-only:
 # it belongs in discovery/import routing, but never in the usage-event subset.
@@ -89,6 +89,7 @@ SUPPORTED_CLIENTS: tuple[str, ...] = (
     "hermes",
     "openclaw",
     "dsh",
+    "kimi-code",
     "cursor",
 )
 USAGE_EVENT_CLIENTS: tuple[str, ...] = (
@@ -98,6 +99,7 @@ USAGE_EVENT_CLIENTS: tuple[str, ...] = (
     "hermes",
     "openclaw",
     "dsh",
+    "kimi-code",
 )
 _MAX_SESSION_TITLE_LENGTH = 240
 # Identity scan budget. Measured over the 6,595 transcripts in
@@ -239,6 +241,7 @@ _DEFAULT_CLIENT_HOME_LABELS: dict[str, str] = {
     "hermes": "~/.hermes",
     "openclaw": "~/.openclaw (and related roots)",
     "dsh": "~/.dsh",
+    "kimi-code": "~/.kimi-code",
     "cursor": "~/Library/Application Support/Cursor",
 }
 
@@ -252,6 +255,7 @@ def describe_scanned_client_homes(
     hermes_home: "Path | None" = None,
     openclaw_home: "Path | None" = None,
     dsh_home: "Path | None" = None,
+    kimi_home: "Path | None" = None,
     cursor_home: "Path | None" = None,
 ) -> list[str]:
     """Human ``client: home`` labels for exactly the clients a scan inspects.
@@ -269,6 +273,7 @@ def describe_scanned_client_homes(
         "hermes": hermes_home,
         "openclaw": openclaw_home,
         "dsh": dsh_home,
+        "kimi-code": kimi_home,
         "cursor": cursor_home,
     }
     core_plans = resolve_core_usage_source_plans(codex_home=codex_home, claude_home=claude_home)
@@ -471,6 +476,10 @@ class ClientUsageEvent:
             return "openclaw"
         if self.client == "dsh":
             return "dsh"
+        if self.client == "kimi-code":
+            # Kimi Code is Moonshot AI's CLI; its wire.jsonl usage records carry
+            # a model id ("kimi-code/k3-256k") but no provider field.
+            return "moonshot"
         return "claude-code"
 
     @property
@@ -491,6 +500,10 @@ class ClientUsageEvent:
             return "openclaw_assistant_usage_rows"
         if self.client == "dsh":
             return "dsh_assistant_usage_rows"
+        if self.client == "kimi-code":
+            # usage.record rows are per-request increments summed per session —
+            # the same semantics as claude-code assistant usage rows.
+            return "claude_assistant_message_usage_rows"
         return "claude_assistant_message_usage_rows"
 
     @property
@@ -4045,6 +4058,619 @@ def discover_dsh_usage(
     return events
 
 
+def discover_kimi_code_usage(
+    *,
+    kimi_home: Path | None = None,
+    limit_sessions: int = 20,
+    _discovery_stats: dict[str, Any] | None = None,
+) -> list[ClientUsageEvent]:
+    """Read Kimi Code session directories and return sanitized usage summaries.
+
+    Session dirs come from ``session_index.jsonl`` when present, else from a
+    ``sessions/*/state.json`` scan.  A session whose metadata or wires are
+    unreadable/capped is imported from what remains and recorded as a stable
+    diagnostic code, never as a silent empty total.
+
+    Homes are resolved exactly as ``source_discovery`` resolves them — an
+    explicit ``kimi_home``, else a comma-separated ``$KIMI_CODE_HOME``, else the
+    ``~/.kimi-code`` default — so a home that source discovery reports as
+    ``found`` is a home this importer actually reads.  A configured home that is
+    simply absent contributes no sessions and no diagnostic of its own (an
+    uninstalled Kimi Code is not a broken source), while one that exists and
+    cannot be read is recorded as ``kimi_code_home_unreadable`` and skipped so
+    its siblings still import; the whole scan fails closed only when no
+    configured home could be read at all.
+    """
+
+    roots = _kimi_code_home_roots(kimi_home)
+    events: list[ClientUsageEvent] = []
+    error_codes: list[str] = []
+    error_count = 0
+
+    def _note_error(code: str) -> None:
+        nonlocal error_count
+        error_count += 1
+        if code not in error_codes:
+            error_codes.append(code)
+
+    sessions: list[dict[str, Any]] = []
+    first_home_error: OSError | None = None
+    scanned_homes = 0
+    for root in roots:
+        try:
+            root_sessions = _kimi_code_session_plans(root, _note_error)
+        except OSError as exc:
+            # One unreadable home must not hide the sessions of the others: it is
+            # recorded and skipped.  A single configured home stays fail-closed,
+            # exactly as before, because then nothing was read at all.
+            if first_home_error is None:
+                first_home_error = exc
+            _note_error("kimi_code_home_unreadable")
+            continue
+        # A home that could be inspected counts even when it held no sessions —
+        # including one that was absent, which is a complete answer, not a gap.
+        scanned_homes += 1
+        sessions.extend(root_sessions)
+    if first_home_error is not None and not scanned_homes:
+        # Every configured home failed to be read: fail the whole scan closed.
+        raise first_home_error
+    sessions.sort(key=_kimi_code_session_recency, reverse=True)
+    sessions = sessions[: max(0, limit_sessions)]
+    for session in sessions:
+        session_id = session["session_id"]
+        lane_rows: dict[str | None, dict[str, Any]] = {}
+        seen_records: set[tuple[object, ...]] = set()
+        session_parse_complete = True
+        latest_wire_mtime_ns = 0
+        latest_event_at: int | None = None
+        for wire in session["wires"]:
+            status = _KimiWireReadStatus()
+            try:
+                wire_records = _read_kimi_wire_usage(wire, status)
+            except OSError:
+                _note_error("kimi_code_wire_read_failed")
+                session_parse_complete = False
+                continue
+            if status.truncated:
+                _note_error("kimi_code_wire_scan_capped")
+                session_parse_complete = False
+            if status.malformed_lines:
+                _note_error("kimi_code_wire_malformed")
+                session_parse_complete = False
+            latest_wire_mtime_ns = max(latest_wire_mtime_ns, wire.mtime_ns)
+            for record in wire_records:
+                lane = lane_rows.setdefault(
+                    record["model"],
+                    {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_read_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "input_tokens_reported": False,
+                        "output_tokens_reported": False,
+                        "cache_read_tokens_reported": False,
+                        "cache_write_tokens_reported": False,
+                        "raw_usage_rows": 0,
+                        "turn_count": 0,
+                        "first_event_at": None,
+                        "last_event_at": None,
+                    },
+                )
+                lane["raw_usage_rows"] += 1
+                # Guard against a crash-double-appended usage.record: identical
+                # (agent, time, model, counters) rows carry no new information.
+                dedup_key = record["dedup_key"]
+                if dedup_key in seen_records:
+                    continue
+                seen_records.add(dedup_key)
+                lane["input_tokens"] += record["input_tokens"]
+                lane["output_tokens"] += record["output_tokens"]
+                lane["cache_read_tokens"] += record["cache_read_tokens"]
+                lane["cache_write_tokens"] += record["cache_write_tokens"]
+                lane["input_tokens_reported"] |= record["input_tokens_reported"]
+                lane["output_tokens_reported"] |= record["output_tokens_reported"]
+                lane["cache_read_tokens_reported"] |= record["cache_read_tokens_reported"]
+                lane["cache_write_tokens_reported"] |= record["cache_write_tokens_reported"]
+                lane["turn_count"] += 1
+                event_at = record["event_at"]
+                if event_at is not None:
+                    first = lane["first_event_at"]
+                    last = lane["last_event_at"]
+                    lane["first_event_at"] = event_at if first is None else min(first, event_at)
+                    lane["last_event_at"] = event_at if last is None else max(last, event_at)
+                    latest_event_at = event_at if latest_event_at is None else max(latest_event_at, event_at)
+        if not lane_rows:
+            # A zero-token session (or one whose wires carried no usable usage
+            # rows) produces no import row; diagnostics above still record why.
+            continue
+        started_at = session["created_at"]
+        if started_at is None:
+            first_events = [
+                lane["first_event_at"]
+                for lane in lane_rows.values()
+                if lane["first_event_at"] is not None
+            ]
+            started_at = min(first_events) if first_events else None
+        updated_candidates = [
+            value
+            for value in (
+                session["updated_at"],
+                latest_event_at,
+                int(latest_wire_mtime_ns // 1_000_000_000) if latest_wire_mtime_ns else None,
+            )
+            if value is not None
+        ]
+        updated_at = max(updated_candidates) if updated_candidates else None
+        for model_key, lane in lane_rows.items():
+            events.append(
+                ClientUsageEvent(
+                    client="kimi-code",
+                    client_session_id=session_id,
+                    source_path=session["source_path"],
+                    title=_sanitized_session_title(session["title"]),
+                    cwd=_limited_optional_text(session["cwd"], _MAX_SESSION_TITLE_LENGTH),
+                    model=_limited_optional_text(model_key, 120),
+                    input_tokens=lane["input_tokens"],
+                    output_tokens=lane["output_tokens"],
+                    cached_input_tokens=lane["cache_read_tokens"] + lane["cache_write_tokens"],
+                    cache_creation_input_tokens=lane["cache_write_tokens"],
+                    cache_read_input_tokens=lane["cache_read_tokens"],
+                    cache_creation_tokens_reported=lane["cache_write_tokens_reported"],
+                    cache_read_tokens_reported=lane["cache_read_tokens_reported"],
+                    reasoning_output_tokens=0,
+                    started_at=started_at,
+                    updated_at=updated_at,
+                    # Per-agent wire file mtimes (emitted as us) order two real
+                    # revisions inside one displayed second, like the claude-code
+                    # transcript mtime basis.
+                    source_revision_at=(
+                        int(latest_wire_mtime_ns // 1_000) if latest_wire_mtime_ns else None
+                    ),
+                    source_revision_basis=(
+                        "wire_file_mtime_us" if latest_wire_mtime_ns else None
+                    ),
+                    turn_count=lane["turn_count"],
+                    # Kimi Code persists no cost figure; leave the client-reported
+                    # cost unset so the row reads as cost-unknown, never a
+                    # fabricated $0 (the estimate-costs pricing path still applies).
+                    client_reported_cost_usd=None,
+                    client_cost_source=None,
+                    client_transcript_id=session_id,
+                    raw_usage_rows=lane["raw_usage_rows"],
+                    deduplicated_usage_rows=lane["turn_count"],
+                    usage_row_lane=USAGE_ROW_LANE_PREFIX
+                    + sanitize_session_key_component(model_key or "unknown"),
+                    source_parse_complete=session_parse_complete,
+                    input_tokens_reported=lane["input_tokens_reported"],
+                    output_tokens_reported=lane["output_tokens_reported"],
+                )
+            )
+    if _discovery_stats is not None:
+        _discovery_stats["error_codes"] = error_codes
+        _discovery_stats["error_count"] = error_count
+    return events
+
+
+# ---------------------------------------------------------------------------
+# Kimi Code (Moonshot AI's CLI) stores under ``$KIMI_CODE_HOME`` (default
+# ``~/.kimi-code``): a ``session_index.jsonl`` of one
+# ``{sessionId, sessionDir, workDir}`` row per session, and per session a
+# ``sessions/wd_<workspace hash>/<session id>/`` directory holding ``state.json``
+# plus ONE ``agents/<agent id>/wire.jsonl`` event log per agent (``main`` and
+# every ``agent-N`` subagent).  Token usage lives only on ``usage.record`` rows
+# ``{type, agentId, model, usage, usageScope, time}`` at
+# ``usage.{inputOther, output, inputCacheRead, inputCacheCreation}``.  Those
+# counters are PER-REQUEST deltas (never cumulative), so a session total is their
+# direct sum, mapped input=inputOther, output=output, cache_read=inputCacheRead,
+# cache_write=inputCacheCreation, with no cost figure persisted anywhere (the
+# pricing-table estimate still applies downstream).  ``time`` and state.json's
+# ``createdAt``/``updatedAt`` are epoch MILLISECONDS while imported events carry
+# whole seconds like every other client.  The same files also carry
+# prompt/message text (``turn.prompt``, ``agent.message.appended``, and
+# state.json's ``lastPrompt``): the reader below takes the usage counters and the
+# metadata scalars only, never a message field.
+# ---------------------------------------------------------------------------
+
+# Bound one wire.jsonl scan.  The largest wire observed on a dogfooded machine is
+# 4 MiB, so a log that outgrows this budget is pathological rather than routine:
+# it is summed up to the cap and flagged ``truncated`` so the caller reports a
+# capped scan, never an exact total.
+_KIMI_MAX_WIRE_BYTES = 64 * 1024 * 1024
+# One wire row is a single JSON line (the largest observed is 322 KiB, a message
+# row).  A row past this cap carries no legitimate usage payload, so the scan
+# stops there instead of growing the buffer to hold it.
+_KIMI_MAX_WIRE_LINE_BYTES = 16 * 1024 * 1024
+# state.json holds the whole session state — prompts included — on ONE line, so
+# it is read under a byte cap and only its scalar metadata is kept.
+_KIMI_MAX_STATE_BYTES = 8 * 1024 * 1024
+# Same cap for the session index, which grows by one small row per session.
+_KIMI_MAX_INDEX_BYTES = 8 * 1024 * 1024
+# Kimi Code stamps epoch MILLISECONDS.  The seconds/milliseconds split is the one
+# Cursor's state reader uses: a value below the milliseconds floor cannot be a
+# millisecond stamp (it would predate 1973), so it is kept as-is rather than
+# divided down into a 1970 date.
+_KIMI_MIN_MILLISECONDS_VALUE = 100_000_000_000
+
+
+class _KimiWireReadStatus:
+    """Mutable outcome of reading one agent's wire.jsonl.
+
+    ``truncated`` means the scan stopped at the byte/row budget (a too-big log)
+    so the totals it produced are partial.  ``malformed_lines`` counts rows that
+    could not be read as a JSON object at all, including a ``usage.record`` whose
+    ``usage`` payload is not an object.  The caller maps the two to distinct
+    stable diagnostics, so a partial or damaged read never presents itself as an
+    exact session total.
+    """
+
+    __slots__ = ("truncated", "malformed_lines")
+
+    def __init__(self) -> None:
+        self.truncated = False
+        self.malformed_lines = 0
+
+
+def _kimi_code_epoch_seconds(value: Any) -> int | None:
+    """Convert a Kimi Code epoch-milliseconds timestamp into whole seconds."""
+
+    try:
+        number = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if number <= 0:
+        return None
+    if number >= _KIMI_MIN_MILLISECONDS_VALUE:
+        number //= 1000
+    return number
+
+
+def _kimi_code_bounded_blob(
+    source: _RegularSourceFile,
+    max_bytes: int,
+) -> bytes | None:
+    """Read one small metadata file whole under a byte cap, or ``None`` if capped.
+
+    ``state.json`` and ``session_index.jsonl`` are read for a handful of scalars,
+    so a file past the cap is reported as unreadable rather than loaded — the
+    same no-follow, same-inode re-open every other local source reader uses.
+    """
+
+    if source.size > max_bytes:
+        return None
+    with _open_regular_source_bytes(source) as handle:
+        data = handle.read(max_bytes + 1)
+    return None if len(data) > max_bytes else data
+
+
+def _kimi_code_session_dirs_from_index(
+    home: Path,
+    note_error: Callable[[str], None],
+) -> list[Path]:
+    """Session dirs named by ``session_index.jsonl`` (empty ⇒ fall back to a scan).
+
+    A row that cannot be read is reported as ``kimi_code_index_unreadable`` and
+    skipped rather than failing the session tree beside it; an index that is
+    absent (or is an unfollowable link, which is never followed) simply yields no
+    dirs so the caller scans ``sessions/*/*/state.json`` instead.
+    """
+
+    source = _regular_source_file(home / "session_index.jsonl", root=home)
+    if source is None:
+        return []
+    try:
+        raw_index = _kimi_code_bounded_blob(source, _KIMI_MAX_INDEX_BYTES)
+    except OSError:
+        raw_index = None
+    if raw_index is None:
+        note_error("kimi_code_index_unreadable")
+        return []
+    session_dirs: list[Path] = []
+    for line in raw_index.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            note_error("kimi_code_index_unreadable")
+            continue
+        session_dir = row.get("sessionDir") if isinstance(row, dict) else None
+        if not isinstance(session_dir, str) or not session_dir.strip():
+            # A row without a session directory cannot be imported; its own
+            # sessionId is not a path, so there is nothing to fall back to.
+            note_error("kimi_code_index_unreadable")
+            continue
+        # The client records the path it was configured with, so a home reached
+        # through a linked ancestor (macOS /tmp -> /private/tmp) names its
+        # sessions that way too.  Resolve the row to the same real path the home
+        # was resolved to before it is re-proved beneath that home — the
+        # no-follow walk, not this spelling, is the trust boundary.
+        session_dirs.append(Path(os.path.realpath(session_dir)))
+    return session_dirs
+
+
+def _kimi_code_session_dirs_from_tree(home: Path) -> list[Path]:
+    """Session dirs found by scanning ``sessions/*/*/state.json``.
+
+    The glob never descends into a linked directory, so a symlinked session dir
+    contributes no session here rather than importing another tree's evidence;
+    the index path is where an unfollowable session dir is reported instead.
+    """
+
+    try:
+        state_paths = sorted((home / "sessions").glob("*/*/state.json"))
+    except OSError:
+        return []
+    return [path.parent for path in state_paths]
+
+
+def _kimi_code_session_wires(
+    session_dir: Path,
+    *,
+    home: Path,
+) -> list[_RegularSourceFile]:
+    """Every ``agents/<agent id>/wire.jsonl`` in one session, subagents included.
+
+    Blob, task, log, plan, and media artifacts live beside the wires and are
+    never opened: only a per-agent event log carries usage.  Each candidate is
+    re-proved beneath the configured home without following symlinks, so a link
+    planted inside a session cannot import another tree's evidence.
+    """
+
+    try:
+        agent_entries = sorted((session_dir / "agents").iterdir())
+    except OSError:
+        return []
+    wires: list[_RegularSourceFile] = []
+    for agent_dir in agent_entries:
+        source = _regular_source_file(agent_dir / "wire.jsonl", root=home)
+        if source is not None:
+            wires.append(source)
+    return wires
+
+
+def _kimi_code_session_plan(
+    session_dir: Path,
+    *,
+    home: Path,
+    note_error: Callable[[str], None],
+) -> dict[str, Any] | None:
+    """Read one session's ``state.json`` metadata and its per-agent wires.
+
+    ``None`` means this session's state could not be read as a JSON object
+    beneath the configured home (missing, a link, outside the home, capped, or
+    corrupt) — reported through ``note_error`` so the caller skips one session
+    instead of the whole client.
+    """
+
+    state_source = _regular_source_file(session_dir / "state.json", root=home)
+    if state_source is None:
+        note_error("kimi_code_state_unreadable")
+        return None
+    try:
+        raw_state = _kimi_code_bounded_blob(state_source, _KIMI_MAX_STATE_BYTES)
+    except OSError:
+        raw_state = None
+    if raw_state is None:
+        note_error("kimi_code_state_unreadable")
+        return None
+    try:
+        state = json.loads(raw_state)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        state = None
+    if not isinstance(state, dict):
+        note_error("kimi_code_state_unreadable")
+        return None
+
+    # The re-proved path is the normalized one: an index row cannot smuggle a
+    # relative or ``..`` session directory past the trust boundary above.
+    resolved_dir = state_source.path.parent
+    session_id = state.get("id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        # Every real session dir is named after its session id, like dsh's logs.
+        session_id = resolved_dir.name
+    title = state.get("title")
+    cwd = state.get("cwd")
+    return {
+        "session_id": session_id,
+        "wires": _kimi_code_session_wires(resolved_dir, home=home),
+        "created_at": _kimi_code_epoch_seconds(state.get("createdAt")),
+        "updated_at": _kimi_code_epoch_seconds(state.get("updatedAt")),
+        "title": title if isinstance(title, str) else None,
+        "cwd": cwd if isinstance(cwd, str) else None,
+        "source_path": resolved_dir,
+    }
+
+
+def _kimi_code_session_recency(plan: Mapping[str, Any]) -> tuple[int, int, str]:
+    """Newest-first ordering for a session plan, stable across equal stamps."""
+
+    wires = plan.get("wires") or ()
+    wire_mtime_ns = max((int(wire.mtime_ns) for wire in wires), default=0)
+    # The client's own session clock is the recency signal; a session whose
+    # state.json carried none (or a creation time only) falls back to the newest
+    # wire write, then to the directory path so equal sessions keep one order.
+    stamp = (
+        plan.get("updated_at")
+        or plan.get("created_at")
+        or (wire_mtime_ns // 1_000_000_000)
+    )
+    return (int(stamp or 0), wire_mtime_ns, str(plan.get("source_path") or ""))
+
+
+def _kimi_code_home_roots(kimi_home: Path | None) -> list[Path]:
+    """Resolve the Kimi Code homes to scan: explicit, else env, else the default.
+
+    Deliberately the same precedence and the same comma-separated
+    ``$KIMI_CODE_HOME`` grammar ``source_discovery`` applies through its
+    ``_paths_from_explicit_or_env`` (which cannot be reused here without a
+    circular import), so a home reported as ``found`` is a home this reads.
+    """
+
+    if kimi_home is not None:
+        return [kimi_home.expanduser()]
+    env_value = os.environ.get("KIMI_CODE_HOME")
+    if env_value:
+        return [
+            Path(value.strip()).expanduser()
+            for value in env_value.split(",")
+            if value.strip()
+        ]
+    return [Path.home() / ".kimi-code"]
+
+
+def _kimi_code_resolved_home(root: Path) -> Path | None:
+    """Resolve one configured home to a real directory, or ``None`` if it is absent.
+
+    ``None`` means this home does not exist: an uninstalled Kimi Code leaves
+    ``~/.kimi-code`` missing, and a missing root is an empty source, never a
+    broken one — the ``lstat`` guard ``_matching_regular_source_files`` opens
+    with gives dsh, openclaw, and the other local clients exactly that reading.
+
+    A home that does exist is never read through a link of its own: a symlinked
+    home is refused, the same ``stat.S_ISDIR`` refusal those clients apply to
+    their roots, so a configured home can never be redirected into another tree.
+    Anything else that exists but cannot be read (a file, a directory this
+    process may not open) raises for the caller to record and fail closed.
+
+    Linked *ancestors* are not the home's own link — macOS keeps ``/tmp`` behind
+    ``/private/tmp`` and ``/var`` behind ``/private/var`` — so the home is
+    resolved to its real path first, and the no-follow walk that guards the
+    sessions inside it starts from the path the filesystem actually has.
+    """
+
+    home = Path(os.path.abspath(os.fspath(root.expanduser())))
+    try:
+        home_stat = home.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISLNK(home_stat.st_mode):
+        raise OSError("kimi code home is a symlink")
+    if not stat.S_ISDIR(home_stat.st_mode):
+        raise OSError("kimi code home is not a directory")
+    return Path(os.path.realpath(home))
+
+
+def _kimi_code_session_plans(
+    root: Path,
+    note_error: Callable[[str], None],
+) -> list[dict[str, Any]]:
+    """Resolve Kimi Code sessions and their per-agent wire files, newest first.
+
+    An absent home holds no sessions, so it returns here at once.  A home that
+    does exist must open as a real directory (no symlink): that is the one
+    failure raised here, because a home that cannot be resolved proves nothing
+    about what the client wrote — the caller records it and scans the remaining
+    configured homes.  Everything below it is per-session best effort: a session
+    whose index row, state.json, or wire path cannot be read is recorded as a
+    stable diagnostic code and skipped, so one broken session never hides the
+    healthy ones.
+    """
+
+    home = _kimi_code_resolved_home(root)
+    if home is None:
+        return []
+    home_fd, _home_stat = _open_directory_root_fd_no_follow(home)
+    os.close(home_fd)
+
+    session_dirs = _kimi_code_session_dirs_from_index(home, note_error)
+    if not session_dirs:
+        session_dirs = _kimi_code_session_dirs_from_tree(home)
+    plans = [
+        plan
+        for session_dir in session_dirs
+        if (
+            plan := _kimi_code_session_plan(
+                session_dir,
+                home=home,
+                note_error=note_error,
+            )
+        )
+        is not None
+    ]
+    plans.sort(key=_kimi_code_session_recency, reverse=True)
+    return plans
+
+
+def _read_kimi_wire_usage(
+    wire: _RegularSourceFile,
+    status: _KimiWireReadStatus,
+) -> list[dict[str, Any]]:
+    """Read one agent's ``wire.jsonl`` and return its usage event rows.
+
+    The scan is bounded by bytes and by row size (an overrun sets
+    ``status.truncated`` so the caller reports a capped scan, never an exact
+    total).  Only ``usage.record`` rows are kept, and only their counter fields
+    and timestamps are read: no prompt, tool-call, or assistant message text is
+    ever retained.  ``dedup_key`` lets the caller collapse a crash-double-appended
+    row — identical (agent, millisecond, counters) rows carry no new information —
+    while ``*_reported`` records whether a counter dimension was really present
+    (its absence is not a measured zero).
+    """
+
+    records: list[dict[str, Any]] = []
+    remaining = _KIMI_MAX_WIRE_BYTES
+    with _open_regular_source_bytes(wire) as handle:
+        while True:
+            limit = min(remaining, _KIMI_MAX_WIRE_LINE_BYTES)
+            line = handle.readline(limit + 1)
+            if not line:
+                break  # clean EOF
+            if len(line) > limit:
+                # The budget (or the single-row cap) ended inside this row, so
+                # its usage and everything after it is unread.
+                status.truncated = True
+                break
+            remaining -= len(line)
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                status.malformed_lines += 1
+                continue
+            if not isinstance(row, dict):
+                status.malformed_lines += 1
+                continue
+            if row.get("type") != "usage.record":
+                continue
+            usage = row.get("usage")
+            if not isinstance(usage, dict):
+                status.malformed_lines += 1
+                continue
+            input_tokens = _safe_nonnegative_int(usage.get("inputOther"))
+            output_tokens = _safe_nonnegative_int(usage.get("output"))
+            cache_read_tokens = _safe_nonnegative_int(usage.get("inputCacheRead"))
+            cache_write_tokens = _safe_nonnegative_int(usage.get("inputCacheCreation"))
+            event_at_ms = _optional_int(row.get("time"))
+            records.append(
+                {
+                    "model": _limited_optional_text(row.get("model"), 120),
+                    "dedup_key": (
+                        _limited_optional_text(
+                            row.get("agentId"), _MAX_SESSION_TITLE_LENGTH
+                        ),
+                        event_at_ms,
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_write_tokens,
+                    ),
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_read_tokens": cache_read_tokens,
+                    "cache_write_tokens": cache_write_tokens,
+                    "input_tokens_reported": "inputOther" in usage,
+                    "output_tokens_reported": "output" in usage,
+                    "cache_read_tokens_reported": "inputCacheRead" in usage,
+                    "cache_write_tokens_reported": "inputCacheCreation" in usage,
+                    "event_at": _kimi_code_epoch_seconds(row.get("time")),
+                }
+            )
+    return records
+
+
 def discover_hermes_usage(
     *,
     hermes_home: Path | None = None,
@@ -4808,6 +5434,7 @@ def discover_client_usage_with_diagnostics(
     hermes_home: Path | None = None,
     openclaw_home: Path | None = None,
     dsh_home: Path | None = None,
+    kimi_home: Path | None = None,
     cursor_home: Path | None = None,
     limit_sessions: int = 20,
 ) -> ClientUsageDiscoveryResult:
@@ -4868,6 +5495,12 @@ def discover_client_usage_with_diagnostics(
             elif client_name == "dsh":
                 discovered_events = discover_dsh_usage(
                     dsh_home=dsh_home,
+                    limit_sessions=limit_sessions,
+                    _discovery_stats=stats,
+                )
+            elif client_name == "kimi-code":
+                discovered_events = discover_kimi_code_usage(
+                    kimi_home=kimi_home,
                     limit_sessions=limit_sessions,
                     _discovery_stats=stats,
                 )
@@ -4977,6 +5610,7 @@ def discover_client_usage(
     hermes_home: Path | None = None,
     openclaw_home: Path | None = None,
     dsh_home: Path | None = None,
+    kimi_home: Path | None = None,
     cursor_home: Path | None = None,
     limit_sessions: int = 20,
 ) -> list[ClientUsageEvent]:
@@ -4990,6 +5624,7 @@ def discover_client_usage(
         hermes_home=hermes_home,
         openclaw_home=openclaw_home,
         dsh_home=dsh_home,
+        kimi_home=kimi_home,
         cursor_home=cursor_home,
         limit_sessions=limit_sessions,
     ).events

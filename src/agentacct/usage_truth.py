@@ -216,6 +216,38 @@ USAGE_TRUTH_TABLE: tuple[UsageTruthRow, ...] = (
         ],
     ),
     UsageTruthRow(
+        integration="kimi-code local usage import",
+        tier="local_import",
+        evidence_source="Kimi Code session stores under $KIMI_CODE_HOME (default ~/.kimi-code): session_index.jsonl plus sessions/**/agents/*/wire.jsonl usage.record events",
+        update_timing=(
+            "Kimi Code appends one usage.record event per LLM request to each agent's wire.jsonl; "
+            "the values are per-request deltas (never cumulative), and the importer sums them into session totals."
+        ),
+        observable_fields=[
+            "session id",
+            "project cwd",
+            "redacted title presence",
+            "model when present",
+            "input tokens",
+            "cache read input tokens",
+            "cache creation input tokens",
+            "output tokens",
+            "turn count",
+            "created/updated timestamps",
+        ],
+        usage_confidence=USAGE_CLIENT_REPORTED,
+        cost_confidence=f"{COST_UNKNOWN}; optional {COST_ESTIMATED_FROM_TOKENS} with --estimate-costs when pricing exists",
+        hard_budget_basis="No hard dollar enforcement from local import alone; use advisory warnings or token/runtime limits.",
+        automatic_scope="Reads supported local Kimi Code session stores only when the user runs import or grants a scan path.",
+        setup_path="agentacct usage import-local --client kimi-code --dry-run --json",
+        limitations=[
+            "Does not read Moonshot AI invoices.",
+            "Does not prove exact Kimi Code subscription billing.",
+            "usage.record rows expose token/cache fields but no provider-billed cost field; cost can only be estimated from a pricing table.",
+            "Does not store prompts or transcript content.",
+        ],
+    ),
+    UsageTruthRow(
         integration="agent MCP workflow events",
         tier="event_workflow",
         evidence_source="agentacct MCP tools called by Claude Code, Codex, Hermes, OpenCode, OpenClaw, or another MCP-capable agent",

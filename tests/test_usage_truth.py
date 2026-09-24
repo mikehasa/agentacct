@@ -25,6 +25,7 @@ def test_usage_truth_table_has_expected_integrations() -> None:
     assert "opencode JSON event stream import" in rows
     assert "hermes local state import" in rows
     assert "openclaw JSONL local usage import" in rows
+    assert "kimi-code local usage import" in rows
     assert "agent MCP workflow events" in rows
     assert "native coding-agent hook capture" in rows
     assert "sentinel-owned process wrapper" in rows
@@ -40,6 +41,10 @@ def test_usage_truth_table_has_expected_integrations() -> None:
     assert "provider invoices" in " ".join(rows["hermes local state import"]["limitations"])
     assert rows["openclaw JSONL local usage import"]["usage_confidence"] == "client_reported"
     assert "usage.cost.total" in rows["openclaw JSONL local usage import"]["cost_confidence"]
+    assert rows["kimi-code local usage import"]["usage_confidence"] == "client_reported"
+    assert rows["kimi-code local usage import"]["cost_confidence"].startswith("unknown")
+    assert "usage.record" in rows["kimi-code local usage import"]["update_timing"]
+    assert "Moonshot AI invoices" in " ".join(rows["kimi-code local usage import"]["limitations"])
     assert rows["agent MCP workflow events"]["usage_confidence"] == "unknown"
     assert rows["native coding-agent hook capture"]["usage_confidence"] == "unknown"
     assert "optional fallback" in " ".join(rows["sentinel-owned process wrapper"]["limitations"])
@@ -74,6 +79,7 @@ def test_usage_truth_table_is_documented() -> None:
     assert "OpenCode" in text
     assert "Hermes" in text
     assert "OpenClaw" in text
+    assert "Kimi Code" in text
     assert "MCP" in text
     assert "provider-billed" in text
     assert "Observed local timing" in text

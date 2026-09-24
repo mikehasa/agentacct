@@ -60,6 +60,7 @@ struct MenuLimitPresentation {
         switch client {
         case "codex": return "Codex"
         case "claude-code": return "Claude Code"
+        case "kimi-code": return "Kimi Code"
         default:
             return client
                 .replacingOccurrences(of: "-", with: " ")

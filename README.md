@@ -68,7 +68,7 @@ agentacct is early alpha and would rather show you a gap than a guess.
 - **Reported is not Verified.** An agent's claim can never dress up as verification.
 - **Estimates are labeled.** `≈$` is a pricing-table estimate, `~$` a known-partial subtotal; there is no invoice access. [docs/usage-truth-table.md](docs/usage-truth-table.md) says what each path can prove.
 - **Missing beats wrong.** Every join between usage and recorded work carries a confidence label (`exact`, `high`, `medium`, `low`); an unproven link shows as a gap, not a zero.
-- **Support is per capability, not per logo.** Claude Code and Codex carry the fullest receipts today; the [coverage matrix](docs/coverage-matrix.md) rates every lane for OpenCode, Hermes, DeepSeek Harness, OpenClaw, and Cursor separately, and `agentacct capabilities agents` prints the same matrix from your installed version.
+- **Support is per capability, not per logo.** Claude Code and Codex carry the fullest receipts today; the [coverage matrix](docs/coverage-matrix.md) rates every lane for OpenCode, Hermes, DeepSeek Harness, Kimi Code, OpenClaw, and Cursor separately, and `agentacct capabilities agents` prints the same matrix from your installed version.
 - **It records the work, not the conversation.** Tool names and categories, touched files, credential-scrubbed commands, exit codes, tokens, and recorded steps. Never your prompts, the model's responses, or transcripts; see the [privacy threat model](docs/multi-source-privacy-threat-model.md).
 - **Nothing phones home.** It reads only the local session files of detected clients, listens only on `127.0.0.1`, and never stores or requests a provider API key.
 

@@ -406,6 +406,8 @@ def test_all_clients_import_persists_receipts_exposed_by_health_api(tmp_path: Pa
             str(home / ".openclaw"),
             "--dsh-home",
             str(home / ".dsh"),
+            "--kimi-home",
+            str(home / ".kimi-code"),
             "--cursor-home",
             str(home / "Library" / "Application Support" / "Cursor"),
             "--json",
@@ -426,6 +428,7 @@ def test_all_clients_import_persists_receipts_exposed_by_health_api(tmp_path: Pa
         "hermes",
         "openclaw",
         "dsh",
+        "kimi-code",
         "opencode",
     }
     codex = _source(health, "codex")

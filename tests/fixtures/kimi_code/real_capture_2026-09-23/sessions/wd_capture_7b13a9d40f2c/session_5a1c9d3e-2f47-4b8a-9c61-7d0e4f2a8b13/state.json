@@ -1,0 +1,28 @@
+{
+  "id": "session_5a1c9d3e-2f47-4b8a-9c61-7d0e4f2a8b13",
+  "version": 2,
+  "cwd": "/Users/example/capture-workspace",
+  "createdAt": 1790210981674,
+  "updatedAt": 1790210982467,
+  "archived": false,
+  "agents": {
+    "main": {
+      "homedir": "<SESSION_DIR>/agents/main",
+      "type": "main"
+    },
+    "agent-41": {
+      "homedir": "<SESSION_DIR>/agents/agent-41",
+      "type": "sub",
+      "parentAgentId": "main",
+      "labels": {
+        "parentAgentId": "main",
+        "profileName": "coder"
+      }
+    }
+  },
+  "custom": {},
+  "lastPrompt": "[redacted in fixture]",
+  "title": "capture fixture",
+  "titleKind": "generated",
+  "isCustomTitle": false
+}

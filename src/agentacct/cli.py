@@ -639,9 +639,11 @@ AGENT_INSTRUCTION_TARGETS = {
     # dsh reads $DSH_HOME/AGENTS.md and project AGENTS.md/CLAUDE.md (verified
     # against deepseek-ai/deepseek-harness packages/context/agent-instructions).
     "dsh": "AGENTS.md",
+    # Kimi Code reads $KIMI_CODE_HOME/AGENTS.md and the project AGENTS.md.
+    "kimi-code": "AGENTS.md",
 }
 
-MCP_SETUP_AGENTS = {"claude-code", "codex", "generic", "hermes", "opencode", "openclaw", "dsh"}
+MCP_SETUP_AGENTS = {"claude-code", "codex", "generic", "hermes", "opencode", "openclaw", "dsh", "kimi-code"}
 
 
 def _append_missing_gitignore_entries(project_dir: Path) -> list[str]:
@@ -2095,6 +2097,13 @@ def _print_stale_registration_remediation(agent: str) -> None:
             "(only 'agentacct' ships now), then add the definition below."
         )
         return
+    if agent == "kimi-code":
+        # No `kimi-code mcp remove` exists: mcp.json is edited by hand.
+        console.print(
+            "In mcp.json, delete any server named 'agent-sentinel' or 'agent-chronicle' from mcpServers "
+            "(only 'agentacct' ships now), then add the entry below."
+        )
+        return
     print(f"{agent} mcp remove agent-sentinel")
     print(f"{agent} mcp remove agent-chronicle")
 
@@ -2150,6 +2159,26 @@ def _print_agent_mcp_preview(agent: str, config_store_dir: Path | str, *, comman
             "If dsh reports the @deepseek-ai/dsh-mcp-client plugin is missing for your profile, install it once "
             "with `dsh plugin --profile <name> add @deepseek-ai/dsh-mcp-client`. Remove any pre-rename "
             "(agent-sentinel/agent-chronicle) entry from that patch file first."
+        )
+        return
+    if agent == "kimi-code":
+        console.print("Kimi Code")
+        _print_stale_registration_remediation(agent)
+        # Kimi Code declares MCP servers in mcp.json (user level:
+        # $KIMI_CODE_HOME/mcp.json, default ~/.kimi-code/mcp.json), never in
+        # config.toml — that TOML file carries provider credentials and has no
+        # MCP section. It has no MCP command either, so this is a manual
+        # registration: agentacct previews the entry and never writes the file.
+        console.print(
+            "Kimi Code registers MCP servers in mcp.json (user level: $KIMI_CODE_HOME/mcp.json, default "
+            "~/.kimi-code/mcp.json; project level: .kimi-code/mcp.json), not in config.toml. Add this entry to "
+            "the user-level mcp.json by hand (or hand it to /mcp-config) — agentacct has no mcp.json writer:"
+        )
+        print(_claude_mcp_json(config_store_dir, command=command).rstrip())
+        console.print(
+            "Then start a NEW Kimi Code session: running sessions never register a newly added server. Standing "
+            "record-your-work instructions go in $KIMI_CODE_HOME/AGENTS.md "
+            "(`agentacct setup instructions --agent kimi-code --user`)."
         )
         return
     raise ValueError(f"unsupported MCP agent target: {agent}")
@@ -2261,7 +2290,7 @@ def init_project(
     force: Annotated[bool, typer.Option(help="Overwrite an existing policy file.")] = False,
     agent: Annotated[
         list[str] | None,
-        typer.Option(help="Install observe-only instructions for an agent: claude-code, codex, generic, hermes, opencode, openclaw, or dsh. Repeatable."),
+        typer.Option(help="Install observe-only instructions for an agent: claude-code, codex, generic, hermes, opencode, openclaw, dsh, or kimi-code. Repeatable."),
     ] = None,
     mcp: Annotated[bool, typer.Option("--mcp/--no-mcp", help="Preview MCP setup for requested agents.")] = True,
     write_mcp: Annotated[
@@ -3027,7 +3056,7 @@ def onboard(
     project_dir: Annotated[Path, typer.Option(help="Project directory to connect (project scope only).")] = Path("."),
     agent: Annotated[
         str,
-        typer.Option(help="Client to configure: auto, all, codex, claude-code, hermes, opencode, dsh, or openclaw."),
+        typer.Option(help="Client to configure: auto, all, codex, claude-code, hermes, opencode, dsh, openclaw, or kimi-code."),
     ] = "auto",
     scope: Annotated[
         str,
@@ -5292,7 +5321,7 @@ def setup_global_store_path(
 
 @setup_app.command("prompt")
 def setup_prompt(
-    agent: Annotated[str, typer.Option(help="Agent client for the install prompt: claude-code, codex, generic, hermes, opencode, openclaw, or dsh.")],
+    agent: Annotated[str, typer.Option(help="Agent client for the install prompt: claude-code, codex, generic, hermes, opencode, openclaw, dsh, or kimi-code.")],
     full: Annotated[
         bool,
         typer.Option(
@@ -5311,7 +5340,7 @@ def setup_prompt(
     from the same install_guide content, so the two cannot drift.
     """
     if agent not in MCP_SETUP_AGENTS:
-        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw, dsh")
+        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw, dsh, kimi-code")
     if full:
         print(install_guide_full_prompt(agent).rstrip())
     else:
@@ -5566,6 +5595,20 @@ def _dsh_home_dir() -> Path:
     return Path.home() / ".dsh"
 
 
+def _kimi_code_home_dir() -> Path:
+    """Resolve Kimi Code's home ($KIMI_CODE_HOME, else ~/.kimi-code).
+
+    $KIMI_CODE_HOME is the env var the usage source detector honors, so the
+    instruction file lands in the same home that detection and Kimi Code itself
+    read.
+    """
+
+    env = (os.environ.get("KIMI_CODE_HOME") or "").strip()
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".kimi-code"
+
+
 def _instruction_target_path(agent: str, *, user: bool, path: Path | None) -> Path:
     """Resolve the instruction file for `setup instructions`.
 
@@ -5588,13 +5631,17 @@ def _instruction_target_path(agent: str, *, user: bool, path: Path | None) -> Pa
         # the directive lands in the ONE home dsh actually reads.
         if agent == "dsh":
             return _dsh_home_dir() / "AGENTS.md"
+        # kimi-code reads $KIMI_CODE_HOME/AGENTS.md (default ~/.kimi-code); same
+        # env-override rule as dsh.
+        if agent == "kimi-code":
+            return _kimi_code_home_dir() / "AGENTS.md"
         return Path.home() / install_guide.INSTRUCTION_USER_FILES[agent]
     return Path.cwd() / install_guide.INSTRUCTION_PROJECT_FILES[agent]
 
 
 @setup_app.command("preview")
 def setup_preview(
-    agent: Annotated[str, typer.Option(help="Client to preview: codex, claude-code, opencode, hermes, or dsh.")],
+    agent: Annotated[str, typer.Option(help="Client to preview: codex, claude-code, opencode, hermes, dsh, or kimi-code.")],
     user: Annotated[bool, typer.Option("--user", help="Preview the user-level onboarding content.")] = False,
     json_output: Annotated[bool, typer.Option("--json", help="Emit the versioned read-only preview payload.")] = False,
     store_dir: Annotated[Optional[Path], typer.Option(help="Proposed absolute recording store; no store is created or opened.")] = None,
@@ -5629,12 +5676,12 @@ def setup_preview(
 
 @setup_app.command("instructions")
 def setup_instructions(
-    agent: Annotated[str, typer.Option(help="Agent whose instruction file to edit: claude-code, codex, opencode, or dsh.")],
+    agent: Annotated[str, typer.Option(help="Agent whose instruction file to edit: claude-code, codex, opencode, dsh, or kimi-code.")],
     user: Annotated[
         bool,
         typer.Option(
             "--user",
-            help="Target the user-level instruction file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.config/opencode/AGENTS.md, or $DSH_HOME/AGENTS.md) instead of the project-level file in the current directory.",
+            help="Target the user-level instruction file (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md, ~/.config/opencode/AGENTS.md, $DSH_HOME/AGENTS.md, or ~/.kimi-code/AGENTS.md) instead of the project-level file in the current directory.",
         ),
     ] = False,
     path: Annotated[
@@ -5733,7 +5780,7 @@ def setup_instructions(
 
 @setup_app.command("mcp")
 def setup_mcp(
-    agent: Annotated[str, typer.Option(help="Agent client to configure: claude-code, codex, generic, hermes, opencode, openclaw, or dsh.")],
+    agent: Annotated[str, typer.Option(help="Agent client to configure: claude-code, codex, generic, hermes, opencode, openclaw, dsh, or kimi-code.")],
     project_dir: Annotated[Path, typer.Option(help="Project directory that should own local agentacct state.")] = Path("."),
     store_dir: Annotated[Optional[Path], typer.Option(help="Override agentacct state directory for the MCP server.")] = None,
     mcp_command: Annotated[
@@ -5764,7 +5811,7 @@ def setup_mcp(
     # (now safe-ish: `mcp serve` resolves it against the project root).
     config_store_dir: Path | str = ".agent-sentinel/state" if relative_store_path else effective_store_dir
     if agent not in MCP_SETUP_AGENTS:
-        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw, dsh")
+        raise typer.BadParameter("agent must be one of: claude-code, codex, generic, hermes, opencode, openclaw, dsh, kimi-code")
 
     console.print("agentacct MCP setup")
     console.print("Source: PyPI (pipx install agentacct)")
@@ -5785,7 +5832,7 @@ def setup_mcp(
             # owner store for committed config.
             _print_claude_worktree_store_hint(project_dir, command=mcp_command)
 
-    if agent in {"generic", "hermes", "opencode", "openclaw", "dsh"}:
+    if agent in {"generic", "hermes", "opencode", "openclaw", "dsh", "kimi-code"}:
         _print_agent_mcp_preview(agent, config_store_dir, command=mcp_command)
         if write:
             console.print("--write is not available for this agent because its MCP config is profile/global or client-specific.")
@@ -8197,6 +8244,7 @@ def _usage_sources_change_fingerprint(
     hermes_home: Path | None,
     openclaw_home: Path | None,
     dsh_home: Path | None,
+    kimi_home: Path | None,
     cursor_home: Path | None,
 ) -> tuple[tuple[str, int, int | None], ...]:
     """Glob+stat-only change key for the selected usage sources.
@@ -8215,6 +8263,7 @@ def _usage_sources_change_fingerprint(
         hermes_home=hermes_home,
         openclaw_home=openclaw_home,
         dsh_home=dsh_home,
+        kimi_home=kimi_home,
         cursor_home=cursor_home,
     )
     return tuple(
@@ -8236,6 +8285,7 @@ def _local_usage_import_payload(
     hermes_home: Path | None = None,
     openclaw_home: Path | None = None,
     dsh_home: Path | None = None,
+    kimi_home: Path | None = None,
     cursor_home: Path | None = None,
     limit_sessions: int = 20,
     dry_run: bool = False,
@@ -8279,6 +8329,7 @@ def _local_usage_import_payload(
                 hermes_home=hermes_home,
                 openclaw_home=openclaw_home,
                 dsh_home=dsh_home,
+                kimi_home=kimi_home,
                 cursor_home=cursor_home,
                 limit_sessions=limit_sessions,
             )
@@ -8887,6 +8938,7 @@ def _local_usage_import_payload(
                 hermes_home=hermes_home,
                 openclaw_home=openclaw_home,
                 dsh_home=dsh_home,
+                kimi_home=kimi_home,
                 cursor_home=cursor_home,
             ),
             "scanned_sessions": len(observed_session_keys),
@@ -9203,13 +9255,14 @@ def usage_import_local(
         Optional[Path],
         typer.Option(help=_STORE_DIR_HELP),
     ] = None,
-    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, dsh, or observation-only cursor.")] = "all",
+    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, dsh, kimi-code, or observation-only cursor.")] = "all",
     codex_home: Annotated[Optional[Path], typer.Option(help="Codex home directory. Defaults to CODEX_HOME or ~/.codex.")] = None,
     claude_home: Annotated[Optional[Path], typer.Option(help="Claude Code home directory. Defaults to CLAUDE_CONFIG_DIR, then XDG and ~/.claude homes.")] = None,
     opencode_home: Annotated[Optional[Path], typer.Option(help="OpenCode home/export directory. Defaults to ~/.local/share/opencode.")] = None,
     hermes_home: Annotated[Optional[Path], typer.Option(help="Hermes home directory. Defaults to ~/.hermes.")] = None,
     openclaw_home: Annotated[Optional[Path], typer.Option(help="OpenClaw home directory. Defaults to ~/.openclaw and related roots.")] = None,
     dsh_home: Annotated[Optional[Path], typer.Option(help="DeepSeek Harness home directory. Defaults to DSH_HOME/DSH_DIR or ~/.dsh.")] = None,
+    kimi_home: Annotated[Optional[Path], typer.Option(help="Kimi Code home directory. Defaults to KIMI_CODE_HOME or ~/.kimi-code.")] = None,
     cursor_home: Annotated[Optional[Path], typer.Option(help="Cursor application-support root. Defaults to ~/Library/Application Support/Cursor; only User/globalStorage/state.vscdb is inspected.")] = None,
     limit_sessions: Annotated[int, typer.Option(help="Recent sessions to inspect per client.")] = 20,
     dry_run: Annotated[bool, typer.Option(help="Preview importable usage without writing agentacct events.")] = False,
@@ -9236,6 +9289,7 @@ def usage_import_local(
         hermes_home=hermes_home,
         openclaw_home=openclaw_home,
         dsh_home=dsh_home,
+        kimi_home=kimi_home,
         cursor_home=cursor_home,
         limit_sessions=limit_sessions,
         dry_run=dry_run,
@@ -9273,13 +9327,14 @@ def usage_watch(
         Optional[Path],
         typer.Option(help=_STORE_DIR_HELP),
     ] = None,
-    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, dsh, or observation-only cursor.")] = "all",
+    client: Annotated[str, typer.Option(help="Client to import: all, codex, claude-code, opencode, hermes, openclaw, dsh, kimi-code, or observation-only cursor.")] = "all",
     codex_home: Annotated[Optional[Path], typer.Option(help="Codex home directory. Defaults to CODEX_HOME or ~/.codex.")] = None,
     claude_home: Annotated[Optional[Path], typer.Option(help="Claude Code home directory. Defaults to CLAUDE_CONFIG_DIR, then XDG and ~/.claude homes.")] = None,
     opencode_home: Annotated[Optional[Path], typer.Option(help="OpenCode home/export directory. Defaults to ~/.local/share/opencode.")] = None,
     hermes_home: Annotated[Optional[Path], typer.Option(help="Hermes home directory. Defaults to ~/.hermes.")] = None,
     openclaw_home: Annotated[Optional[Path], typer.Option(help="OpenClaw home directory. Defaults to ~/.openclaw and related roots.")] = None,
     dsh_home: Annotated[Optional[Path], typer.Option(help="DeepSeek Harness home directory. Defaults to DSH_HOME/DSH_DIR or ~/.dsh.")] = None,
+    kimi_home: Annotated[Optional[Path], typer.Option(help="Kimi Code home directory. Defaults to KIMI_CODE_HOME or ~/.kimi-code.")] = None,
     cursor_home: Annotated[Optional[Path], typer.Option(help="Cursor application-support root. Defaults to ~/Library/Application Support/Cursor; only User/globalStorage/state.vscdb is inspected.")] = None,
     interval_seconds: Annotated[float, typer.Option(help="Seconds between import scans. Default 300; the managed runtime passes this explicitly. A calmer cadence means far fewer cache-invalidating ledger writes.")] = 300.0,
     limit_sessions: Annotated[int, typer.Option(help="Recent sessions to inspect per client per scan.")] = 20,
@@ -9343,6 +9398,7 @@ def usage_watch(
                     hermes_home=hermes_home,
                     openclaw_home=openclaw_home,
                     dsh_home=dsh_home,
+                    kimi_home=kimi_home,
                     cursor_home=cursor_home,
                     limit_sessions=limit_sessions,
                     dry_run=False,
@@ -9410,6 +9466,7 @@ def usage_watch(
                         hermes_home=hermes_home,
                         openclaw_home=openclaw_home,
                         dsh_home=dsh_home,
+                        kimi_home=kimi_home,
                         cursor_home=cursor_home,
                     )
                 except Exception:
@@ -9713,6 +9770,7 @@ def usage_discover_sources(
     hermes_home: Annotated[Optional[Path], typer.Option(help="Hermes home directory. Defaults to HERMES_HOME or ~/.hermes.")] = None,
     openclaw_home: Annotated[Optional[Path], typer.Option(help="OpenClaw home directory. Defaults to OPENCLAW_DIR or known OpenClaw roots.")] = None,
     dsh_home: Annotated[Optional[Path], typer.Option(help="DeepSeek Harness home directory. Defaults to DSH_HOME/DSH_DIR or ~/.dsh.")] = None,
+    kimi_home: Annotated[Optional[Path], typer.Option(help="Kimi Code home directory. Defaults to KIMI_CODE_HOME or ~/.kimi-code.")] = None,
     cursor_home: Annotated[Optional[Path], typer.Option(help="Cursor application-support root. Defaults to ~/Library/Application Support/Cursor; only User/globalStorage/state.vscdb is inspected.")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
 ) -> None:
@@ -9725,6 +9783,7 @@ def usage_discover_sources(
         hermes_home=hermes_home,
         openclaw_home=openclaw_home,
         dsh_home=dsh_home,
+        kimi_home=kimi_home,
         cursor_home=cursor_home,
     )
     payload = {"sources": [source.to_dict() for source in sources]}
