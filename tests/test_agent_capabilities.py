@@ -56,6 +56,7 @@ def test_manifest_has_stable_independent_lanes_and_no_supported_badge() -> None:
         "opencode",
         "openclaw",
         "dsh",
+        "kimi-code",
         "cursor",
         "gemini-cli",
         "github-copilot-cli",
@@ -158,6 +159,32 @@ def test_cursor_manifest_is_observation_only_and_single_version_bounded() -> Non
     assert discovery["verification"]["evidence_refs"] == [
         "docs/adapter-capability-evidence.md#2026-07-17-cursor-3916-primary-state-observation"
     ]
+
+
+def test_kimi_code_manifest_upgrades_only_the_captured_lanes_and_leaves_cache_write_unproven() -> None:
+    """kimi-code cites the dated real capture on four lanes; cache write stays synthetic-only."""
+    kimi = _client_rows()["kimi-code"]
+    anchor = "docs/adapter-capability-evidence.md#2026-09-23-kimi-code-real-capture-fixture-and-live-smoke"
+
+    assert kimi["verified_stability"]["level"] == "single_machine_live_observation"
+    assert kimi["verified_stability"]["verified_at"] == "2026-09-23"
+    assert kimi["verified_stability"]["evidence_refs"] == [anchor]
+    assert "multi-version" in " ".join(kimi["verified_stability"]["limitations"])
+    for lane in ("session_discovery", "usage_import", "model_attribution", "cache_read"):
+        capability = kimi["capabilities"][lane]
+        assert capability["state"] == "verified_partial"
+        assert capability["verification"]["level"] == "real_fixture"
+        assert capability["verification"]["verified_at"] == "2026-09-23"
+        assert capability["verification"]["evidence_refs"] == [
+            "tests/test_client_usage.py::test_discover_kimi_code_usage_reads_real_captured_wire_fixture",
+            anchor,
+        ]
+    cache_write = kimi["capabilities"]["cache_write"]
+    assert cache_write["state"] == "experimental"
+    assert cache_write["verification"]["level"] == "synthetic_fixture"
+    assert "never been observed" in " ".join(cache_write["limitations"])
+    for lane in ("mechanical_capture", "mcp_semantics", "automatic_install"):
+        assert kimi["capabilities"][lane]["state"] == "unavailable"
 
 
 def test_claude_one_command_install_is_scoped_to_onboard_and_fixture_only() -> None:

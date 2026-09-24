@@ -322,6 +322,23 @@ _DSH_MCP_LIVE = _verification_record(
         "docs/adapter-capability-evidence.md#2026-09-16-deepseek-harness-dsh-015-rc1-mcp-self-reporting-smoke",
     ),
 )
+_KIMI_CODE_USAGE_FIXTURE = _verification_record(
+    "synthetic_fixture",
+    verified_at="2026-09-23",
+    evidence_refs=(
+        "tests/test_client_usage.py::test_discover_kimi_code_usage_reads_wire_jsonl_usage_records",
+        "tests/test_client_usage.py::test_discover_kimi_code_usage_reports_diagnostics_on_corrupt_source",
+        "tests/test_client_usage.py::test_discover_kimi_code_usage_respects_session_limit",
+    ),
+)
+_KIMI_CODE_REAL_CAPTURE = _verification_record(
+    "real_fixture",
+    verified_at="2026-09-23",
+    evidence_refs=(
+        "tests/test_client_usage.py::test_discover_kimi_code_usage_reads_real_captured_wire_fixture",
+        "docs/adapter-capability-evidence.md#2026-09-23-kimi-code-real-capture-fixture-and-live-smoke",
+    ),
+)
 _CURSOR_LIVE = _verification_record(
     "live_smoke",
     verified_at="2026-07-17",
@@ -834,6 +851,86 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
         "limitations": ["Usage-import lanes remain synthetic-fixture experimental until a live dsh usage-log smoke and namespace hardening exist; the MCP self-reporting lanes are verified on one machine/version."],
     },
     {
+        "client": "kimi-code",
+        "display_name": "Kimi Code",
+        "roadmap_phase": "phase_1",
+        "source_formats": ["session_index.jsonl session directory index", "per-agent wire.jsonl event streams"],
+        "session_scope": "Usage-bearing usage.record events in per-agent wire.jsonl streams under sessions/wd_<workspace hash>/<session id>/.",
+        "zero_usage_observation": "unavailable",
+        "namespace_hardening": "not_hardened",
+        "verified_stability": _stability_record(
+            "single_machine_live_observation",
+            verified_at="2026-09-23",
+            evidence_refs=(
+                "docs/adapter-capability-evidence.md#2026-09-23-kimi-code-real-capture-fixture-and-live-smoke",
+            ),
+            limitations=(
+                "One machine and one client build, and the live comparison covered a single local store; multi-version and long-run stability are not claimed.",
+                "The store's cache-write counters were zero in every observed lane, so no positive cache-write path has been exercised.",
+            ),
+        ),
+        "capabilities": {
+            "session_discovery": _capability_record(
+                "verified_partial",
+                "Session ids from session_index.jsonl, bounded to the most recent sessions, with per-agent wire.jsonl streams resolved under each session directory.",
+                activation="opt_in_project",
+                verification=_KIMI_CODE_REAL_CAPTURE,
+                limitations=(
+                    "Single machine and client build; only usage-record-bearing sessions were present, so zero-token session observation is not claimed.",
+                    "A corrupt-source fixture bounds malformed-input diagnostics; the live evidence covers the happy path.",
+                ),
+            ),
+            "usage_import": _capability_record(
+                "verified_partial",
+                "Input, output, cache-read, and cache-write tokens summed from per-request usage.record increments (usageScope=turn) in per-agent wire.jsonl streams.",
+                activation="opt_in_project",
+                verification=_KIMI_CODE_REAL_CAPTURE,
+                limitations=(
+                    "One machine and one client build: a dated real-capture fixture plus a same-day single-machine live comparison, not a multi-version guarantee.",
+                    "Kimi Code persists no cost figure, so only agentacct's local pricing-table estimate is possible.",
+                ),
+                usage_basis="client_reported",
+                cost_basis="unknown",
+            ),
+            "mechanical_capture": _unavailable_capability("No typed Kimi Code plugin-hook adapter is implemented."),
+            "mcp_semantics": _unavailable_capability("No Kimi Code MCP registration is implemented and no smoke has been recorded."),
+            "model_attribution": _capability_record(
+                "verified_partial",
+                "Model id from the model field on usage.record events within one session.",
+                activation="opt_in_project",
+                verification=_KIMI_CODE_REAL_CAPTURE,
+                limitations=(
+                    "Single machine and client build; rows that report no model remain unattributed, and no model is inferred from prompt or message content.",
+                ),
+            ),
+            "cache_read": _capability_record(
+                "verified_partial",
+                "usage.inputCacheRead when a usage.record event reports it.",
+                activation="opt_in_project",
+                verification=_KIMI_CODE_REAL_CAPTURE,
+                limitations=(
+                    "Non-zero cache reads were observed in the capture and the live comparison on one machine and client build; missing fields remain unknown, never inferred as zero.",
+                ),
+                usage_basis="client_reported",
+            ),
+            "cache_write": _capability_record(
+                "experimental",
+                "usage.inputCacheCreation when a usage.record event reports it.",
+                activation="opt_in_project",
+                verification=_KIMI_CODE_USAGE_FIXTURE,
+                limitations=(
+                    "Every captured and live lane reported cache-write 0, so a positive cache-write value has never been observed and the non-zero path stays synthetic-fixture only.",
+                    "Missing remains unknown, never inferred as zero.",
+                ),
+                usage_basis="client_reported",
+            ),
+            "automatic_install": _unavailable_capability("agentacct does not write Kimi Code client config or install hooks."),
+        },
+        "limitations": [
+            "Session-discovery, usage-import, model, and cache-read lanes carry dated real-capture evidence from one machine and one client build; cache-write, zero-usage observation, namespace hardening, multi-version stability, and automatic installation are not claimed."
+        ],
+    },
+    {
         "client": "cursor",
         "display_name": "Cursor",
         "roadmap_phase": "phase_1",
@@ -1108,7 +1205,7 @@ def agent_capability_manifest() -> dict[str, Any]:
 
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "last_reviewed_at": "2026-07-17",
+        "last_reviewed_at": "2026-09-23",
         "support_policy": (
             "Capabilities are evaluated independently. Runtime detection and ingestion health do not imply "
             "that every integration lane is verified. Missing or conditional token fields remain unknown."

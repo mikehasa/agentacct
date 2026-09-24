@@ -27,6 +27,12 @@ CONNECTIONS_SCHEMA_VERSION = "agentacct.connections.v1"
 #             a one-click connect.
 _ACTIVE_CLIENTS = frozenset({"claude-code", "codex", "opencode", "hermes", "dsh"})
 _PASSIVE_CLIENTS = frozenset({"cursor"})
+# kimi-code stays out of _ACTIVE_CLIENTS on purpose: Kimi Code declares MCP
+# servers in ~/.kimi-code/mcp.json (JSON "mcpServers" entries), never in
+# config.toml — that TOML file carries provider credentials and has no MCP
+# section — and agentacct has no mcp.json writer, so its MCP registration is
+# manual. Like openclaw it falls through to "semi" in agent_kind: usage import
+# plus guidance, never a one-click connect.
 
 _KIND_RANK = {"active": 0, "semi": 1, "passive": 2}
 
@@ -36,6 +42,7 @@ _DISPLAY_NAMES = {
     "opencode": "OpenCode",
     "hermes": "Hermes",
     "dsh": "DeepSeek Harness",
+    "kimi-code": "Kimi Code",
     "openclaw": "OpenClaw",
     "cursor": "Cursor",
 }

@@ -209,6 +209,7 @@ class UsageDiscoveryConfig:
     hermes_home: Path | None = None
     openclaw_home: Path | None = None
     dsh_home: Path | None = None
+    kimi_home: Path | None = None
     cursor_home: Path | None = None
 
     @classmethod
@@ -226,6 +227,7 @@ class UsageDiscoveryConfig:
             hermes_home=root / ".hermes",
             openclaw_home=root / ".openclaw",
             dsh_home=root / ".dsh",
+            kimi_home=root / ".kimi-code",
             cursor_home=root / "Library" / "Application Support" / "Cursor",
         )
 
@@ -396,6 +398,7 @@ def _human_client(value: Any) -> str:
         "opencode": "OpenCode",
         "openclaw": "OpenClaw",
         "dsh": "DeepSeek Harness",
+        "kimi-code": "Kimi Code",
         "cursor": "Cursor",
     }
     text = str(value or "").strip()
@@ -486,6 +489,7 @@ def _discover_local_usage(
         hermes_home=config.hermes_home,
         openclaw_home=config.openclaw_home,
         dsh_home=config.dsh_home,
+        kimi_home=config.kimi_home,
         cursor_home=config.cursor_home,
     )
     return result if include_diagnostics else result.events
@@ -501,6 +505,7 @@ def _discover_local_usage_sources(config: UsageDiscoveryConfig) -> list[UsageSou
         hermes_home=config.hermes_home,
         openclaw_home=config.openclaw_home,
         dsh_home=config.dsh_home,
+        kimi_home=config.kimi_home,
         cursor_home=config.cursor_home,
     )
 

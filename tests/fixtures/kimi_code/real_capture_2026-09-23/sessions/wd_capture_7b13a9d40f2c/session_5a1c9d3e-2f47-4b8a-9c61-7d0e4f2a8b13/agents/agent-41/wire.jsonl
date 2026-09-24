@@ -1,0 +1,2 @@
+{"type": "usage.record", "agentId": "agent-41", "model": "DeepSeek/deepseek-flash", "usage": {"inputOther": 452, "output": 171, "inputCacheRead": 22144, "inputCacheCreation": 0}, "usageScope": "turn", "time": 1790210981674}
+{"type": "usage.record", "agentId": "agent-41", "model": "DeepSeek/deepseek-flash", "usage": {"inputOther": 144, "output": 19, "inputCacheRead": 22656, "inputCacheCreation": 0}, "usageScope": "turn", "time": 1790210982467}

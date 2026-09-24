@@ -41,11 +41,11 @@ ONE_LINE_PROMPT = (
     "machine. Don't modify my global client config without showing the exact command first."
 )
 
-# Agents accepted by `setup prompt` / `setup mcp`. The last four share one
-# INSTALL.md section (their MCP config lives in client-specific/profile
-# locations, so agentacct previews instead of writing).
-PROMPT_AGENTS = ("claude-code", "codex", "hermes", "opencode", "openclaw", "dsh", "generic")
-MCP_PREVIEW_AGENTS = ("hermes", "opencode", "openclaw", "dsh", "generic")
+# Agents accepted by `setup prompt` / `setup mcp`. The MCP-preview agents
+# share one INSTALL.md section (their MCP config lives in
+# client-specific/profile locations, so agentacct previews instead of writing).
+PROMPT_AGENTS = ("claude-code", "codex", "hermes", "opencode", "openclaw", "dsh", "kimi-code", "generic")
+MCP_PREVIEW_AGENTS = ("hermes", "opencode", "openclaw", "dsh", "kimi-code", "generic")
 
 # INSTALL.md section headings (level-3, under "Step 2").
 INSTALL_MD_SECTION_TITLES = {
@@ -500,7 +500,10 @@ def workflow_instruction_block() -> str:
 # default ``instructions`` config includes ``AGENTS.md``), so a user-level block
 # there is injected into every opencode session regardless of the working
 # directory — the same always-on guarantee codex gets from ``~/.codex/AGENTS.md``
-# and Claude Code from ``~/.claude/CLAUDE.md``. hermes is deliberately absent:
+# and Claude Code from ``~/.claude/CLAUDE.md``. kimi-code gets it from
+# ``$KIMI_CODE_HOME/AGENTS.md`` (default ``~/.kimi-code/AGENTS.md``), the global
+# Kimi-specific instruction file documented in its data-locations reference.
+# hermes is deliberately absent:
 # it injects ``AGENTS.md`` only from a project/workspace root (``$HOME`` itself is
 # skipped as a root), so there is no reliable always-on home-level slot for a
 # standing directive — hermes recording is wired through its own hook system, not
@@ -512,6 +515,10 @@ INSTRUCTION_USER_FILES = {
     # dsh reads $DSH_HOME/AGENTS.md on every session; the CLI resolves the real
     # $DSH_HOME (this ~/.dsh value is the default and the fallback documentation).
     "dsh": ".dsh/AGENTS.md",
+    # kimi-code reads $KIMI_CODE_HOME/AGENTS.md on every session; the CLI
+    # resolves the real $KIMI_CODE_HOME (this ~/.kimi-code value is the
+    # documented default and the fallback documentation).
+    "kimi-code": ".kimi-code/AGENTS.md",
 }
 
 # Default project-level instruction file per agent (relative to the repo root).
@@ -520,6 +527,7 @@ INSTRUCTION_PROJECT_FILES = {
     "codex": "AGENTS.md",
     "opencode": "AGENTS.md",
     "dsh": "AGENTS.md",
+    "kimi-code": "AGENTS.md",
 }
 
 INSTRUCTION_AGENTS = tuple(INSTRUCTION_USER_FILES)
@@ -658,6 +666,7 @@ CAPABILITY_MATRIX = (
     "OpenCode: `agentacct onboard --scope global --agent opencode` writes user-scope MCP config, global rules, and an observe-only v1 plugin for tool activity and recognized check exit codes; a new session auto-loads the plugin. Project-scope setup only previews the user-config command. Native `opencode.db` session totals remain the usage path (JSON export fallback; per-message granularity pending). OpenCode has no generic Evidence v2 manifest adapter.",
     "OpenClaw: local JSONL usage import plus a manual MCP registration preview; agentacct does not yet join `sessions.json` routing metadata or install typed plugin hooks.",
     "DeepSeek Harness (dsh): local usage import from its Zstandard-compressed JSONL session logs under ~/.dsh (input/output/cache/reasoning tokens; dsh records no cost), plus MCP self-reporting — `agentacct onboard --agent dsh` writes the @deepseek-ai/dsh-mcp-client registration into $DSH_HOME/cordis.patch.yml (the home patch applied over every profile the CLI boots) and the record-your-work directive into $DSH_HOME/AGENTS.md, so a dsh session records over MCP like Codex or OpenCode (`setup mcp --agent dsh` previews the same registration). A live dsh 0.1.5-rc.1 session loaded the plugin in-box and recorded over MCP, verified on one machine and version; onboarding still prints a `dsh plugin add` fallback for environments where it does not. The usage-import lanes are synthetic-fixture verified only, and there is no typed dsh plugin hook.",
+    "Kimi Code: local usage import from ~/.kimi-code (session ids from its session_index.jsonl index, token counters summed from the per-request usage.record events in each session's agents/*/wire.jsonl streams; tokens are client_reported and cost is only a local pricing-table estimate marked ≈), plus a manual MCP registration preview — `agentacct setup mcp --agent kimi-code` prints the `~/.kimi-code/mcp.json` entry and no agentacct writer applies it. No hooks are installed and there is no Evidence v2 manifest adapter; the import lane is verified by a dated real-capture fixture plus a same-day single-machine live smoke (2026-09-23), so multi-version and long-run stability remain unclaimed and a non-zero cache-write path has still never been observed.",
     "Cursor: the primary `User/globalStorage/state.vscdb` can produce observation-only composer sessions through an explicit local import/refresh. It never emits usage or cost, never scans backups or ai-tracking stores, and onboarding does not install or activate it. Metadata-only hook payload normalization remains a separate manual primitive.",
     "Generic MCP clients: recorded work context only unless a separate trusted usage importer exists; join confidence depends on ids the client actually exposes.",
     "Generic Evidence v2 capture is a separate render-only/manual path for Claude Code, Codex, and Cursor: `capture manifest` does not edit host settings, and onboarding does not enable those manifests. The installed Codex/Hermes/OpenCode v1 bridges above may feed activity/check evidence through their own spool/import paths, but neither capture family reports token/cost truth or invents named work steps; MCP remains the richer semantic source.",

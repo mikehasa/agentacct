@@ -22,6 +22,7 @@ struct SourceMonogram: View {
         case "codex", "openai-codex", "codex-cli": return "cx"
         case "opencode", "open-code": return "oc"
         case "hermes": return "he"
+        case "kimi-code", "kimi": return "kc"
         default:
             let letters = (client ?? "?").filter { $0.isLetter }
             return letters.isEmpty ? "?" : String(letters.prefix(2))

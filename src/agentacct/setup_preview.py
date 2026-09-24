@@ -20,7 +20,7 @@ from . import hooks, install_guide
 from . import version as version_info
 
 SCHEMA = "agentacct.setup-preview.v1"
-CLIENTS = ("codex", "claude-code", "opencode", "hermes", "dsh")
+CLIENTS = ("codex", "claude-code", "opencode", "hermes", "dsh", "kimi-code")
 REGISTRATION_NAMES = ("agentacct", "agent-chronicle", "agent-sentinel")
 MAX_CONFIG_BYTES = 4_000_000
 
@@ -203,6 +203,26 @@ def build_setup_preview(
             row["existing_status"] = "unsupported"
             row["conditions"].append("The existing patch file is not a plain patch list agentacct can safely extend; the block is previewed for manual application.")
         row["conditions"].append("Writes to $DSH_HOME/cordis.patch.yml are non-destructive (append-only, tolerant of custom !!js tags). Whether dsh resolves the bundled @deepseek-ai/dsh-mcp-client plugin for every profile is verified on one machine only.")
+
+    elif client == "kimi-code":
+        kimi_env = (environment.get("KIMI_CODE_HOME") or "").strip()
+        kimi_home = Path(kimi_env).expanduser() if kimi_env else home / ".kimi-code"
+        instructions(kimi_home / "AGENTS.md")
+        # Kimi Code declares MCP servers in mcp.json (user level:
+        # $KIMI_CODE_HOME/mcp.json, default ~/.kimi-code/mcp.json), never in
+        # config.toml — the TOML file carries provider credentials and has no
+        # MCP section. agentacct has no mcp.json writer (kimi-code is a
+        # manual-registration client), so this row is generated content for
+        # manual application (by hand or via /mcp-config), not a managed write.
+        row, text = item(kimi_home / "mcp.json", "mcp", "Proposed MCP registration", json.dumps({"mcpServers": {"agentacct": generated}}, indent=2) + "\n")
+        payload = parse(row, text, "json")
+        servers = mcp_conditions(row, payload, "mcpServers")
+        if servers is not None:
+            registration(row, "agentacct", "update" if "agentacct" in servers else "add", "Generated content for manual application; agentacct does not write kimi-code mcp.json.")
+            for name in REGISTRATION_NAMES[1:]:
+                if name in servers:
+                    registration(row, name, "preserve", "No kimi-code writer exists; remove stale pre-rename entries by hand.")
+        row["conditions"].append("Kimi Code reads MCP servers from mcp.json (user level shown here; project level is .kimi-code/mcp.json), not config.toml. Apply the entry manually or via /mcp-config, then start a new session — running sessions never register newly added servers.")
 
     else:
         path = home / ".hermes/config.yaml"

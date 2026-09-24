@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Kimi Code support. Local usage import reads `~/.kimi-code` (session ids from
+  `session_index.jsonl`, token counters summed from the per-request
+  `usage.record` events in each session's `agents/*/wire.jsonl`), with a
+  `--kimi-home` option and `KIMI_CODE_HOME` support. Session discovery, usage
+  import, model attribution, and cache read are real-fixture verified
+  (`verified_partial`, evidence dated 2026-09-23); cache write stays
+  experimental because no non-zero value has been observed. `agentacct setup
+  prompt|mcp|instructions --agent kimi-code` adds the onboarding surfaces
+  (MCP registers by hand in `~/.kimi-code/mcp.json`), and the CLI, TUI, local
+  API, and macOS app show Kimi Code in their client labels.
+
 ## [0.12.0] — 2026-09-23
 
 Recent activity across agents and projects, daily client/model usage exploration, and persisted Work Receipts that open without waiting for a full rebuild — plus Opus 5.5 pricing, historical cost repair, and accurate Codex session recency.

@@ -42,6 +42,7 @@ def discover_usage_sources(
     hermes_home: Path | None = None,
     openclaw_home: Path | None = None,
     dsh_home: Path | None = None,
+    kimi_home: Path | None = None,
     cursor_home: Path | None = None,
 ) -> list[UsageSourceDiscovery]:
     """Detect known local stores without retaining prompt or response content."""
@@ -53,6 +54,7 @@ def discover_usage_sources(
         _discover_hermes_source(hermes_home),
         _discover_openclaw_source(openclaw_home),
         _discover_dsh_source(dsh_home),
+        _discover_kimi_code_source(kimi_home),
         _discover_cursor_source(cursor_home),
     ]
 
@@ -380,6 +382,50 @@ def _discover_dsh_source(dsh_home: Path | None) -> UsageSourceDiscovery:
         usage_confidence=USAGE_UNKNOWN,
         cost_confidence=COST_UNKNOWN,
         importer="agentacct usage import-local --client dsh" if found else None,
+        notes=notes,
+    )
+
+
+def _discover_kimi_code_source(kimi_home: Path | None) -> UsageSourceDiscovery:
+    homes = _paths_from_explicit_or_env(
+        kimi_home,
+        env_name="KIMI_CODE_HOME",
+        defaults=[Path.home() / ".kimi-code"],
+    )
+    index_paths = [home / "session_index.jsonl" for home in homes]
+    sessions_roots = [home / "sessions" for home in homes]
+    index_files = _dedupe_paths(path for path in index_paths if _is_file(path))
+    state_files = _dedupe_paths(
+        path
+        for root in sessions_roots
+        for path in _matching_files(root, ["state.json"])
+    )
+    wire_files = _dedupe_paths(
+        path
+        for root in sessions_roots
+        for path in _matching_files(root, ["wire.jsonl"])
+    )
+    files = _dedupe_paths([*index_files, *state_files, *wire_files])
+    found = bool(files)
+    # Presence detection only globs the session index, per-session state.json,
+    # and per-agent wire.jsonl names; it never parses event payloads, so
+    # token/cost confidence stays unknown until an import actually reads the
+    # usage.record rows (matching the OpenClaw/dsh glob-only detectors).
+    notes = [
+        "wire.jsonl usage.record events carry per-request token deltas; message text is not imported"
+    ]
+    return UsageSourceDiscovery(
+        client="kimi-code",
+        display_name="Kimi Code",
+        status="found" if found else "missing",
+        evidence="session-index+wire-jsonl",
+        paths=_existing_or_attempted_paths([*index_paths, *sessions_roots]),
+        file_count=len(files),
+        session_count=len(state_files) if state_files else None,
+        latest_updated_at=_latest_mtime(files),
+        usage_confidence=USAGE_UNKNOWN,
+        cost_confidence=COST_UNKNOWN,
+        importer="agentacct usage import-local --client kimi-code" if found else None,
         notes=notes,
     )
 

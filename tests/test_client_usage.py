@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from agentacct.client_usage import (
     discover_codex_usage,
     discover_dsh_usage,
     discover_hermes_usage,
+    discover_kimi_code_usage,
     discover_opencode_usage,
     discover_openclaw_usage,
     plan_local_usage_import,
@@ -4577,6 +4579,608 @@ def test_dsh_reader_bounds_memory_on_newline_free_payload_and_flags_capped(tmp_p
     )
 
 
+# Message text planted in the Kimi Code fixture.  The importer reads usage
+# counters and metadata scalars only, so neither string may ever reach a payload.
+_KIMI_WIRE_MESSAGE_TEXT = "KIMI_WIRE_MESSAGE_TEXT_MUST_NEVER_BE_IMPORTED"
+_KIMI_STATE_PROMPT_TEXT = "KIMI_STATE_PROMPT_TEXT_MUST_NEVER_BE_IMPORTED"
+
+
+def _kimi_code_usage_row(
+    *,
+    agent_id: str,
+    model: str,
+    time_ms: int,
+    usage: dict,
+) -> str:
+    return json.dumps(
+        {
+            "type": "usage.record",
+            "agentId": agent_id,
+            "model": model,
+            "usageScope": "turn",
+            "usage": usage,
+            "time": time_ms,
+        }
+    )
+
+
+def _write_kimi_code_session(
+    home: Path,
+    session_id: str,
+    *,
+    workspace: str = "wd_proj_abc123",
+    created_at_ms: int = 1_769_753_000_000,
+    updated_at_ms: int | None = None,
+    wires: dict[str, list[str]] | None = None,
+    state_text: str | None = None,
+) -> Path:
+    """Write one Kimi Code session dir: state.json plus per-agent wire.jsonl logs."""
+
+    session_dir = home / "sessions" / workspace / session_id
+    (session_dir / "agents").mkdir(parents=True, exist_ok=True)
+    if state_text is None:
+        state_text = json.dumps(
+            {
+                "id": session_id,
+                "title": f"Kimi fixture {session_id}",
+                "cwd": "/home/u/proj",
+                "createdAt": created_at_ms,
+                "updatedAt": (
+                    updated_at_ms if updated_at_ms is not None else created_at_ms
+                ),
+                # A real state.json carries prompts; the importer must not.
+                "lastPrompt": _KIMI_STATE_PROMPT_TEXT,
+                "agents": {"main": {"parent": None}, "agent-1": {"parent": "main"}},
+            }
+        )
+    (session_dir / "state.json").write_text(state_text, encoding="utf-8")
+    for agent_id, rows in (wires or {}).items():
+        agent_dir = session_dir / "agents" / agent_id
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        (agent_dir / "wire.jsonl").write_text(
+            "".join(row + "\n" for row in rows),
+            encoding="utf-8",
+        )
+    return session_dir
+
+
+def _write_kimi_code_index(home: Path, session_dirs: list[Path]) -> None:
+    (home / "session_index.jsonl").write_text(
+        "".join(
+            json.dumps(
+                {
+                    "sessionId": session_dir.name,
+                    "sessionDir": str(session_dir),
+                    "workDir": "/home/u/proj",
+                }
+            )
+            + "\n"
+            for session_dir in session_dirs
+        ),
+        encoding="utf-8",
+    )
+
+
+def _make_kimi_code_home(
+    root: Path,
+    *,
+    name: str = "kimi-home",
+    session_id: str = "session_abc123",
+) -> Path:
+    home = root / name
+    main_rows = [
+        # usage.record counters are per-request increments, so the session total
+        # is their direct sum; the message rows beside them are never read.
+        _kimi_code_usage_row(
+            agent_id="main",
+            model="kimi-code/k3-256k",
+            time_ms=1_769_753_001_000,
+            usage={
+                "inputOther": 1200,
+                "output": 300,
+                "inputCacheRead": 5000,
+                "inputCacheCreation": 40,
+            },
+        ),
+        json.dumps(
+            {
+                "type": "turn.prompt",
+                "agentId": "main",
+                "prompt": _KIMI_WIRE_MESSAGE_TEXT,
+                "time": 1_769_753_001_500,
+            }
+        ),
+        _kimi_code_usage_row(
+            agent_id="main",
+            model="kimi-code/k3-256k",
+            time_ms=1_769_753_002_000,
+            usage={"inputOther": 10, "output": 20},
+        ),
+        # A crash-double-appended row: identical (agent, time, counters) carries
+        # no new information and must not inflate the session total.
+        _kimi_code_usage_row(
+            agent_id="main",
+            model="kimi-code/k3-256k",
+            time_ms=1_769_753_002_000,
+            usage={"inputOther": 10, "output": 20},
+        ),
+        json.dumps(
+            {
+                "type": "agent.message.appended",
+                "agentId": "main",
+                "text": _KIMI_WIRE_MESSAGE_TEXT,
+                "time": 1_769_753_002_500,
+            }
+        ),
+        # A counter dimension absent from every row of the lane is NOT a
+        # measured zero.
+        _kimi_code_usage_row(
+            agent_id="agent-2",
+            model="kimi-code/k1-mini",
+            time_ms=1_769_753_003_000,
+            usage={"inputOther": 5},
+        ),
+        _kimi_code_usage_row(
+            agent_id="main",
+            model="kimi-code/k2-128k",
+            time_ms=1_769_753_003_500,
+            usage={
+                "inputOther": 7,
+                "output": 3,
+                "inputCacheRead": 0,
+                "inputCacheCreation": 0,
+            },
+        ),
+    ]
+    subagent_rows = [
+        # The subagent shares the session's model lane: its increments add to it.
+        _kimi_code_usage_row(
+            agent_id="agent-1",
+            model="kimi-code/k3-256k",
+            time_ms=1_769_753_004_000,
+            usage={
+                "inputOther": 100,
+                "output": 50,
+                "inputCacheRead": 25,
+                "inputCacheCreation": 5,
+            },
+        ),
+    ]
+    session_dir = _write_kimi_code_session(
+        home,
+        session_id,
+        updated_at_ms=1_769_753_004_000,
+        wires={"main": main_rows, "agent-1": subagent_rows},
+    )
+    _write_kimi_code_index(home, [session_dir])
+    return home
+
+
+def test_discover_kimi_code_usage_reads_wire_jsonl_usage_records(tmp_path):
+    kimi_home = _make_kimi_code_home(tmp_path)
+
+    events = discover_kimi_code_usage(kimi_home=kimi_home, limit_sessions=10)
+
+    assert len(events) == 3
+    by_model = {event.model: event for event in events}
+    assert set(by_model) == {"kimi-code/k3-256k", "kimi-code/k2-128k", "kimi-code/k1-mini"}
+    for event in events:
+        assert event.client == "kimi-code"
+        assert event.client_session_id == "session_abc123"
+        # wire.jsonl carries no provider field; the client itself is the provider.
+        assert event.provider == "moonshot"
+        assert event.cwd == "/home/u/proj"
+        assert event.source_parse_complete is True
+        assert event.source_revision_basis == "wire_file_mtime_us"
+        # Kimi Code persists no cost, so the row must not fabricate one.
+        assert event.client_reported_cost_usd is None
+        assert event.client_cost_source is None
+
+    # One lane per (session, model), summed across the main agent and subagents.
+    main_lane = by_model["kimi-code/k3-256k"]
+    assert main_lane.input_tokens == 1310
+    assert main_lane.output_tokens == 370
+    assert main_lane.cache_read_input_tokens == 5025
+    assert main_lane.cache_creation_input_tokens == 45
+    assert main_lane.cached_input_tokens == 5070
+    assert main_lane.input_tokens_reported is True
+    assert main_lane.output_tokens_reported is True
+    assert main_lane.cache_read_tokens_reported is True
+    assert main_lane.cache_creation_tokens_reported is True
+    # Three summed rows out of four raw ones: the duplicate row is collapsed.
+    assert main_lane.turn_count == 3
+    assert main_lane.raw_usage_rows == 4
+    assert main_lane.deduplicated_usage_rows == 3
+    assert main_lane.started_at == 1_769_753_000
+    # updated_at is the newest of state.json, the last usage.record, and the wire
+    # write time (the fixture wires are written now), never older than them.
+    assert main_lane.updated_at is not None and main_lane.updated_at >= 1_769_753_004
+    assert main_lane.usage_row_lane == "model:kimi-code_k3-256k"
+
+    # An explicitly measured zero is reported; an absent counter is not.
+    zero_lane = by_model["kimi-code/k2-128k"]
+    assert zero_lane.input_tokens == 7
+    assert zero_lane.output_tokens == 3
+    assert zero_lane.cache_read_input_tokens == 0
+    assert zero_lane.cache_creation_input_tokens == 0
+    assert zero_lane.cache_read_tokens_reported is True
+    assert zero_lane.cache_creation_tokens_reported is True
+    assert zero_lane.turn_count == 1
+
+    partial_lane = by_model["kimi-code/k1-mini"]
+    assert partial_lane.input_tokens == 5
+    assert partial_lane.output_tokens == 0
+    assert partial_lane.input_tokens_reported is True
+    assert partial_lane.output_tokens_reported is False
+    assert partial_lane.cache_read_tokens_reported is False
+    assert partial_lane.cache_creation_tokens_reported is False
+    assert partial_lane.turn_count == 1
+
+    for event in events:
+        payload = event.to_sentinel_event()
+        assert payload["provider"] == "moonshot"
+        assert payload["cost_confidence"] == "unknown"
+        assert payload["estimated_cost_usd"] is None
+        assert (
+            payload["metadata"]["usage_update_semantics"]
+            == "claude_assistant_message_usage_rows"
+        )
+        assert payload["metadata"]["client_session_title"] == "Kimi fixture session_abc123"
+        encoded = json.dumps(payload)
+        assert _KIMI_WIRE_MESSAGE_TEXT not in encoded
+        assert _KIMI_STATE_PROMPT_TEXT not in encoded
+        assert "content" not in encoded.lower()
+
+
+def test_discover_kimi_code_usage_reports_diagnostics_on_corrupt_source(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "kimi-home"
+    # One healthy session proves a corrupt sibling never fails the whole client.
+    healthy_dir = _write_kimi_code_session(
+        home,
+        "session_ok",
+        wires={
+            "main": [
+                _kimi_code_usage_row(
+                    agent_id="main",
+                    model="kimi-code/k3-256k",
+                    time_ms=1_769_753_001_000,
+                    usage={"inputOther": 11, "output": 22},
+                )
+            ]
+        },
+    )
+    # state.json that exists but is not a JSON object: this session is skipped.
+    corrupt_state_dir = _write_kimi_code_session(
+        home,
+        "session_bad_state",
+        state_text='{"id": "session_bad_state", "title": ',
+        wires={
+            "main": [
+                _kimi_code_usage_row(
+                    agent_id="main",
+                    model="kimi-code/k3-256k",
+                    time_ms=1_769_753_001_000,
+                    usage={"inputOther": 15, "output": 25},
+                )
+            ]
+        },
+    )
+    # A malformed wire row is skipped; the readable rows around it still import.
+    corrupt_wire_dir = _write_kimi_code_session(
+        home,
+        "session_bad_wire",
+        wires={
+            "main": [
+                _kimi_code_usage_row(
+                    agent_id="main",
+                    model="kimi-code/k3-256k",
+                    time_ms=1_769_753_001_000,
+                    usage={"inputOther": 30, "output": 40},
+                ),
+                '{"type": "usage.record", "agentId": "main", "usage": ',
+                _kimi_code_usage_row(
+                    agent_id="main",
+                    model="kimi-code/k3-256k",
+                    time_ms=1_769_753_002_000,
+                    usage={"inputOther": 50, "output": 60},
+                ),
+            ]
+        },
+    )
+    # Shrink the per-row budget so a modest fixture exercises the cap: a row past
+    # it ends that agent's scan, so the totals behind it are never presented as
+    # an exact session total.
+    monkeypatch.setattr("agentacct.client_usage._KIMI_MAX_WIRE_LINE_BYTES", 512)
+    capped_dir = _write_kimi_code_session(
+        home,
+        "session_capped",
+        wires={
+            "main": [
+                _kimi_code_usage_row(
+                    agent_id="main",
+                    model="kimi-code/k3-256k",
+                    time_ms=1_769_753_001_000,
+                    usage={"inputOther": 70, "output": 80},
+                ),
+                json.dumps(
+                    {
+                        "type": "agent.message.appended",
+                        "agentId": "main",
+                        "text": "x" * 2_000,
+                        "time": 1_769_753_001_500,
+                    }
+                ),
+                _kimi_code_usage_row(
+                    agent_id="main",
+                    model="kimi-code/k3-256k",
+                    time_ms=1_769_753_002_000,
+                    usage={"inputOther": 90, "output": 100},
+                ),
+            ]
+        },
+    )
+    _write_kimi_code_index(
+        home, [healthy_dir, corrupt_state_dir, corrupt_wire_dir, capped_dir]
+    )
+
+    result = discover_client_usage_with_diagnostics(
+        client="kimi-code",
+        codex_home=tmp_path / "missing-codex",
+        claude_home=tmp_path / "missing-claude",
+        opencode_home=tmp_path / "missing-opencode",
+        hermes_home=tmp_path / "missing-hermes",
+        openclaw_home=tmp_path / "missing-openclaw",
+        dsh_home=tmp_path / "missing-dsh",
+        kimi_home=home,
+        cursor_home=tmp_path / "missing-cursor",
+        limit_sessions=10,
+    )
+
+    # Corrupt sources surface stable codes instead of raising out of the scan.
+    diagnostics = result.diagnostics.get("kimi-code", {})
+    error_codes = diagnostics.get("error_codes") or []
+    assert "kimi_code_state_unreadable" in error_codes
+    assert "kimi_code_wire_malformed" in error_codes
+    assert "kimi_code_wire_scan_capped" in error_codes
+    assert diagnostics.get("error_count", 0) >= 3
+
+    by_session = {event.client_session_id: event for event in result.events}
+    # The unreadable session contributes nothing; the healthy one is complete.
+    assert "session_bad_state" not in by_session
+    assert by_session["session_ok"].input_tokens == 11
+    assert by_session["session_ok"].output_tokens == 22
+    assert by_session["session_ok"].source_parse_complete is True
+    # A malformed row is dropped from a session that is still imported — and
+    # flagged, so its totals never read as an exact measurement.
+    assert by_session["session_bad_wire"].input_tokens == 80
+    assert by_session["session_bad_wire"].output_tokens == 100
+    assert by_session["session_bad_wire"].source_parse_complete is False
+    # The capped read sums what it could read and stops at the oversized row.
+    assert by_session["session_capped"].input_tokens == 70
+    assert by_session["session_capped"].output_tokens == 80
+    assert by_session["session_capped"].source_parse_complete is False
+
+
+def test_discover_kimi_code_usage_respects_session_limit(tmp_path):
+    home = tmp_path / "kimi-home"
+    for index, session_id in enumerate(("session_old", "session_mid", "session_new")):
+        _write_kimi_code_session(
+            home,
+            session_id,
+            created_at_ms=1_769_753_000_000 + index * 60_000,
+            updated_at_ms=1_769_753_030_000 + index * 60_000,
+            wires={
+                "main": [
+                    _kimi_code_usage_row(
+                        agent_id="main",
+                        model="kimi-code/k3-256k",
+                        time_ms=1_769_753_031_000 + index * 60_000,
+                        usage={"inputOther": 10 * (index + 1), "output": index + 1},
+                    )
+                ]
+            },
+        )
+
+    # No session_index.jsonl here: the sessions/*/state.json scan supplies the
+    # sessions, ordered newest first by the client's own clock.
+    limited = discover_kimi_code_usage(kimi_home=home, limit_sessions=2)
+
+    assert [event.client_session_id for event in limited] == [
+        "session_new",
+        "session_mid",
+    ]
+    assert [event.input_tokens for event in limited] == [30, 20]
+
+    assert [
+        event.client_session_id
+        for event in discover_kimi_code_usage(kimi_home=home, limit_sessions=10)
+    ] == ["session_new", "session_mid", "session_old"]
+
+
+def test_discover_kimi_code_usage_reads_kimi_code_home_env(tmp_path, monkeypatch):
+    env_home = _make_kimi_code_home(tmp_path)
+    explicit_home = _make_kimi_code_home(
+        tmp_path,
+        name="explicit-kimi-home",
+        session_id="session_explicit",
+    )
+    missing_home = tmp_path / "missing-kimi"
+
+    # A configured $KIMI_CODE_HOME must be read, not just reported as found by
+    # source discovery (the importer's homes and discovery's must agree).
+    monkeypatch.setenv("KIMI_CODE_HOME", str(env_home))
+    assert {
+        event.client_session_id
+        for event in discover_kimi_code_usage(limit_sessions=10)
+    } == {"session_abc123"}
+    source = next(
+        source
+        for source in discover_usage_sources(
+            codex_home=tmp_path / "missing-codex",
+            claude_home=tmp_path / "missing-claude",
+            opencode_home=tmp_path / "missing-opencode",
+            hermes_home=tmp_path / "missing-hermes",
+            openclaw_home=tmp_path / "missing-openclaw",
+            dsh_home=tmp_path / "missing-dsh",
+            cursor_home=tmp_path / "missing-cursor",
+        )
+        if source.client == "kimi-code"
+    )
+    assert source.status == "found"
+
+    # An explicit --kimi-home still wins over the environment.
+    assert {
+        event.client_session_id
+        for event in discover_kimi_code_usage(kimi_home=explicit_home, limit_sessions=10)
+    } == {"session_explicit"}
+
+    # Comma-separated homes, the same grammar source discovery uses.  A home
+    # that was simply never created holds no sessions: the empty answer dsh,
+    # openclaw, and the other local clients give an absent root, so a machine
+    # without Kimi Code installed never reads as a degraded source.
+    monkeypatch.setenv("KIMI_CODE_HOME", f"{missing_home}, {env_home}")
+    result = discover_client_usage_with_diagnostics(client="kimi-code", limit_sessions=10)
+    assert {event.client_session_id for event in result.events} == {"session_abc123"}
+    assert (result.diagnostics.get("kimi-code", {}).get("error_codes") or []) == []
+
+    # A home that does exist but cannot be read is still recorded, and the
+    # readable sibling still imports: silence there would report "no sessions"
+    # for a home that was never read.
+    unreadable_home = tmp_path / "unreadable-kimi"
+    unreadable_home.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv("KIMI_CODE_HOME", f"{unreadable_home}, {env_home}")
+    result = discover_client_usage_with_diagnostics(client="kimi-code", limit_sessions=10)
+    assert {event.client_session_id for event in result.events} == {"session_abc123"}
+    assert "kimi_code_home_unreadable" in (
+        result.diagnostics.get("kimi-code", {}).get("error_codes") or []
+    )
+
+
+def test_discover_kimi_code_usage_reads_homes_through_linked_ancestors_only(
+    tmp_path, monkeypatch
+):
+    home = _make_kimi_code_home(tmp_path)
+
+    # macOS keeps /tmp behind /private/tmp (and /var behind /private/var), so a
+    # configured home reached through a linked *ancestor* is the ordinary case
+    # there: it must be read like any other home.  The index rows inside it name
+    # the path the client was configured with, which is why both sides resolve.
+    linked_parent = tmp_path / "linked-parent"
+    linked_parent.symlink_to(tmp_path, target_is_directory=True)
+    assert {
+        event.client_session_id
+        for event in discover_kimi_code_usage(
+            kimi_home=linked_parent / home.name, limit_sessions=10
+        )
+    } == {"session_abc123"}
+
+    # A link at the home itself is a different thing and is still refused: the
+    # importer never follows the configured home into another tree (the same
+    # stat.S_ISDIR refusal dsh's and openclaw's root scan applies).  The refusal
+    # is recorded rather than silently read as "no sessions", and a readable
+    # sibling still imports.
+    home_link = tmp_path / "linked-home"
+    home_link.symlink_to(home, target_is_directory=True)
+    monkeypatch.setenv("KIMI_CODE_HOME", f"{home_link}, {home}")
+    result = discover_client_usage_with_diagnostics(client="kimi-code", limit_sessions=10)
+    assert {event.client_session_id for event in result.events} == {"session_abc123"}
+    assert "kimi_code_home_unreadable" in (
+        result.diagnostics.get("kimi-code", {}).get("error_codes") or []
+    )
+
+
+# A controlled real run captured on 2026-09-23: two byte-verbatim usage.record
+# rows plus the sanitized session container, and nothing content-bearing
+# (tests/fixtures/kimi_code/real_capture_2026-09-23/README.md).
+_KIMI_REAL_CAPTURE_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "kimi_code" / "real_capture_2026-09-23"
+)
+
+
+def _materialize_kimi_code_real_capture(home: Path) -> Path:
+    """Copy the real-capture fixture to ``home``, binding its session path.
+
+    The committed fixture tokenizes every absolute path as ``<SESSION_DIR>``
+    (the importer rejects index paths outside its home), so the index row and
+    each ``state.json`` agent ``homedir`` are rewritten field-wise to the copied
+    session directory.
+    """
+
+    shutil.copytree(_KIMI_REAL_CAPTURE_FIXTURE, home)
+    session_dir = (
+        home
+        / "sessions"
+        / "wd_capture_7b13a9d40f2c"
+        / "session_5a1c9d3e-2f47-4b8a-9c61-7d0e4f2a8b13"
+    )
+    index_path = home / "session_index.jsonl"
+    index_rows = [
+        json.loads(line)
+        for line in index_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    for row in index_rows:
+        assert row["sessionDir"] == "<SESSION_DIR>"
+        row["sessionDir"] = str(session_dir)
+    index_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in index_rows), encoding="utf-8"
+    )
+    state_path = session_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    for agent in state["agents"].values():
+        agent["homedir"] = agent["homedir"].replace("<SESSION_DIR>", str(session_dir))
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    return session_dir
+
+
+def test_discover_kimi_code_usage_reads_real_captured_wire_fixture(tmp_path):
+    """The 2026-09-23 real-run capture imports as one complete, cost-unknown lane.
+
+    Fixture provenance and sanitization are in
+    tests/fixtures/kimi_code/real_capture_2026-09-23/README.md: this is the
+    controlled real Kimi Code run whose two usage.record rows are carried
+    byte-verbatim, with every content-bearing event type dropped.
+    """
+
+    home = tmp_path / "kimi-home"
+    _materialize_kimi_code_real_capture(home)
+
+    events = discover_kimi_code_usage(kimi_home=home)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.client == "kimi-code"
+    assert event.client_session_id == "session_5a1c9d3e-2f47-4b8a-9c61-7d0e4f2a8b13"
+    assert event.model == "DeepSeek/deepseek-flash"
+    # Sum of the two captured rows (the fixture README's expected import).
+    assert event.input_tokens == 596
+    assert event.output_tokens == 190
+    assert event.cache_read_input_tokens == 44_800
+    assert event.cache_creation_input_tokens == 0
+    assert event.turn_count == 2
+    assert event.raw_usage_rows == 2
+    # The capture's own first request, in whole seconds.
+    assert event.started_at == 1_790_210_981
+    # updated_at also carries the copied wire's write time, so it is bounded by
+    # the capture's last request (1_790_210_982) rather than pinned to it.
+    assert event.updated_at is not None and event.updated_at >= 1_790_210_982
+    assert event.source_parse_complete is True
+    assert event.input_tokens_reported is True
+    assert event.cache_read_tokens_reported is True
+    # Kimi Code persists no cost figure, so the captured lane reads cost-unknown.
+    assert event.client_reported_cost_usd is None
+    assert event.title == "capture fixture"
+    assert event.cwd == "/Users/example/capture-workspace"
+
+    encoded = json.dumps(event.to_sentinel_event())
+    # Counters and metadata scalars only: the fixture's redaction marker and the
+    # wire's own row type never leave the importer.
+    assert "[redacted in fixture]" not in encoded
+    assert "usage.record" not in encoded
+
+
 def test_discover_hermes_usage_reads_state_db_sessions_and_client_cost(tmp_path):
     hermes_home = _make_hermes_home(tmp_path)
 
@@ -5807,6 +6411,10 @@ def test_usage_import_local_imports_codex_and_claude_once(tmp_path):
             str(tmp_path / "missing-hermes"),
             "--openclaw-home",
             str(tmp_path / "missing-openclaw"),
+            "--dsh-home",
+            str(tmp_path / "missing-dsh"),
+            "--kimi-home",
+            str(tmp_path / "missing-kimi"),
             "--cursor-home",
             str(tmp_path / "missing-cursor"),
             "--json",
@@ -5879,6 +6487,12 @@ def test_usage_import_local_imports_codex_and_claude_once(tmp_path):
             str(tmp_path / "missing-hermes"),
             "--openclaw-home",
             str(tmp_path / "missing-openclaw"),
+            "--dsh-home",
+            str(tmp_path / "missing-dsh"),
+            "--kimi-home",
+            str(tmp_path / "missing-kimi"),
+            "--cursor-home",
+            str(tmp_path / "missing-cursor"),
             "--json",
         ],
     )
@@ -5908,6 +6522,10 @@ def test_usage_import_local_can_estimate_equivalent_costs_from_known_model_price
             str(tmp_path / "missing-hermes"),
             "--openclaw-home",
             str(tmp_path / "missing-openclaw"),
+            "--dsh-home",
+            str(tmp_path / "missing-dsh"),
+            "--kimi-home",
+            str(tmp_path / "missing-kimi"),
             "--cursor-home",
             str(tmp_path / "missing-cursor"),
             "--estimate-costs",

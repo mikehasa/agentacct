@@ -2343,6 +2343,7 @@ def _agent_label(client: Any) -> str:
         "hermes": "Hermes",
         "dsh": "DeepSeek",
         "deepseek": "DeepSeek",
+        "kimi-code": "Kimi Code",
     }.get(c, (str(client).strip() or "unknown"))
 
 

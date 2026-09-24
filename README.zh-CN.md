@@ -68,7 +68,7 @@ agentacct 还处于 early alpha 阶段。它的原则是：宁可给你看一个
 - **Reported 不等于 Verified。** agent 自己的说法，永远不会被包装成验证结果。
 - **估算就明说是估算。** `≈$` 表示按价目表估算，`~$` 表示已知不完整的小计；agentacct 拿不到账单数据。每条路径能证明什么，见 [docs/usage-truth-table.md](docs/usage-truth-table.md)。
 - **宁缺毋错。** 用量和记录的工作之间的每一次关联都带置信度（`exact`、`high`、`medium`、`low`）；证明不了的关联就显示为空缺，而不是一个零。
-- **按能力算支持，不按 logo 算。** 目前 Claude Code 和 Codex 的收据最完整；[coverage matrix](docs/coverage-matrix.md) 对 OpenCode、Hermes、DeepSeek Harness、OpenClaw、Cursor 的每一项能力单独评级，`agentacct capabilities agents` 会打印你当前版本对应的这张表。
+- **按能力算支持，不按 logo 算。** 目前 Claude Code 和 Codex 的收据最完整；[coverage matrix](docs/coverage-matrix.md) 对 OpenCode、Hermes、DeepSeek Harness、Kimi Code、OpenClaw、Cursor 的每一项能力单独评级，`agentacct capabilities agents` 会打印你当前版本对应的这张表。
 - **记录的是工作，不是对话。** 记录的是工具名称和类别、改动的文件、去掉了凭证的命令、退出码、token 用量和记录下来的步骤；不会存你的 prompt、模型的回复或完整的对话记录。详见 [privacy threat model](docs/multi-source-privacy-threat-model.md)。
 - **不往外发任何东西。** 只读取已识别客户端的本地会话文件，只监听 `127.0.0.1`，不会存储或索要任何供应商的 API key。
 
