@@ -16,8 +16,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`verified_partial`, evidence dated 2026-09-23); cache write stays
   experimental because no non-zero value has been observed. `agentacct setup
   prompt|mcp|instructions --agent kimi-code` adds the onboarding surfaces
-  (MCP registers by hand in `~/.kimi-code/mcp.json`), and the CLI, TUI, local
-  API, and macOS app show Kimi Code in their client labels.
+  (MCP registers in the user-level `~/.kimi-code/mcp.json`), and the CLI, TUI,
+  local API, and macOS app show Kimi Code in their client labels.
+
+### Changed
+
+- Kimi Code MCP registration is now written rather than previewed.
+  `agentacct setup mcp --agent kimi-code --write` merges the `mcpServers.agentacct`
+  entry into the user-level `$KIMI_CODE_HOME/mcp.json` (default
+  `~/.kimi-code/mcp.json`; the project-level `.kimi-code/mcp.json` is not
+  written), and `agentacct onboard --scope global --agent kimi-code` writes that
+  registration plus the record-your-work directive in
+  `$KIMI_CODE_HOME/AGENTS.md`. The write is idempotent (an already-correct entry
+  is left untouched), preserves every other server and key, refuses to rewrite a
+  file it cannot read as a JSON object, and collapses a standard pre-rename
+  `agent-sentinel`/`agent-chronicle` entry into `agentacct` (env carried over;
+  a custom `agent-sentinel` server is left alone). Kimi Code rows in the local
+  API / app connections view are now `active` like Codex or dsh instead of
+  `semi`, so they offer a one-click connect. No live Kimi Code session has been
+  observed recording over MCP yet, so global onboarding reports kimi-code as
+  experimental rather than verified.
+- The usage truth table now states its cost basis literally instead of implying
+  a bill. A priced local-import row is the client's own reported token counts
+  multiplied by agentacct's local snapshot of LiteLLM's public,
+  community-maintained model price list, so it is labeled
+  `estimated_from_tokens` — an equivalent-cost ≈ estimate, never a provider
+  bill and not what a subscription/coding-plan user is charged per token (no
+  per-token charge exists on those plans), and a model id the price-list
+  snapshot does not cover stays `unknown` rather than taking a nearby price.
+  The same wording now covers Codex, Claude Code, dsh, and Kimi Code rows, and
+  `docs/usage-truth-table.md` carries it too, including the DeepSeek Harness
+  (dsh) summary row that was missing from the table.
 
 ### Fixed
 

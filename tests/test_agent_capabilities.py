@@ -183,8 +183,28 @@ def test_kimi_code_manifest_upgrades_only_the_captured_lanes_and_leaves_cache_wr
     assert cache_write["state"] == "experimental"
     assert cache_write["verification"]["level"] == "synthetic_fixture"
     assert "never been observed" in " ".join(cache_write["limitations"])
-    for lane in ("mechanical_capture", "mcp_semantics", "automatic_install"):
-        assert kimi["capabilities"][lane]["state"] == "unavailable"
+    assert kimi["capabilities"]["mechanical_capture"]["state"] == "unavailable"
+    # The user-level MCP writer and the global onboarding that wraps it exist and
+    # are tested, but no real Kimi Code session has been observed loading the
+    # registration or recording over MCP: fixture evidence can only ever prove
+    # "experimental", so these two lanes must never reach a verified* state.
+    for lane in ("mcp_semantics", "automatic_install"):
+        capability = kimi["capabilities"][lane]
+        assert capability["state"] == "experimental"
+        assert capability["activation"] == "one_command_global"
+        assert capability["verification"]["level"] == "synthetic_fixture"
+        assert capability["verification"]["verified_at"] == "2026-09-23"
+        assert capability["verification"]["evidence_refs"] == [
+            "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_fresh_file_uses_the_documented_shape",
+            "tests/test_user_scope_mcp_writers.py::test_kimi_code_mcp_is_idempotent_and_does_not_rewrite",
+            "tests/test_onboard_global.py::test_onboard_global_agent_kimi_code_writes_user_level_mcp_json_and_instructions",
+            "tests/test_mcp_onboarding.py::test_setup_mcp_kimi_code_write_merges_the_user_level_mcp_json",
+        ]
+    mcp_semantics = kimi["capabilities"]["mcp_semantics"]
+    # The write covers the user-level file only, and the recording it enables is
+    # still unobserved — both bounds stay stated on the lane itself.
+    assert any(".kimi-code/mcp.json" in limitation for limitation in mcp_semantics["limitations"])
+    assert any("no real Kimi Code session" in limitation for limitation in mcp_semantics["limitations"])
 
 
 def test_kimi_code_usage_cost_is_a_local_pricing_estimate_never_a_stored_cost() -> None:

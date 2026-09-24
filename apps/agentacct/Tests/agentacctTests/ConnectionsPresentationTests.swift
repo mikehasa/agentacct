@@ -39,6 +39,28 @@ final class ConnectionsPresentationTests: XCTestCase {
         XCTAssertNil(openclaw.setupClient)
     }
 
+    func testActiveKimiCodeRowOffersTheOneClickSetup() {
+        // kimi-code is an active client now: its global onboarding writes the
+        // $KIMI_CODE_HOME/mcp.json registration, so its row can connect/re-sync.
+        let kimi = connection(#"{"id":"kimi-code","display_name":"Kimi Code","kind":"active","configured":false,"recording_state":null,"scope":null,"last_success_at":null,"issues":[],"status":"not_connected","primary_action":"connect"}"#)
+        XCTAssertEqual(kimi.displayName, "Kimi Code")
+        XCTAssertEqual(kimi.setupClient, .kimiCode)
+        XCTAssertTrue(kimi.offersOneClickSetup)
+    }
+
+    func testSemiReportedClientNeverOffersTheOneClickSetup() {
+        // An older recorder, or an agentacct with no writer for that client, still
+        // reports kind "semi": the manual MCP registration must stay a note. The
+        // roster now contains kimi-code, so this is the exact case that must not
+        // turn into a button.
+        let kimi = connection(#"{"id":"kimi-code","display_name":"Kimi Code","kind":"semi","configured":false,"recording_state":"healthy","scope":"watched","last_success_at":5.0,"issues":[],"status":"reading","primary_action":"connect_manual"}"#)
+        XCTAssertEqual(kimi.primaryAction, "connect_manual")
+        XCTAssertFalse(kimi.offersOneClickSetup)
+
+        let degraded = connection(#"{"id":"kimi-code","display_name":"Kimi Code","kind":"semi","configured":false,"recording_state":"degraded","scope":null,"last_success_at":null,"issues":[],"status":"needs_attention","primary_action":"resolve"}"#)
+        XCTAssertFalse(degraded.offersOneClickSetup)
+    }
+
     func testConfiguredButIdleActiveAgentDecodesAndKeepsAWizardClient() {
         // connected_idle is the honest "set up but not confirmed recording" state
         // (a stopped/stale watcher, or no live data yet) — still an active agent

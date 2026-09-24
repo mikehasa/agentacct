@@ -44,6 +44,23 @@ class UsageTruthRow:
         return asdict(self)
 
 
+# Cost wording shared by the local imports that store token counts but no cost
+# figure of their own (codex, claude-code, kimi-code; dsh prefixes its own
+# note). One text keeps the claims that must never drift apart: the source is
+# the client's own token counts times agentacct's local snapshot of LiteLLM's
+# public model price list (community-maintained, not a vendor price sheet), the
+# result is an equivalent-cost ESTIMATE, and a subscription/coding-plan user is
+# not billed per token. The unknown boundary stays explicit for model ids the
+# table cannot cover, so this column never promises that a price exists.
+_PRICING_TABLE_COST_CONFIDENCE = (
+    f"{COST_UNKNOWN} until priced: --estimate-costs (on by default in the daemon and first-sync imports) multiplies "
+    "client-reported tokens by agentacct's local snapshot of LiteLLM's public model price list (community-maintained), "
+    f"giving an equivalent-cost estimate labeled {COST_ESTIMATED_FROM_TOKENS} (≈$). That estimate is not a provider "
+    "bill and not what subscription/coding-plan users are charged per token; model ids the table does not cover stay "
+    f"{COST_UNKNOWN}"
+)
+
+
 USAGE_TRUTH_TABLE: tuple[UsageTruthRow, ...] = (
     UsageTruthRow(
         integration="codex local usage import",
@@ -66,7 +83,7 @@ USAGE_TRUTH_TABLE: tuple[UsageTruthRow, ...] = (
             "created/updated timestamps",
         ],
         usage_confidence=USAGE_CLIENT_REPORTED,
-        cost_confidence=f"{COST_UNKNOWN}; optional {COST_ESTIMATED_FROM_TOKENS} with --estimate-costs when pricing exists",
+        cost_confidence=_PRICING_TABLE_COST_CONFIDENCE,
         hard_budget_basis="No hard dollar enforcement from local import alone; use advisory warnings or token/runtime limits.",
         automatic_scope="Reads supported local Codex session stores only when the user runs import or grants a scan path.",
         setup_path="agentacct usage import-local --client codex --dry-run --json",
@@ -99,7 +116,7 @@ USAGE_TRUTH_TABLE: tuple[UsageTruthRow, ...] = (
             "file updated timestamp",
         ],
         usage_confidence=USAGE_CLIENT_REPORTED,
-        cost_confidence=f"{COST_UNKNOWN}; optional {COST_ESTIMATED_FROM_TOKENS} with --estimate-costs when pricing exists",
+        cost_confidence=_PRICING_TABLE_COST_CONFIDENCE,
         hard_budget_basis="No hard dollar enforcement from local import alone; use advisory warnings or token/runtime limits.",
         automatic_scope="Reads supported local Claude Code project JSONL files only when the user runs import or grants a scan path.",
         setup_path="agentacct usage import-local --client claude-code --dry-run --json",
@@ -204,7 +221,7 @@ USAGE_TRUTH_TABLE: tuple[UsageTruthRow, ...] = (
             "turn count",
         ],
         usage_confidence=USAGE_CLIENT_REPORTED,
-        cost_confidence=COST_UNKNOWN,
+        cost_confidence="dsh records no cost figure at all; " + _PRICING_TABLE_COST_CONFIDENCE,
         hard_budget_basis="Not provider-billed; useful for dashboards and advisory budgets unless routed through a provider/proxy path.",
         automatic_scope="Reads supported local dsh session logs only when the user runs import or grants a scan path.",
         setup_path="agentacct usage import-local --client dsh --dry-run --json",
@@ -236,7 +253,7 @@ USAGE_TRUTH_TABLE: tuple[UsageTruthRow, ...] = (
             "created/updated timestamps",
         ],
         usage_confidence=USAGE_CLIENT_REPORTED,
-        cost_confidence=f"{COST_UNKNOWN}; optional {COST_ESTIMATED_FROM_TOKENS} with --estimate-costs when pricing exists",
+        cost_confidence=_PRICING_TABLE_COST_CONFIDENCE,
         hard_budget_basis="No hard dollar enforcement from local import alone; use advisory warnings or token/runtime limits.",
         automatic_scope="Reads supported local Kimi Code session stores only when the user runs import or grants a scan path.",
         setup_path="agentacct usage import-local --client kimi-code --dry-run --json",

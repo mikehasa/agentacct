@@ -11,9 +11,23 @@ from pathlib import Path
 
 import pytest
 import yaml
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 from agentacct.cli import app
+
+# The console wraps output to the terminal width, so asserting on a phrase can
+# fail on a narrow terminal (CI renders at 80 columns) even though the phrase is
+# there, and even after whitespace is collapsed when a panel border glyph sits
+# between the wrapped halves, or a colored console interleaves SGR escapes around
+# the glyph and the break. Strip ANSI, drop the box-drawing characters, collapse.
+_BOX_GLYPHS = "│┃─━╭╮╰╯┌┐└┘├┤┬┴┼┏┓┗┛╔╗╚╝║═"
+_BOX_TO_SPACE = str.maketrans(_BOX_GLYPHS, " " * len(_BOX_GLYPHS))
+
+
+def _flat(output: str) -> str:
+    """Output rendered without reference to where or how the console wrapped."""
+    return " ".join(strip_ansi(output).translate(_BOX_TO_SPACE).split())
 
 
 @pytest.fixture
@@ -23,6 +37,10 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    # Clients whose home is env-overridable resolve through the env var before
+    # $HOME; a developer's own KIMI_CODE_HOME (= a REAL client home) would
+    # otherwise be written to by an onboarding test.
+    monkeypatch.delenv("KIMI_CODE_HOME", raising=False)
     return home
 
 
@@ -260,6 +278,111 @@ def test_onboard_global_agent_dsh_writes_home_patch_and_instructions(
     # experimental and NOT folded into the unqualified machine-wide-recording claim.
     assert "experimental" in result.output.lower()
     assert "recording is machine-wide now" not in result.output
+
+
+def test_onboard_global_agent_kimi_code_writes_user_level_mcp_json_and_instructions(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "kimi-code", "--no-start"])
+    assert result.exit_code == 0, result.output
+
+    store = isolated_home / ".local" / "state" / "agentacct" / "state"
+    kimi_home = isolated_home / ".kimi-code"
+    # MCP registered in the user-level mcp.json Kimi Code declares servers in.
+    config = json.loads((kimi_home / "mcp.json").read_text())
+    entry = config["mcpServers"]["agentacct"]
+    assert entry["args"] == ["mcp", "serve", "--store-dir", str(store)]
+    # GUI/terminal clients do not inherit shell PATH -> the command is absolute.
+    assert Path(entry["command"]).is_absolute(), entry["command"]
+    # Standing 'record your work' directive lands in the AGENTS.md Kimi Code reads
+    # on every session.
+    agents = kimi_home / "AGENTS.md"
+    assert agents.exists()
+    assert "agentacct" in agents.read_text()
+    # Zero files leaked into the repo.
+    for leaked in ("AGENTS.md", ".kimi-code", "mcp.json", ".mcp.json", ".agent-sentinel"):
+        assert not (repo / leaked).exists(), leaked
+    # Its MCP registration write is tested, its recording is not: reported as
+    # experimental, and never folded into the machine-wide-recording claim. It is
+    # also NOT reported as an unconfigured manual step any more.
+    unwrapped = _flat(result.output)
+    assert "experimental" in unwrapped.lower()
+    assert "recording is machine-wide now" not in unwrapped
+    assert "One-command work recording is not available" not in unwrapped
+
+
+def test_onboard_global_agent_kimi_code_is_idempotent_and_keeps_other_servers(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+    kimi_home = isolated_home / ".kimi-code"
+    kimi_home.mkdir(parents=True)
+    config = kimi_home / "mcp.json"
+    config.write_text(json.dumps({"mcpServers": {"linear": {"command": "linear-mcp"}}}))
+    arguments = ["onboard", "--scope", "global", "--agent", "kimi-code", "--no-start"]
+
+    first = CliRunner().invoke(app, arguments)
+    assert first.exit_code == 0, first.output
+    after_first = config.read_text()
+    second = CliRunner().invoke(app, arguments)
+
+    assert second.exit_code == 0, second.output
+    assert "already registered" in _flat(second.output)
+    assert config.read_text() == after_first  # second run is a no-op write
+    servers = json.loads(config.read_text())["mcpServers"]
+    assert servers["linear"] == {"command": "linear-mcp"}  # user's server untouched
+    assert set(servers) == {"linear", "agentacct"}
+
+
+def test_onboard_global_agent_kimi_code_honors_the_kimi_code_home_override(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+    custom = tmp_path / "custom-kimi"
+    monkeypatch.setenv("KIMI_CODE_HOME", str(custom))
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "kimi-code", "--no-start"])
+
+    assert result.exit_code == 0, result.output
+    # The env override is the home Kimi Code itself (and the usage importer) reads.
+    assert (custom / "mcp.json").is_file()
+    assert (custom / "AGENTS.md").is_file()
+    assert not (isolated_home / ".kimi-code").exists()
+
+
+def test_onboard_global_agent_kimi_code_leaves_an_unparseable_mcp_json_alone(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+    kimi_home = isolated_home / ".kimi-code"
+    kimi_home.mkdir(parents=True)
+    config = kimi_home / "mcp.json"
+    original = '{"mcpServers": {"linear": '
+    config.write_text(original)
+
+    result = CliRunner().invoke(app, ["onboard", "--scope", "global", "--agent", "kimi-code", "--no-start"])
+
+    assert result.exit_code == 0, result.output
+    # The user's broken file is never partially rewritten...
+    assert config.read_text() == original
+    # ...the entry is handed over instead, and no recording claim is made.
+    unwrapped = _flat(result.output)
+    assert "could not be written" in unwrapped
+    assert '"mcpServers"' in unwrapped
+    assert "no semantic recording client was configured" in unwrapped
+    assert "experimental" not in unwrapped.lower()
+    # The instruction leg is independent and still installed.
+    assert (kimi_home / "AGENTS.md").exists()
 
 
 def test_onboard_global_agent_dsh_leaves_an_unsafe_cordis_patch_untouched(

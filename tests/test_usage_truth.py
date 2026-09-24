@@ -33,7 +33,11 @@ def test_usage_truth_table_has_expected_integrations() -> None:
     assert rows["codex local usage import"]["usage_confidence"] == "client_reported"
     assert "token_count" in rows["codex local usage import"]["update_timing"]
     assert "provider invoices" in " ".join(rows["codex local usage import"]["limitations"])
-    assert rows["claude-code local usage import"]["cost_confidence"].startswith("unknown")
+    # Was startswith("unknown"): the default import path (daemon and first sync)
+    # prices these rows, so a bare unknown prefix understated the capability and
+    # never named the price source. The unknown boundary is asserted separately.
+    assert "estimated_from_tokens" in rows["claude-code local usage import"]["cost_confidence"]
+    assert "unknown" in rows["claude-code local usage import"]["cost_confidence"]
     assert "assistant message rows" in rows["claude-code local usage import"]["update_timing"]
     assert rows["opencode JSON event stream import"]["cost_confidence"] == "client_reported"
     assert "step-finish" in rows["opencode JSON event stream import"]["update_timing"]
@@ -42,12 +46,85 @@ def test_usage_truth_table_has_expected_integrations() -> None:
     assert rows["openclaw JSONL local usage import"]["usage_confidence"] == "client_reported"
     assert "usage.cost.total" in rows["openclaw JSONL local usage import"]["cost_confidence"]
     assert rows["kimi-code local usage import"]["usage_confidence"] == "client_reported"
-    assert rows["kimi-code local usage import"]["cost_confidence"].startswith("unknown")
+    # Same rename of a bare startswith("unknown") expectation as claude-code above.
+    assert "estimated_from_tokens" in rows["kimi-code local usage import"]["cost_confidence"]
+    assert "unknown" in rows["kimi-code local usage import"]["cost_confidence"]
     assert "usage.record" in rows["kimi-code local usage import"]["update_timing"]
     assert "Moonshot AI invoices" in " ".join(rows["kimi-code local usage import"]["limitations"])
     assert rows["agent MCP workflow events"]["usage_confidence"] == "unknown"
     assert rows["native coding-agent hook capture"]["usage_confidence"] == "unknown"
     assert "optional fallback" in " ".join(rows["sentinel-owned process wrapper"]["limitations"])
+
+
+def test_token_only_imports_describe_the_pricing_table_estimate() -> None:
+    """Clients that store tokens but no cost figure must say where a price comes from.
+
+    The column used to read "unknown; optional estimated_from_tokens with
+    --estimate-costs when pricing exists", which understated the default path
+    (the daemon and first-sync imports run --estimate-costs) and never named the
+    price source.
+    """
+
+    rows = {row["integration"]: row for row in usage_truth_table()}
+
+    for integration in (
+        "codex local usage import",
+        "claude-code local usage import",
+        "kimi-code local usage import",
+        "dsh (DeepSeek Harness) session-log usage import",
+    ):
+        text = rows[integration]["cost_confidence"]
+        # Client-reported tokens times a community-maintained public price list,
+        # so the wording must never imply provider-official pricing.
+        assert "client-reported tokens" in text, integration
+        assert "LiteLLM" in text, integration
+        assert "community-maintained" in text, integration
+        assert "official" not in text.lower(), integration
+        # An equivalent-cost estimate (≈$), never a bill, and never what a
+        # subscription/coding-plan user actually pays.
+        assert "estimated_from_tokens" in text, integration
+        assert "≈$" in text, integration
+        assert "not a provider bill" in text, integration
+        assert "subscription/coding-plan users" in text, integration
+        # Actionable path plus the honest unknown boundary.
+        assert "--estimate-costs" in text, integration
+        assert "on by default" in text, integration
+        assert "model ids the table does not cover stay unknown" in text, integration
+
+    # dsh stores no cost figure at all; its column has to say that outright.
+    assert rows["dsh (DeepSeek Harness) session-log usage import"]["cost_confidence"].startswith(
+        "dsh records no cost figure at all"
+    )
+
+
+def test_usage_truth_doc_summary_mirrors_cost_semantics() -> None:
+    """docs/usage-truth-table.md is hand-written, so its Cost column is pinned.
+
+    The summary table restates the CLI wording (markdown backticks added)
+    instead of being byte-identical to it; this check keeps the claims from
+    drifting without an equality test over prose.
+    """
+
+    summary_rows: dict[str, list[str]] = {}
+    for line in Path("docs/usage-truth-table.md").read_text(encoding="utf-8").splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) == 6:
+            summary_rows.setdefault(cells[0], cells)
+
+    for label in (
+        "Codex local usage import",
+        "Claude Code local usage import",
+        "Kimi Code local usage import",
+        "DeepSeek Harness (dsh) local usage import",
+    ):
+        cell = summary_rows[label][4]  # Cost confidence column
+        assert "estimated_from_tokens" in cell, label
+        assert "LiteLLM" in cell, label
+        assert "community-maintained" in cell, label
+        assert "coding-plan" in cell, label
+        assert "unknown" in cell, label
 
 
 def test_usage_truth_table_cli_json() -> None:

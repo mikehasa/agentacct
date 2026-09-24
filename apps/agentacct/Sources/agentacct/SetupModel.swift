@@ -213,12 +213,18 @@ enum CLIPayloadInspector {
 
 /// Global onboarding accepts one named client. An explicit choice never expands
 /// to whatever other clients the CLI happens to discover on this machine.
+///
+/// Only clients `onboard --agent X` configures at user scope belong here, so a
+/// semi client (openclaw, whose MCP registration is manual) and the
+/// observation-only ones stay out — the picker would otherwise offer a
+/// one-click connect that writes nothing.
 enum SetupClient: String, CaseIterable, Identifiable {
     case codex
     case claudeCode = "claude-code"
     case openCode = "opencode"
     case hermes
     case deepseekHarness = "dsh"
+    case kimiCode = "kimi-code"
 
     var id: String { rawValue }
 
@@ -229,6 +235,7 @@ enum SetupClient: String, CaseIterable, Identifiable {
         case .openCode: return "OpenCode"
         case .hermes: return "Hermes"
         case .deepseekHarness: return "DeepSeek Harness"
+        case .kimiCode: return "Kimi Code"
         }
     }
 }

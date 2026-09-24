@@ -161,4 +161,48 @@ final class NativeSetupFlowTests: XCTestCase {
             "/custom-dsh/AGENTS.md"
         ])
     }
+
+    func testKimiCodeReviewTargetsMCPJSONAndAgentsUnderKimiCodeHome() {
+        let defaultPlan = SetupConfigurationPlan(
+            client: .kimiCode,
+            homeDirectory: URL(fileURLWithPath: "/test-home"),
+            environment: [:]
+        )
+        XCTAssertEqual(defaultPlan.changes.map(\.path), [
+            "/test-home/.kimi-code/mcp.json",
+            "/test-home/.kimi-code/AGENTS.md"
+        ])
+        // config.toml carries Kimi Code's provider credentials and never its MCP
+        // servers, so it must not appear as a planned change.
+        XCTAssertFalse(defaultPlan.changes.contains { $0.path.hasSuffix("config.toml") })
+
+        let overriddenPlan = SetupConfigurationPlan(
+            client: .kimiCode,
+            homeDirectory: URL(fileURLWithPath: "/test-home"),
+            environment: ["KIMI_CODE_HOME": " /custom-kimi "]
+        )
+        XCTAssertEqual(overriddenPlan.changes.map(\.path), [
+            "/custom-kimi/mcp.json",
+            "/custom-kimi/AGENTS.md"
+        ])
+    }
+
+    func testGlobalOnboardingOffersTheClientsTheRecorderConfigures() {
+        // The picker's roster, in its display order, is exactly the clients
+        // `onboard --agent X` configures at user scope.
+        XCTAssertEqual(SetupClient.allCases.map(\.rawValue), [
+            "codex", "claude-code", "opencode", "hermes", "dsh", "kimi-code"
+        ])
+        XCTAssertEqual(SetupClient(rawValue: "kimi-code")?.title, "Kimi Code")
+        // A client whose MCP registration stays manual (openclaw) and an
+        // observation-only one (cursor) are never onboarding targets here.
+        XCTAssertNil(SetupClient(rawValue: "openclaw"))
+        XCTAssertNil(SetupClient(rawValue: "cursor"))
+    }
+
+    func testKimiCodeActivationRequiresANewSessionForTheMCPRegistration() {
+        let instruction = SetupConfigurationPlan.activationInstruction(for: .kimiCode)
+        XCTAssertTrue(instruction.contains("new Kimi Code session"))
+        XCTAssertTrue(instruction.contains("$KIMI_CODE_HOME/AGENTS.md"))
+    }
 }

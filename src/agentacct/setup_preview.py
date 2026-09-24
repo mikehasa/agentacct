@@ -210,19 +210,29 @@ def build_setup_preview(
         instructions(kimi_home / "AGENTS.md")
         # Kimi Code declares MCP servers in mcp.json (user level:
         # $KIMI_CODE_HOME/mcp.json, default ~/.kimi-code/mcp.json), never in
-        # config.toml — the TOML file carries provider credentials and has no
-        # MCP section. agentacct has no mcp.json writer (kimi-code is a
-        # manual-registration client), so this row is generated content for
-        # manual application (by hand or via /mcp-config), not a managed write.
+        # config.toml — the TOML file carries provider credentials and has no MCP
+        # section. agentacct writes this file (`setup mcp --agent kimi-code --write`,
+        # and global onboarding), preserving every other server and key, so the row
+        # is a managed registration like codex/opencode, not manual guidance.
         row, text = item(kimi_home / "mcp.json", "mcp", "Proposed MCP registration", json.dumps({"mcpServers": {"agentacct": generated}}, indent=2) + "\n")
         payload = parse(row, text, "json")
         servers = mcp_conditions(row, payload, "mcpServers")
         if servers is not None:
-            registration(row, "agentacct", "update" if "agentacct" in servers else "add", "Generated content for manual application; agentacct does not write kimi-code mcp.json.")
+            registration(row, "agentacct", "update" if "agentacct" in servers else "add", "Set the generated command and arguments; every other key on the entry and every other server is preserved.")
+            sentinel = servers.get("agent-sentinel")
+            try:
+                custom_sentinel = sentinel is not None and not cli._pre_rename_registration_matches_generated(sentinel, generated)
+            except (TypeError, ValueError):
+                custom_sentinel = True
             for name in REGISTRATION_NAMES[1:]:
                 if name in servers:
-                    registration(row, name, "preserve", "No kimi-code writer exists; remove stale pre-rename entries by hand.")
-        row["conditions"].append("Kimi Code reads MCP servers from mcp.json (user level shown here; project level is .kimi-code/mcp.json), not config.toml. Apply the entry manually or via /mcp-config, then start a new session — running sessions never register newly added servers.")
+                    preserve = name == "agent-sentinel" and custom_sentinel
+                    registration(row, name, "preserve" if preserve else "remove", "Custom legacy settings remain unchanged." if preserve else "Collapse this recognized legacy registration into agentacct; retained environment values are not displayed.")
+            if custom_sentinel:
+                row["conditions"].append("Custom agent-sentinel registration is preserved. The agentacct registration is still added or updated alongside it.")
+        if row["existing_status"] in {"parse_error", "unsupported"}:
+            row["conditions"].append("The mcp.json writer refuses to rewrite a file it cannot read as a JSON object (or whose mcpServers is not an object); fix or move the file, then re-run. Existing values are never partially parsed or overwritten.")
+        row["conditions"].append("Kimi Code reads MCP servers from mcp.json (user level shown here; project level is .kimi-code/mcp.json, which agentacct does not write), not config.toml. Start a new session after the write — running sessions never register newly added servers.")
 
     else:
         path = home / ".hermes/config.yaml"
