@@ -882,15 +882,15 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             ),
             "usage_import": _capability_record(
                 "verified_partial",
-                "Input, output, cache-read, and cache-write tokens summed from per-request usage.record increments (usageScope=turn) in per-agent wire.jsonl streams.",
+                "Input, output, cache-read, and cache-write tokens summed from per-request usage.record increments (usageScope=turn) in per-agent wire.jsonl streams, with cost derived from those tokens by the local pricing table.",
                 activation="opt_in_project",
                 verification=_KIMI_CODE_REAL_CAPTURE,
                 limitations=(
                     "One machine and one client build: a dated real-capture fixture plus a same-day single-machine live comparison, not a multi-version guarantee.",
-                    "Kimi Code persists no cost figure, so only agentacct's local pricing-table estimate is possible.",
+                    "Kimi Code persists no cost figure, so a priced row is always agentacct's local pricing-table estimate, never a client- or provider-reported cost, and it exists only while that table covers the reported model id: an unpriced id stays cost-unknown.",
                 ),
                 usage_basis="client_reported",
-                cost_basis="unknown",
+                cost_basis="estimated_from_tokens",
             ),
             "mechanical_capture": _unavailable_capability("No typed Kimi Code plugin-hook adapter is implemented."),
             "mcp_semantics": _unavailable_capability("No Kimi Code MCP registration is implemented and no smoke has been recorded."),
@@ -927,7 +927,8 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
             "automatic_install": _unavailable_capability("agentacct does not write Kimi Code client config or install hooks."),
         },
         "limitations": [
-            "Session-discovery, usage-import, model, and cache-read lanes carry dated real-capture evidence from one machine and one client build; cache-write, zero-usage observation, namespace hardening, multi-version stability, and automatic installation are not claimed."
+            "Session-discovery, usage-import, model, and cache-read lanes carry dated real-capture evidence from one machine and one client build; cache-write, zero-usage observation, namespace hardening, multi-version stability, and automatic installation are not claimed.",
+            "Cost on the usage lane is agentacct's own estimate from the client-reported tokens against the local pricing table, so it follows that table's coverage of the labels Kimi Code reports and stays an equivalent-cost estimate, never Moonshot billing.",
         ],
     },
     {

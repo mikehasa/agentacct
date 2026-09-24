@@ -92,9 +92,10 @@ Generated from the capability manifest; last reviewed 2026-09-23. Integration br
 
 - **Collection path:** `session_index.jsonl session directory index`, `per-agent wire.jsonl event streams`
 - **Session scope:** Usage-bearing usage.record events in per-agent wire.jsonl streams under sessions/wd_<workspace hash>/<session id>/.
-- **Usage / cost basis:** `client_reported` / `unknown`
+- **Usage / cost basis:** `client_reported` / `estimated_from_tokens`
 - **Validation scope:** `single_machine_live_observation` (2026-09-23)
 - Session-discovery, usage-import, model, and cache-read lanes carry dated real-capture evidence from one machine and one client build; cache-write, zero-usage observation, namespace hardening, multi-version stability, and automatic installation are not claimed.
+- Cost on the usage lane is agentacct's own estimate from the client-reported tokens against the local pricing table, so it follows that table's coverage of the labels Kimi Code reports and stays an equivalent-cost estimate, never Moonshot billing.
 
 ### Cursor
 
