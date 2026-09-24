@@ -25,6 +25,13 @@ struct UsageSnapshotConfiguration {
         return "usage-\(viewport)-\(appearance).png"
     }
 
+    /// The "This range" block (its two tables) sits above the chart and the
+    /// date table: every artifact now leads with range totals and shows its own
+    /// dated or charted subject lower down. The viewports keep their sizes —
+    /// the minimum (960×560) and standard (1120×900) windows are the pinned
+    /// ones, and growing the content-reach canvases would have to change the
+    /// trusted inventory in Scripts/dashboard_reference_candidate.py in
+    /// lockstep.
     static let reviewConfigurations: [Self] = [
         Self(chartSelection: 2, viewport: "day-clients-reference", width: 1120, height: 1300, colorScheme: .light, capacityState: .connected, recordedUsageState: .dayClients),
         Self(chartSelection: 2, viewport: "day-clients-reference", width: 1120, height: 1300, colorScheme: .dark, capacityState: .connected, recordedUsageState: .dayClients),

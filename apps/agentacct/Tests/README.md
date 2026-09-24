@@ -313,18 +313,26 @@ Keep ad-hoc PNGs outside the repository.
 
 ## Usage review matrix
 
-The Usage renderer puts recorded totals, selectable dates, and client/model
-rows first. Provider limits remain a separate disclosure below the table.
-The original fixture lanes preserve legacy payload compatibility; the additive
-`usage_daily_breakdown` lane separates the same model across Codex and Hermes,
-with reported zero, missing cache creation, partial costs, and different dates.
+The Usage renderer puts the selected range's own totals first: a "This range"
+block carries one table per agent and one per model — sessions, fresh/cache/
+total tokens, and the recorded cost with its basis — rendered straight from the
+range's `by_client` and `by_model` buckets rather than re-summed from the dated
+rows. Selectable dates and client/model rows follow, and provider limits remain
+a separate disclosure below the table. The original fixture lanes preserve
+legacy payload compatibility; the additive `usage_daily_breakdown` lane
+separates the same model across Codex and Hermes, with reported zero, missing
+cache creation, partial costs, and different dates.
 
-Every configuration renders in light and dark appearances (24 PNGs total):
+Every configuration renders in light and dark appearances (24 PNGs total). The
+range block sits above the chart and the date table, so each artifact shows
+range totals first and its own dated or charted subject lower down; the
+viewports keep their sizes because the reference inventory in
+`Scripts/dashboard_reference_candidate.py` pins them.
 
 | Artifact prefix | Viewport | Coverage |
 | --- | --- | --- |
-| `usage-minimum` | 960 × 560 pt | Minimum window and bounded date table |
-| `usage-reference` | 1120 × 900 pt | Recorded totals and legacy date buckets |
+| `usage-minimum` | 960 × 560 pt | Minimum window: range totals and the full agent table |
+| `usage-reference` | 1120 × 900 pt | Range totals, then the start of the daily chart |
 | `usage-weekly-reference` | 1120 × 1120 pt | Explicit legacy weekly bucket labels |
 | `usage-chart-peak-selected` | 1120 × 1120 pt | Peak date selected |
 | `usage-chart-peak-elsewhere` | 1120 × 1120 pt | Another date selected |
@@ -338,7 +346,9 @@ Every configuration renders in light and dark appearances (24 PNGs total):
 
 PNG dimensions are twice the point dimensions. `UsageDailyBreakdownTests`
 checks selection, identity, absent versus zero categories, held usage, partial
-cost compatibility, and small-value chart scales. `UsageCapacityTests` retains
+cost compatibility, and small-value chart scales. `UsageRangeSummaryTests`
+checks the range tables' ranking, duplicate identity, held and unpriced rows,
+empty state, and copy. `UsageCapacityTests` retains
 coverage for provider windows and plan details. Real native windows verify the
 scrollable date table; noninteractive image renders paint the same bounded row
 window directly because ImageRenderer does not paint native scroll contents.

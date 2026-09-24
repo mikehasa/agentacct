@@ -4552,7 +4552,12 @@ def create_local_api_app(
             if all_time_cube is not None
             else []
         )
-        excluded_records, excluded_unknown_time_rows = filter_usage_records(
+        # Held (non-additive) rows inside the range: still needed on its own so
+        # usage_exclusions can count them and report their normalization reason.
+        # Its unknown-time count is deliberately discarded — that disclosure
+        # must cover BOTH lanes (see the payload below), and the cube's totals
+        # already count them over the same two-lane intake and filters.
+        excluded_records, _ = filter_usage_records(
             usage_view.excluded_saved_records,
             record_time=_usage_record_time,
             client=None if client == "all" else client,
@@ -4586,7 +4591,14 @@ def create_local_api_app(
             "totals": cube["totals"],
             "usage_exclusions": {
                 "non_additive_rows": len(excluded_records),
-                "unknown_time_rows": excluded_unknown_time_rows,
+                # Reads "what did this range leave out?", so it must count every
+                # in-range row dropped for an unusable timestamp in EITHER lane
+                # — additive or held — and therefore reuses the cube's own
+                # count (equal to totals.unknown_time_rows by construction, so
+                # the two can never drift). With days=all nothing is dropped
+                # for this reason: the count then matches the rows kept under
+                # the explicit "unknown" period, exactly as totals reports it.
+                "unknown_time_rows": cube["totals"]["unknown_time_rows"],
                 "reason": _usage_exclusion_reason(excluded_records),
                 "raw_evidence_preserved": True,
             },

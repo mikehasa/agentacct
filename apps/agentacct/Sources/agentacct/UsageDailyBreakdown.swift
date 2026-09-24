@@ -128,6 +128,7 @@ struct UsageRecordedExplorer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.l) {
             summary
+            UsageRangeSummary(usage: usage, days: days)
             if !periods.isEmpty {
                 history
                 dayTable

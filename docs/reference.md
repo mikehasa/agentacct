@@ -205,6 +205,17 @@ Weekly periods use their Monday; unknown timestamps appear only in the all-time
 `unknown` bucket and are counted separately in bounded ranges. Empty periods
 have empty client/model breakdowns, rather than unknown-model zero rows.
 
+`usage_exclusions` reports what the selected range left out: `non_additive_rows`
+counts the held (non-additive) rows inside it — their tokens and costs reach no
+subtotal — while `unknown_time_rows` counts every in-range row dropped for an
+unusable timestamp, additive and held alike. That count is the same one
+`totals.unknown_time_rows` reports, so the two disclosures cannot disagree;
+with `days=all` nothing is dropped for that reason and the count matches the
+rows kept under the `unknown` period. `reason` names the normalization state of
+the held rows (a stable informational value when none are held), and
+`raw_evidence_preserved: true` records that an exclusion is a display rule,
+never a deletion.
+
 `/events/summary?limit=N` keeps its recent-event aggregates bounded, but join-health counters and coverage ratios are computed over every matching event in the store. Machine consumers must inspect `result_scope.partial` and the bridge's `detail_scope.partial`: `links`, `attributions`, and `unlinked_contexts` may be capped even when the canonical full-store ratios are complete. A degraded response includes stable `degraded_reasons` instead of treating one successful join as healthy.
 
 Evidence v2 is additive and enabled by default. It shadows event-ledger writes; it does not rename any public `agentacct_*` MCP tool. The authoritative event ledger is `events.sqlite3` by default; an adopted `events.jsonl` store remains available as a transition backup, and `AGENTACCT_EVENT_LOG_AUTHORITATIVE=0` explicitly selects the legacy flat-ledger mode. Inspect or replay Evidence v2 with:
