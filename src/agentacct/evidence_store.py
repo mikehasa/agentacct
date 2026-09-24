@@ -3686,10 +3686,12 @@ class EvidenceStore:
         * every row sharing a live key is kept, so the rebuild replays each live
           key's whole group, in order, and reproduces those facts exactly.
 
-        ``appended`` holds the identities of rows a writer added to the spool
-        after the snapshot was taken. Those are copied to the candidate verbatim
-        at swap time and are no part of this comparison, so they must not read as
-        rows the compaction lost.
+        ``appended`` holds the identities of rows a writer added to *either* spool
+        after the snapshot was taken — the main spool's tail records, and the
+        refreshable-usage lane's post-snapshot receipts. Those are copied to the
+        candidate verbatim at swap time (with their fences translated) and are no
+        part of this comparison, so they must not read as rows the compaction
+        lost.
 
         ``accountable`` holds the evidence ids and idempotency keys the kept
         *main-spool* rows carry. A live row no kept row answers for was never
@@ -3772,6 +3774,62 @@ class EvidenceStore:
                 rows += len(ids)
         return digest.hexdigest(), rows
 
+    def _refreshable_tail_identities(self, refreshable_limit: int) -> set[str]:
+        """The refreshable-usage identities written *past* the snapshot.
+
+        ``refreshable_usage_batch_receipts.spool_offset`` is the record's byte
+        offset in ``refreshable-usage.jsonl`` (the replay passes the same offset
+        the append returned), so a receipt at or beyond the snapshot's byte
+        length was written after the snapshot was taken — the same boundary, in
+        the same units, as the main spool's tail. Everything the lane derives
+        from such a record is post-snapshot too, and every derived row names the
+        receipt it came from (a revision's ``created_receipt_id``/
+        ``superseded_receipt_id``, a head's ``updated_receipt_id``, a
+        transition's ``receipt_id``, a conflict's ``first_receipt_id``), so the
+        receipts alone are enough to exclude the whole group. The lane's
+        evidence receipts carry the same file's offsets and are collected with
+        them.
+
+        A record's ``main_spool_fence`` is the tempting alternative boundary and
+        is not usable: it is the *main* spool's size when the record was written,
+        and a reconcile that writes no new main-spool row — the common case —
+        fences exactly *at* the snapshot size. ``fence > snapshot`` would miss
+        that record; ``fence >= snapshot`` would also swallow a genuine
+        pre-snapshot record written at the same boundary. Byte offsets in the
+        refreshable file itself have no such tie: they are the record's own
+        position in an append-only file.
+
+        The slots whose head a post-snapshot receipt advanced are excluded with
+        their receipts, because a watermark updates rows *in place*: the head
+        and the slot's revision carry the new source order but name no new
+        receipt, so nothing else marks them as post-snapshot. That is a
+        deliberate, narrow tolerance — a revision or conflict of a slot the
+        compacted spool cannot know was touched is not required in the rebuild.
+        """
+
+        identities: set[str] = set()
+        tail = "SELECT receipt_id FROM refreshable_usage_batch_receipts WHERE spool_offset >= ?"
+        with self._connection() as connection:
+            identities.update(
+                str(row[0]) for row in connection.execute(tail, (refreshable_limit,))
+            )
+            identities.update(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT receipt_id FROM evidence_receipts "
+                    "WHERE spool_offset >= ? AND receipt_id LIKE 'rrc_%'",
+                    (refreshable_limit,),
+                )
+            )
+            identities.update(
+                str(row[0])
+                for row in connection.execute(
+                    f"SELECT slot_key FROM refreshable_usage_heads WHERE updated_receipt_id IN ({tail})",
+                    (refreshable_limit,),
+                )
+            )
+        return identities
+
     def _rebuild_spool_projection(
         self,
         *,
@@ -3826,7 +3884,11 @@ class EvidenceStore:
         as identities and facts; the relative arrival order of the live evidence
         ids; and the candidate's own arithmetic as the snapshot's remainder — its
         size against the snapshot's minus ``dropped_bytes``, and its row count
-        against ``kept_rows``, because a kept row is copied byte for byte.
+        against ``kept_rows``, because a kept row is copied byte for byte. Rows
+        either spool received after the snapshot are excluded from the
+        comparison, on the byte length each file had when the snapshot was
+        taken: they reach the candidate through the delta copy at swap time, not
+        through the scan.
         """
 
         def rebuild_failure(exc: BaseException) -> dict[str, Any]:
@@ -3852,7 +3914,7 @@ class EvidenceStore:
                 )
                 appended = frozenset(
                     self._spool_tail_identities(main_limit, refreshable_limit)
-                )
+                ) | frozenset(self._refreshable_tail_identities(refreshable_limit))
                 live_counts = dict(self._projection_compaction_summary()["counts"])
                 rebuilt_counts = dict(rebuilt_store._projection_compaction_summary()["counts"])
                 mismatches, live_rows, live_ids = self._compare_rebuild_coverage(

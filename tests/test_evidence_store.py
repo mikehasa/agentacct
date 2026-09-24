@@ -2310,6 +2310,104 @@ def test_compact_spool_carries_receipts_written_during_the_offline_pass(
     assert rebuilt.get(late.evidence_id) is not None
 
 
+def test_compact_spool_excludes_refreshable_rows_written_after_the_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The refreshable-usage spool is append-only too, and a live watcher keeps
+    # reconciling while the candidate is built. Those records reach the candidate
+    # through the delta copy at swap time, not through the scan, so the rows they
+    # project — a batch receipt, a revision, a head, its transitions — exist only
+    # in live until then. A containment check that ignored that refused a correct
+    # compaction, which is exactly what the real store's second aborted --write
+    # run hit (fifteen rows, all written during the run).
+    store, dropped_ids = _compactable_store(tmp_path)
+    late = _evidence("late-arrival")
+    original_filter = EvidenceStore._filter_spool_snapshot
+
+    def filter_then_reconcile(self: EvidenceStore, **kwargs: object) -> object:
+        plan = original_filter(self, **kwargs)
+        # An insert, then an update, then a watermark (same content, newer order)
+        # — the last one matters most: its transition and its head change without
+        # naming any post-snapshot evidence id, so only the receipt they came from
+        # marks them as post-snapshot. Between them, a main-spool append.
+        self.reconcile_refreshable_usage(
+            (_refreshable_usage_item("slot-late", value=1, source_order=1),)
+        )
+        record = self._spool_record(kind="evidence", payload=late.to_dict())
+        offset = self._append_spool_record(record)
+        self._project_evidence_record(record, offset)
+        self._set_replay_offset(self.spool_path.stat().st_size)
+        self.reconcile_refreshable_usage(
+            (_refreshable_usage_item("slot-late", value=2, source_order=2),)
+        )
+        # A watermark on the *pre-snapshot* slot: it advances that slot's head and
+        # adds a transition without naming any post-snapshot evidence id, so only
+        # the receipt those rows came from marks them as post-snapshot.
+        assert store.refreshable_usage_heads()[0].slot_key == "slot-a"
+        watermarked = self.reconcile_refreshable_usage(
+            (_refreshable_usage_item("slot-a", value=10, source_order=2),)
+        )
+        assert watermarked.watermarked == 1
+        return plan
+
+    monkeypatch.setattr(EvidenceStore, "_filter_spool_snapshot", filter_then_reconcile)
+
+    result = store.compact_spool(dry_run=False, archive=False)
+
+    assert result.swapped is True
+    assert result.dropped_rows == len(dropped_ids)
+    assert result.verification["equivalent"] is True
+    assert result.verification["mismatches"] == {}
+    # Both reconciles survived, on top of the pre-snapshot one.
+    assert [head.slot_key for head in store.refreshable_usage_heads()] == ["slot-a", "slot-late"]
+    assert store.refreshable_usage_stats().heads == 2
+    assert store.get(late.evidence_id) is not None
+    # And the swapped spools still replay to exactly what the store answers now:
+    # the post-snapshot records were copied with their fences translated.
+    expected = _readable_projection(store)
+    rebuilt = _reopen_from_zero(tmp_path)
+    assert _readable_projection(rebuilt) == expected
+    assert [head.slot_key for head in rebuilt.refreshable_usage_heads()] == ["slot-a", "slot-late"]
+
+
+def test_compact_spool_aborts_when_a_pre_snapshot_refreshable_row_is_missing(
+    tmp_path: Path,
+) -> None:
+    # The other side of the boundary. The exclusion covers rows the refreshable
+    # spool received *after* the snapshot (at or past the length it had then, in
+    # its own byte offsets); a receipt strictly before that boundary that no
+    # rebuild can reproduce is a real loss the gate must still refuse to swap
+    # over. Both are inserted here, one byte apart, to pin the boundary.
+    store, _ = _compactable_store(tmp_path)
+    snapshot_length = store.refreshable_usage_spool_path.stat().st_size
+    with store._connection() as connection:
+        for receipt_id, offset in (
+            ("rrb_after_the_snapshot", snapshot_length),
+            ("rrb_before_the_snapshot", snapshot_length - 1),
+        ):
+            connection.execute(
+                "INSERT INTO refreshable_usage_batch_receipts(receipt_id, spool_offset, received_at, "
+                "complete, transition_count, inserted_count, updated_count, resurrected_count, "
+                "watermarked_count, tombstoned_count, conflict_count) "
+                "VALUES(?, ?, '2026-07-13T00:00:00.000000Z', 0, 0, 0, 0, 0, 0, 0, 0)",
+                (receipt_id, offset),
+            )
+    spool = store.spool_path
+    original = spool.read_bytes()
+
+    result = store.compact_spool(dry_run=False, archive=True)
+
+    assert result.swapped is False
+    assert result.verification["outcome"] == "aborted"
+    assert result.verification["equivalent"] is False
+    missing = result.verification["mismatches"]["refreshable_usage_batch_receipts"]
+    assert missing["live_rows_missing_from_the_rebuild"] == 1
+    assert [row[0] for row in missing["sample"]] == ["rrb_before_the_snapshot"]
+    assert spool.read_bytes() == original
+    assert not list((tmp_path / "archive").glob("*"))
+
+
 def test_compact_spool_refuses_to_swap_when_the_spool_was_replaced(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -410,9 +410,26 @@ arrival order of every live evidence id (a digest, exact). Anything missing
 blocks the swap, leaves the live spool untouched, and is reported. The candidate
 must also be the snapshot's own remainder: its byte count has to equal what the
 scan measured for the kept rows, and its row count has to equal `kept_rows`,
-because a kept row is copied verbatim. Identities a writer appended *after* the
-snapshot are excluded from the comparison: they are copied to the candidate
-verbatim at swap time, so they cannot read as rows the compaction lost.
+because a kept row is copied verbatim. Rows either spool received *after* the
+snapshot are excluded from the comparison: they are copied to the candidate at
+swap time — verbatim on the main spool, with their fences translated on the
+refreshable-usage one — so they cannot read as rows the compaction lost. The
+boundary is each file's byte length when the snapshot was taken: for the main
+spool that is the snapshot size, and for the refreshable-usage spool it is the
+`spool_offset` its batch and `rrc_` evidence receipts carry, which is the
+record's own offset in `refreshable-usage.jsonl`. Everything the lane derives
+from a post-snapshot receipt is excluded with it — its revisions, the heads it
+updated, its transitions, its conflicts — and, because a watermark updates the
+head and the slot's revision *in place* without naming a new receipt, the slots
+whose head a post-snapshot receipt advanced are excluded as well.
+
+The tempting alternative boundary for the refreshable lane — a record whose
+`main_spool_fence` exceeds the main spool's snapshot size — does not work: the
+fence is the *main* spool's size when the record was written, and a reconcile
+that writes no new main-spool row (the common case) fences exactly *at* the
+snapshot size, so `fence > snapshot` misses it and `fence >= snapshot` also
+swallows a genuine pre-snapshot record written at that same boundary. Byte
+offsets in the refreshable file itself have no such tie.
 
 The comparison is a *containment* rather than an equality, and that is the one
 subtlety worth spelling out. `prune_versions` deletes versions, receipts,
