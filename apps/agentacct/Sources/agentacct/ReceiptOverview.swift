@@ -50,6 +50,61 @@ struct ReceiptOverviewPresentation {
     }
 }
 
+/// The agent's own account, labelled as such. Every line is agent-reported
+/// prose; the counted metrics below it are the app's.
+struct ReceiptAgentReportPresentation {
+    let goalLabel: String?
+    let goal: String?
+    let progressLabel: String?
+    let progress: String?
+    let progressFull: String?
+    let nextStep: String?
+    let caption: String
+
+    init?(report: ReceiptAgentReport?) {
+        guard let report, report.goal != nil || report.progress != nil else { return nil }
+        if let goal = report.goal, !goal.text.isEmpty {
+            // A step title is how the work began, not necessarily what it is for.
+            goalLabel = goal.source == "goal" ? "Goal" : "Started with"
+            self.goal = goal.text
+        } else {
+            goalLabel = nil
+            goal = nil
+        }
+        var captionParts = ["Agent reported"]
+        if let progress = report.progress, !progress.text.isEmpty {
+            let lead = progress.lead.flatMap { $0.isEmpty ? nil : $0 } ?? progress.text
+            switch progress.source {
+            case "progress": progressLabel = "Progress"
+            case "blocker": progressLabel = "Blocked on"
+            default: progressLabel = "Latest step"
+            }
+            self.progress = lead
+            progressFull = lead == progress.text ? nil : progress.text
+            if let ago = agoText(progress.writtenAt) { captionParts.append("written \(ago)") }
+            if progress.source != "progress", let title = progress.stepTitle, !title.isEmpty {
+                // The step title only locates the note; the Steps list has it whole.
+                let shown = title.count > 60 ? String(title.prefix(59)).trimmingCharacters(in: .whitespaces) + "\u{2026}" : title
+                captionParts.append("from the closing note of \u{201C}\(shown)\u{201D}")
+            }
+        } else {
+            progressLabel = nil
+            progress = nil
+            progressFull = nil
+        }
+        nextStep = report.nextStep.flatMap { $0.isEmpty ? nil : $0 }
+        if report.activityAfterReport == true { captionParts.append("work continued after this was written") }
+        caption = captionParts.joined(separator: " · ")
+    }
+
+    var accessibilityLabel: String {
+        [goalLabel.flatMap { label in goal.map { "\(label): \($0)" } },
+         progressLabel.flatMap { label in progress.map { "\(label): \($0)" } },
+         nextStep.map { "Next: \($0)" },
+         caption].compactMap { $0 }.joined(separator: ". ")
+    }
+}
+
 struct ReceiptOverview: View {
     let receipt: Receipt
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -65,10 +120,18 @@ struct ReceiptOverview: View {
                     Spacer(minLength: Space.s)
                     Text("Whole task").workFont(.caption).foregroundStyle(Theme.muted)
                 }
-                Text(verbatim: presentation.decision.explanation)
-                    .workFont(.body).foregroundStyle(Theme.ink)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                let report = ReceiptAgentReportPresentation(report: receipt.dimensions.outcome.agentReport)
+                // "Still in progress" only restates the status badge; once the
+                // agent's own account is there, that account is the useful line.
+                if report == nil || receipt.axes.decisionStatus.key != "in_progress" {
+                    Text(verbatim: presentation.decision.explanation)
+                        .workFont(.body).foregroundStyle(Theme.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                if let report {
+                    agentReport(report)
+                }
 
                 Rectangle().fill(Theme.hairline).frame(height: 1)
                 if dynamicTypeSize.isAccessibilitySize {
@@ -86,6 +149,39 @@ struct ReceiptOverview: View {
             }
         }
         .accessibilityIdentifier("work.receipt.overview")
+    }
+
+    private func agentReport(_ report: ReceiptAgentReportPresentation) -> some View {
+        VStack(alignment: .leading, spacing: Space.s) {
+            Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: Space.m, verticalSpacing: Space.s) {
+                if let label = report.goalLabel, let goal = report.goal {
+                    reportRow(label, goal)
+                }
+                if let label = report.progressLabel, let progress = report.progress {
+                    reportRow(label, progress, fullText: report.progressFull)
+                }
+                if let next = report.nextStep {
+                    reportRow("Next", next)
+                }
+            }
+            Text(report.caption).workFont(.caption).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(report.accessibilityLabel)
+        .accessibilityIdentifier("work.receipt.agentReport")
+    }
+
+    private func reportRow(_ label: String, _ text: String, fullText: String? = nil) -> some View {
+        GridRow {
+            Text(label.uppercased()).workFont(.labelCaps).foregroundStyle(Theme.muted)
+                .gridColumnAlignment(.leading)
+            Text(verbatim: text).workFont(.body).foregroundStyle(Theme.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+                .help(fullText ?? "")
+        }
     }
 
     private func metrics(_ presentation: ReceiptOverviewPresentation, columns: Int) -> some View {

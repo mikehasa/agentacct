@@ -125,6 +125,63 @@ final class ReceiptOverviewTests: XCTestCase {
         XCTAssertFalse(presentation.decision.isAttention)
     }
 
+    func testAgentReportIsLabelledAndTheProgressNoteShownWhole() throws {
+        let presentation = try XCTUnwrap(ReceiptAgentReportPresentation(report: try agentReport([
+            "goal": ["text": "Stop duplicate checkout charges", "source": "goal"],
+            "progress": [
+                "text": "Retries reuse the first charge. Stopped before refunds; next: cover them.",
+                "lead": "Retries reuse the first charge. Stopped before refunds; next: cover them.",
+                "source": "progress", "step_title": "Fix duplicate charges",
+            ],
+            "next_step": "Cover refunds with a test.",
+            "activity_after_report": false,
+        ])))
+        XCTAssertEqual(presentation.goalLabel, "Goal")
+        XCTAssertEqual(presentation.progressLabel, "Progress")
+        XCTAssertEqual(presentation.progress, "Retries reuse the first charge. Stopped before refunds; next: cover them.")
+        XCTAssertNil(presentation.progressFull)
+        XCTAssertEqual(presentation.nextStep, "Cover refunds with a test.")
+        XCTAssertEqual(presentation.caption, "Agent reported")
+    }
+
+    func testStandInTextSaysWhereItCameFromAndShowsOnlyItsLead() throws {
+        let presentation = try XCTUnwrap(ReceiptAgentReportPresentation(report: try agentReport([
+            "goal": ["text": "Load the review assignment", "source": "step_title"],
+            "progress": [
+                "text": "Rounded each line before summing.\n- Verified: 14 passed",
+                "lead": "Rounded each line before summing.",
+                "source": "step_summary", "step_title": "Fix the rounding",
+            ],
+            "activity_after_report": true,
+        ])))
+        XCTAssertEqual(presentation.goalLabel, "Started with")
+        XCTAssertEqual(presentation.progressLabel, "Latest step")
+        XCTAssertEqual(presentation.progress, "Rounded each line before summing.")
+        XCTAssertEqual(presentation.progressFull, "Rounded each line before summing.\n- Verified: 14 passed")
+        XCTAssertTrue(presentation.caption.hasPrefix("Agent reported"))
+        XCTAssertTrue(presentation.caption.contains("\u{201C}Fix the rounding\u{201D}"))
+        XCTAssertTrue(presentation.caption.hasSuffix("work continued after this was written"))
+    }
+
+    func testABlockerIsNamedAndAnEmptyReportRendersNothing() throws {
+        let blocked = try XCTUnwrap(ReceiptAgentReportPresentation(report: try agentReport([
+            "progress": ["text": "The staging key has expired.", "source": "blocker"],
+        ])))
+        XCTAssertEqual(blocked.progressLabel, "Blocked on")
+        XCTAssertNil(blocked.goalLabel)
+        XCTAssertNil(ReceiptAgentReportPresentation(report: try agentReport([:])))
+        XCTAssertNil(ReceiptAgentReportPresentation(report: nil))
+    }
+
+    func testOlderReceiptsWithoutAnAgentReportStillDecode() throws {
+        let receipt = try decode(try receiptObject())
+        XCTAssertNil(receipt.dimensions.outcome.agentReport)
+    }
+
+    private func agentReport(_ object: [String: Any]) throws -> ReceiptAgentReport {
+        try JSONDecoder().decode(ReceiptAgentReport.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
     private func receiptObject() throws -> [String: Any] {
         let url = try XCTUnwrap(Bundle.module.url(forResource: "dashboard", withExtension: "json"))
         let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
