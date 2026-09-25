@@ -97,6 +97,22 @@ struct ReceiptAgentReportPresentation {
         caption = captionParts.joined(separator: " · ")
     }
 
+    /// Whether the card still needs the decision sentence above this account.
+    /// "Still in progress" only restates the status badge, and a blocked Task's
+    /// decision sentence is the agent's own blocker, which the account already
+    /// shows under "Blocked on"; any other decision sentence says something the
+    /// account does not, so it stays.
+    static func showsDecisionStatement(decisionKey: String?, statement: String?, report: ReceiptAgentReportPresentation?) -> Bool {
+        guard let report else { return true }
+        if decisionKey == "in_progress" { return false }
+        let normalize = { (text: String?) in
+            (text ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
+                .trimmingCharacters(in: CharacterSet(charactersIn: ".")).lowercased()
+        }
+        let decision = normalize(statement)
+        return decision.isEmpty || decision != normalize(report.progressFull ?? report.progress)
+    }
+
     var accessibilityLabel: String {
         [goalLabel.flatMap { label in goal.map { "\(label): \($0)" } },
          progressLabel.flatMap { label in progress.map { "\(label): \($0)" } },
@@ -121,9 +137,11 @@ struct ReceiptOverview: View {
                     Text("Whole task").workFont(.caption).foregroundStyle(Theme.muted)
                 }
                 let report = ReceiptAgentReportPresentation(report: receipt.dimensions.outcome.agentReport)
-                // "Still in progress" only restates the status badge; once the
-                // agent's own account is there, that account is the useful line.
-                if report == nil || receipt.axes.decisionStatus.key != "in_progress" {
+                if ReceiptAgentReportPresentation.showsDecisionStatement(
+                    decisionKey: receipt.axes.decisionStatus.key,
+                    statement: receipt.axes.decisionStatus.statement,
+                    report: report
+                ) {
                     Text(verbatim: presentation.decision.explanation)
                         .workFont(.body).foregroundStyle(Theme.ink)
                         .fixedSize(horizontal: false, vertical: true)

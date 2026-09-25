@@ -173,9 +173,26 @@ final class ReceiptOverviewTests: XCTestCase {
         XCTAssertNil(ReceiptAgentReportPresentation(report: nil))
     }
 
+    func testDecisionSentenceIsDroppedOnlyWhenTheAccountAlreadySaysIt() throws {
+        let blocked = try XCTUnwrap(ReceiptAgentReportPresentation(report: try agentReport([
+            "progress": ["text": "The staging key has expired.", "source": "blocker"],
+        ])))
+        typealias P = ReceiptAgentReportPresentation
+        XCTAssertFalse(P.showsDecisionStatement(decisionKey: "blocked", statement: "The staging  key has expired", report: blocked))
+        XCTAssertFalse(P.showsDecisionStatement(decisionKey: "in_progress", statement: "This Task is still in progress.", report: blocked))
+        XCTAssertTrue(P.showsDecisionStatement(decisionKey: "verified", statement: "Checks passed.", report: blocked))
+        XCTAssertTrue(P.showsDecisionStatement(decisionKey: "in_progress", statement: "This Task is still in progress.", report: nil))
+    }
+
     func testOlderReceiptsWithoutAnAgentReportStillDecode() throws {
-        let receipt = try decode(try receiptObject())
-        XCTAssertNil(receipt.dimensions.outcome.agentReport)
+        var object = try receiptObject()
+        var dimensions = try XCTUnwrap(object["dimensions"] as? [String: Any])
+        var outcome = try XCTUnwrap(dimensions["outcome"] as? [String: Any])
+        outcome.removeValue(forKey: "agent_report")
+        dimensions["outcome"] = outcome
+        object["dimensions"] = dimensions
+        XCTAssertNil(try decode(object).dimensions.outcome.agentReport)
+        XCTAssertNotNil(try decode(try receiptObject()).dimensions.outcome.agentReport)
     }
 
     private func agentReport(_ object: [String: Any]) throws -> ReceiptAgentReport {
