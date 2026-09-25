@@ -1472,6 +1472,9 @@ struct ReceiptOutcomeDim: Decodable {
     // other decision key; older payloads omit them entirely (additive, tolerated).
     let quietSince: Double?
     let newerSessionStartedAt: Double?
+    /// The agent's own account of the Task (goal, progress, next step). Always
+    /// agent-reported prose; never part of the decision. Older payloads omit it.
+    let agentReport: ReceiptAgentReport?
 
     enum CodingKeys: String, CodingKey {
         case decisionStatus = "decision_status"
@@ -1480,6 +1483,43 @@ struct ReceiptOutcomeDim: Decodable {
         case provenance, gaps
         case quietSince = "quiet_since"
         case newerSessionStartedAt = "newer_session_started_at"
+        case agentReport = "agent_report"
+    }
+}
+
+struct ReceiptAgentReport: Decodable {
+    struct Goal: Decodable {
+        let text: String
+        /// `goal` when the agent wrote one; `step_title` when the first step's
+        /// title stands in for it.
+        let source: String
+    }
+
+    struct Progress: Decodable {
+        let text: String
+        let lead: String?
+        /// `progress` for an agent's progress note; `step_summary` or `blocker`
+        /// when a closed step's own text stands in for one.
+        let source: String
+        let stepTitle: String?
+        let writtenAt: Double?
+
+        enum CodingKeys: String, CodingKey {
+            case text, lead, source
+            case stepTitle = "step_title"
+            case writtenAt = "written_at"
+        }
+    }
+
+    let goal: Goal?
+    let progress: Progress?
+    let nextStep: String?
+    let activityAfterReport: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case goal, progress
+        case nextStep = "next_step"
+        case activityAfterReport = "activity_after_report"
     }
 }
 

@@ -948,6 +948,120 @@ def _evidence_dimension(checks: list[Mapping[str, Any]], strength: Mapping[str, 
     }
 
 
+# Work recorded more than this long after the agent's account was written makes
+# the account "older than the latest activity". Only a caption changes; the
+# account stays, because a reported state is still what the agent last said.
+AGENT_REPORT_STALE_AFTER_SECONDS = 30 * 60
+
+_AGENT_REPORT_TERMINAL_STATUSES = {"completed", "handed_off", "blocked"}
+
+
+def _root_session_ids(task: Mapping[str, Any]) -> set[str]:
+    ids = {
+        _text(ref.get("client_session_id"))
+        for ref in (task.get("root_keys") if isinstance(task.get("root_keys"), list) else [])
+        if isinstance(ref, Mapping) and _text(ref.get("client_session_id"))
+    }
+    primary_session = _text(_mapping(task.get("primary_root")).get("client_session_id"))
+    if primary_session:
+        ids.add(primary_session)
+    return ids
+
+
+def _agent_report(task: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The agent's own account of the Task: what it is for, what got done, and
+    where it stopped. Every field is agent-reported prose, never a count.
+
+    Reduced from the Task's steps with one policy per field. The goal is the
+    first one recorded, so a late subagent errand cannot become the Task's
+    purpose; progress is the newest account from the root session(s), because a
+    subagent's last note describes its errand, not the Task. Before agents wrote
+    `goal`/`progress` notes, the newest closed step's summary (or blocker) stands
+    in, and the first step's title stands in for the goal; ``source`` names which
+    one the reader is looking at.
+    """
+    items = _items(task)
+    if not items:
+        return None
+    root_ids = _root_session_ids(task)
+
+    def is_root(item: Mapping[str, Any]) -> bool:
+        session = _text(item.get("client_session_id"))
+        return not session or not root_ids or session in root_ids
+
+    pool = [item for item in items if is_root(item)] or items
+
+    def started(item: Mapping[str, Any]) -> float:
+        return _number(item.get("started_at") or item.get("updated_at"))
+
+    def updated(item: Mapping[str, Any]) -> float:
+        return _number(item.get("updated_at") or item.get("started_at"))
+
+    by_start = sorted(pool, key=started)
+    goal: dict[str, Any] | None = None
+    goal_item = next((item for item in by_start if _text(item.get("goal"))), None)
+    if goal_item is not None:
+        goal = {"text": _text(goal_item.get("goal")), "source": "goal", "section_id": goal_item.get("section_id")}
+    elif by_start and _text(by_start[0].get("title")):
+        goal = {"text": _text(by_start[0].get("title")), "source": "step_title", "section_id": by_start[0].get("section_id")}
+
+    newest_first = sorted(pool, key=updated, reverse=True)
+    progress_item = next((item for item in newest_first if _text(item.get("progress"))), None)
+    progress: dict[str, Any] | None = None
+    if progress_item is not None:
+        progress = {"text": _text(progress_item.get("progress")), "source": "progress"}
+    else:
+        progress_item = next(
+            (
+                item
+                for item in newest_first
+                if _text(item.get("latest_status")).lower() in _AGENT_REPORT_TERMINAL_STATUSES
+                and (_text(item.get("summary")) or _text(item.get("blocker")))
+            ),
+            None,
+        )
+        if progress_item is not None:
+            if _text(progress_item.get("latest_status")).lower() == "blocked" and _text(progress_item.get("blocker")):
+                progress = {"text": _text(progress_item.get("blocker")), "source": "blocker"}
+            else:
+                progress = {"text": _text(progress_item.get("summary")), "source": "step_summary"}
+    if progress is None and goal is None:
+        return None
+
+    written_at = updated(progress_item) if progress_item is not None else None
+    if progress is not None and progress_item is not None:
+        # A step summary leads with its outcome sentence and then lists detail,
+        # so its first line is what a card can carry; a progress note is short
+        # by construction and is its own lead.
+        lead = next((line.strip() for line in progress["text"].splitlines() if line.strip()), progress["text"])
+        progress.update(
+            {
+                "lead": lead,
+                "section_id": progress_item.get("section_id"),
+                "step_title": _text(progress_item.get("title")) or None,
+                "step_status": _text(progress_item.get("latest_status")) or None,
+                "written_at": written_at,
+            }
+        )
+    next_step: str | None = None
+    if progress_item is not None:
+        next_step = _text(progress_item.get("next_step")) or None
+    last_activity = max(
+        _number(task.get("last_activity_at")),
+        max((updated(item) for item in items), default=0.0),
+    )
+    newer_activity = bool(
+        written_at and last_activity and last_activity - written_at > AGENT_REPORT_STALE_AFTER_SECONDS
+    )
+    return {
+        "goal": goal,
+        "progress": progress,
+        "next_step": next_step,
+        "last_activity_at": last_activity or None,
+        "activity_after_report": newer_activity,
+    }
+
+
 def _outcome_dimension(
     decision: Mapping[str, Any],
     verification: Mapping[str, Any],
@@ -1157,6 +1271,9 @@ def build_receipt(
             decision, verification, decision_brief, checks, canonical
         ),
     }
+    # Agent-reported prose rides beside the counted outcome, never inside it:
+    # its provenance is always the agent, so it cannot lift the decision.
+    dimensions["outcome"]["agent_report"] = _agent_report(task)
     coverage = intelligence.get("coverage") if isinstance(intelligence.get("coverage"), list) else []
     # Roll both meta-dimensions up over ONLY the six content dimensions, before
     # inserting them — ``gaps`` and ``provenance`` carry no provenance of their

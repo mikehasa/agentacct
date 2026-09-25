@@ -17,8 +17,17 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   refused with a corrected example, like a missing `summary`. An optional
   `goal` (up to 120 characters) states what the work is for; the first goal a
   section records is kept, and progress keeps the newest note. Both are carried
-  onto work items, `/v1/sessions`, and `agentacct_work_status`. Nothing renders
-  them yet: the Work views will add them once notes have accumulated.
+  onto work items, `/v1/sessions`, and `agentacct_work_status`.
+- The task page's **Recorded outcome** card shows the agent's own account above
+  the counted metrics: the goal (or, until agents write one, the first step's
+  title as "Started with"), the newest progress note from the root session (or,
+  before notes existed, the first line of the newest closed step's summary or
+  blocker as "Latest step", with the full text on hover), and the next step.
+  A caption labels all of it agent-reported, says when it was written and which
+  step it came from, and notes when work continued afterwards. The generic
+  "This Task is still in progress." line is dropped when that account is there,
+  since the status badge already says so. The receipt carries the same block as
+  `dimensions.outcome.agent_report`; persisted receipt snapshots rebuild once.
 
 ### Fixed
 

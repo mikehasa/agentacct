@@ -26,7 +26,7 @@ from .version import package_version
 # wire schema stays v1. Bump this manual revision for reducer, calibration or
 # redaction semantics changed without a package release (including source
 # checkouts, whose package identity may remain 0.0.0+source).
-RECEIPT_PROJECTOR_REVISION = 1
+RECEIPT_PROJECTOR_REVISION = 2
 RECEIPT_PROJECTOR_VERSION = f"agentacct:{package_version()}:receipt-projector:{RECEIPT_PROJECTOR_REVISION}"
 MAX_ENTRY_BYTES = 32 * 1024 * 1024
 MAX_GENERATION_BYTES = 256 * 1024 * 1024

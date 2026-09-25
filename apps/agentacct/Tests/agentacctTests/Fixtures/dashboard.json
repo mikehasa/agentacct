@@ -1017,7 +1017,26 @@
           "provenance": [
             "agent_report",
             "client_hook"
-          ]
+          ],
+          "agent_report": {
+            "goal": {
+              "text": "Render every app surface from fixed inputs so UI changes can be reviewed as images",
+              "source": "goal",
+              "section_id": "harness"
+            },
+            "progress": {
+              "text": "Every pane now renders from a fixture and the renderer checks pass. Done; next: record the reference images.",
+              "lead": "Every pane now renders from a fixture and the renderer checks pass. Done; next: record the reference images.",
+              "source": "progress",
+              "section_id": "harness",
+              "step_title": "Build the snapshot harness",
+              "step_status": "completed",
+              "written_at": 1787611600
+            },
+            "next_step": null,
+            "last_activity_at": 1787611800,
+            "activity_after_report": false
+          }
         },
         "gaps": {
           "count": 2,
@@ -1777,7 +1796,26 @@
           "asserted_by": "agent_report",
           "provenance": [
             "agent_report"
-          ]
+          ],
+          "agent_report": {
+            "goal": {
+              "text": "Calibrate provider usage against a representative window",
+              "source": "step_title",
+              "section_id": "calibrate"
+            },
+            "progress": {
+              "text": "Provider calibration cannot continue until a representative usage window is available.",
+              "lead": "Provider calibration cannot continue until a representative usage window is available.",
+              "source": "blocker",
+              "section_id": "calibrate",
+              "step_title": "Calibrate provider usage",
+              "step_status": "blocked",
+              "written_at": 1787359600
+            },
+            "next_step": "Ask the user for a week of representative usage.",
+            "last_activity_at": 1787532400,
+            "activity_after_report": true
+          }
         },
         "gaps": {
           "count": 1,
