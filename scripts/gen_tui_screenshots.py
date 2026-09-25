@@ -195,7 +195,8 @@ def build_store():
         _usage(svc, client="claude-code", model=OPUS, session=sid, title=title,
                tokens=1_800_000, at=at, cost=1.4, project=proj)
         _section(svc, session=sid, title="Plan the change", section_id=f"{sid}-plan",
-                 status="completed", at=at - 60, project=proj, kind="planning", summary="Scoped the change.")
+                 status="completed", at=at - 60, project=proj, kind="planning",
+                 summary="Scoped the change against the current module boundaries.")
         _section(svc, session=sid, title=title, section_id=f"{sid}-impl", status="checkpoint",
                  at=at, project=proj, summary="Mid-implementation.")
 
@@ -226,9 +227,9 @@ def build_store():
              status="completed", at=T - 400, project="agentacct", kind="planning",
              summary="Chose a fixed store + golden-SVG approach; scoped light & dark.")
     for step, (sid, title, kind, summ) in enumerate((
-        ("cc-harness-fixture", "Build the fixture store", "implementation", "Seeded the six-session fixture."),
-        ("cc-harness-render", "Render the four panes", "implementation", "Wired headless render of every pane."),
-        ("cc-harness-golden", "Lock the golden SVGs", "testing", "Baselined light & dark goldens."),
+        ("cc-harness-fixture", "Build the fixture store", "implementation", "Seeded the six-session fixture from a synthetic store."),
+        ("cc-harness-render", "Render the four panes", "implementation", "Wired headless render for every pane the README shows."),
+        ("cc-harness-golden", "Lock the golden SVGs", "testing", "Baselined the light and dark goldens for all four panes."),
         ("cc-harness-review", "Review + document", "review", "Addressed review notes; documented the harness."),
     )):
         _section(svc, session="cc-harness", title=title, section_id=sid, status="completed",
@@ -255,9 +256,9 @@ def build_store():
     _usage(svc, client="claude-code", model=OPUS, session="cc-hierarchy",
            title="Rethink dashboard product hierarchy", tokens=2_900_000, at=NOW - 660, cost=2.16, project="agentacct-gui")
     for sid, title, kind, summ in (
-        ("cc-hierarchy-plan", "Map the current hierarchy", "planning", "Catalogued every dashboard surface."),
-        ("cc-hierarchy-impl", "Regroup into shift-brief order", "implementation", "Reordered into attention-first."),
-        ("cc-hierarchy-copy", "Rewrite the section labels", "implementation", "New labels for each rail block."),
+        ("cc-hierarchy-plan", "Map the current hierarchy", "planning", "Catalogued every dashboard surface before regrouping it."),
+        ("cc-hierarchy-impl", "Regroup into shift-brief order", "implementation", "Reordered the rails into attention-first order."),
+        ("cc-hierarchy-copy", "Rewrite the section labels", "implementation", "Wrote new labels for each rail and section block."),
     ):
         _section(svc, session="cc-hierarchy", title=title, section_id=sid, status="completed",
                  at=NOW - 700, project="agentacct-gui", kind=kind, summary=summ)
@@ -354,21 +355,17 @@ async def shoot():
         await pilot.pause()
         # Open on the verified, richly-instrumented receipt (as the artifact does)
         # so the detail showcases the outcome KPIs, summary strip, and tool bars.
-        from textual.widgets import ListView as _LV
+        from textual.widgets import DataTable
         for summary in app._work_summaries:
             if str(summary.get("title")) == "Build reusable snapshot harness":
                 app._selected_task_id = str(summary.get("task_id"))
                 app._render_work_list()
                 break
         await pilot.pause()
-        lv = app.query_one("#work-list", _LV)
-        lv.focus()
-        # Setting `index` right after an async clear()+append misses the not-yet-
-        # mounted child, so light the selected card's highlight directly (live
-        # keyboard navigation applies it on its own).
-        if app._expanded_index is not None:
-            for i, item in enumerate(lv.children):
-                item.highlighted = (i == app._expanded_index)
+        # The sessions list is a DataTable (cursor_type="row"); _render_work_list
+        # has already moved its cursor onto the selected receipt, so focusing the
+        # table is the whole highlight step.
+        app.query_one("#work-list", DataTable).focus()
         await app.workers.wait_for_complete()
         await pilot.pause()
         await pilot.pause()

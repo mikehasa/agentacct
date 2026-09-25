@@ -9,7 +9,7 @@ English · [简体中文](README.zh-CN.md)
 
 **agentacct answers one simple question: what the fuck are my agents actually doing?**
 
-See what your coding agents have been working on, across projects and clients: recent activity, tool calls, recorded steps, checks, tokens, and estimated cost. Open a task for its Work Receipt and follow the activity timeline from attempt to result. Built from the local session logs of Claude Code, Codex, OpenCode, Hermes, and others. No account, no cloud, nothing leaves your computer.
+See what your coding agents have been working on, across projects and clients: recent activity, tool calls, recorded steps, checks, tokens, and estimated cost. Open a task for its Work Receipt and follow the activity timeline from attempt to result. Built from the local session logs of Claude Code, Codex, Kimi Code, OpenCode, Hermes, and others. No account, no cloud, nothing leaves your computer.
 
 ![Sessions and a Work Receipt: a latest-first task list beside the recorded outcome, session count, estimated cost, claim coverage, check results, and activity timeline.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-work-receipt.png)
 
@@ -49,17 +49,17 @@ The Dashboard shows the latest recorded work across your projects, with its clie
 
 ## Understand the usage behind the work
 
-![Usage with a daily chart, Fresh, Cache, Total, and Cost columns, and a selected-date breakdown by client and model with separate cache reads and writes. Dates represent session totals by activity date.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
+![Usage with independent Date, Agent, Model, and Provider filters, range totals by agent and by model, a daily chart with a Fresh/All tokens toggle, and a selected date's breakdown by client and model with separate cache reads and writes.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/app-usage.png)
 
-Select a date to compare clients and models—for example, the same model through Codex and Hermes. The token chart remembers your **Fresh** or **All tokens** choice. Tables show fresh, cache, and total tokens side by side; the client/model breakdown separates cache reads and writes. Hover a **Fresh** value for input and output counts.
+Filter by date, agent, model, or provider—independently, so "Codex on Opus, last 7 days" is one selection instead of a page you reset. **This range** totals the same rows by agent and by model, and selecting a date narrows the client/model breakdown under the date table. The chart remembers your **Fresh** or **All tokens** choice, and the tables show fresh, cache, and total tokens side by side with cache reads and writes separated. Hover a **Fresh** value for input and output counts.
 
-Dates show **session totals by activity date**; sessions spanning several days are not split into exact daily consumption. Provider-reported quota windows and reset times are available on the same page. Tokens come from client records; costs are pricing-table estimates marked `≈`, never an invoice.
+The top bar always says how fresh the local data is (**Local data · just now**, or the last saved copy). Dates show **session totals by activity date**; sessions spanning several days are not split into exact daily consumption. Provider-reported quota windows and reset times are available on the same page. Tokens come from client records; costs are pricing-table estimates marked `≈`, never an invoice.
 
 ## Also in the terminal
 
 ![agentacct tui: a Needs review block whose first item is a blocked claude-code task with its recorded reason, next step, and MCP-record provenance; a Right now rail with Working now, Capacity, Usage change, and Evidence trust; a Recent work table with outcome, evidence, and estimated cost; and a usage history sparkline.](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
 
-`agentacct tui` provides receipts, usage, capacity, and its own review overview in your shell — including the folder-anchored **Work** tab, where each group draws its sessions across every agent on one cross-agent timeline you can open (`↵`) and zoom/scrub by keyboard. Press `?` for the keys.
+`agentacct tui` provides receipts, usage, capacity, and its own review overview in your shell — including the folder-anchored **Work** tab, where each group draws its sessions across every agent on one cross-agent timeline you can open (`↵`) and zoom/scrub by keyboard. Its top bar carries the same local-data stamp as the app. Press `?` for the keys.
 
 ## Honest by design
 

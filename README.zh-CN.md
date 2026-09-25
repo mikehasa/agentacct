@@ -9,7 +9,7 @@
 
 **agentacct 帮你搞清楚一件事：你的 agent 到底干了什么。**
 
-看清不同项目、不同客户端里的 coding agents 最近做了什么：活动、工具调用、记录的步骤、检查、token 和估算费用。打开任务，就能沿着 Work Receipt（工作收据）的时间线，从一次尝试看到后来的结果。数据来自 Claude Code、Codex、OpenCode、Hermes 等客户端的本地会话日志。不需要注册账号，不上传云端，所有数据都留在本机。
+看清不同项目、不同客户端里的 coding agents 最近做了什么：活动、工具调用、记录的步骤、检查、token 和估算费用。打开任务，就能沿着 Work Receipt（工作收据）的时间线，从一次尝试看到后来的结果。数据来自 Claude Code、Codex、Kimi Code、OpenCode、Hermes 等客户端的本地会话日志。不需要注册账号，不上传云端，所有数据都留在本机。
 
 ![Sessions 与 Work Receipt：按最新活动排序的任务列表，旁边是记录的结果、会话数、估算费用、声明支持情况、检查结果和活动时间线。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-work-receipt.png)
 
@@ -49,17 +49,17 @@ Dashboard 展示各个项目最新记录的工作，以及客户端、活动时�
 
 ## 看懂工作背后的用量
 
-![Usage 展示每日图表、Fresh、Cache、Total 和 Cost 列，以及所选日期按客户端和模型拆分的用量，分别列出缓存读取与写入。日期表示按活动日期归属的会话总量。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-usage.png)
+![Usage 展示相互独立的日期、Agent、Model、Provider 四个筛选器，按 agent 和模型汇总的区间合计，带 Fresh / All tokens 切换的每日图表，以及所选日期按客户端和模型拆分的用量（分别列出缓存读取与写入）。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/zh-CN/app-usage.png)
 
-选择日期，就能比较客户端和模型的用量，例如区分 Codex 和 Hermes 使用同一模型的记录。token 图表会记住你的 **Fresh** 或 **All tokens** 选择。表格始终并列展示新增、缓存和总 token；客户端与模型明细还会区分缓存读取与写入。将鼠标移到 **Fresh** 数值上，可以查看输入和输出计数。
+日期、agent、模型、provider 四个筛选器各自独立，所以“Codex 上的 Opus，最近 7 天”是一次选择，而不是重置整个页面。**This range** 把同一批记录分别按 agent 和按模型汇总；下方的每日表格仍按日期分组，选中某一天后，它下面的客户端/模型明细随之收窄。图表会记住你的 **Fresh** 或 **All tokens** 选择；表格始终并列展示新增、缓存和总 token，客户端与模型明细还区分缓存读取与写入。将鼠标移到 **Fresh** 数值上，可以查看输入和输出计数。
 
-日期表示**按活动日期归属的会话总量**；跨天会话不会拆成精确的每日消耗。同一页面也能查看供应商上报的额度窗口和重置时间。token 来自客户端记录，费用是带 `≈` 标记的价目表估算，不是账单。
+顶栏始终标出本地数据的新鲜度（**Local data · just now**，或最近一次保存的副本）。日期表示**按活动日期归属的会话总量**；跨天会话不会拆成精确的每日消耗。同一页面也能查看供应商上报的额度窗口和重置时间。token 来自客户端记录，费用是带 `≈` 标记的价目表估算，不是账单。
 
 ## 终端里也能用
 
 ![agentacct tui：Needs review 区块置顶一个被阻塞的 claude-code 任务，带记录的原因、下一步和 MCP record 来源；Right now 栏显示 Working now、Capacity、Usage change 和 Evidence trust；Recent work 表格列出结果、证据和估算费用；底部是用量历史的迷你图。](https://raw.githubusercontent.com/mikehasa/agentacct/main/docs/assets/tui-dashboard.png)
 
-`agentacct tui` 在终端里提供收据、用量、额度和独立的 review 总览，也支持按目录分组的 Work 时间线。按 `?` 查看快捷键。
+`agentacct tui` 在终端里提供收据、用量、额度和独立的 review 总览，也支持按目录分组的 Work 时间线。它的顶栏带有和 app 一样的本地数据新鲜度标记。按 `?` 查看快捷键。
 
 ## 宁可留白，也不瞎猜
 
