@@ -17,6 +17,7 @@ from .hooks import (
     CLAUDE_CODE_HOOK_CONTEXT_RELATIVE_PATH,
     HOOK_CONTEXT_CLIENTS,
     HookContextSelection,
+    cwd_digest,
     process_ancestor_pids,
     select_claude_code_hook_context,
 )
@@ -1159,6 +1160,26 @@ def _machine_result_from_exit_code(exit_code: int | None) -> str:
 _AUTO: Any = object()
 
 
+def _process_cwd_digest() -> str | None:
+    """Digest of this server's own working directory, for hook-context matching.
+
+    Captured once at construction: the MCP server is spawned by its agent with
+    the session's project directory as cwd (measured on this machine: a Kimi
+    Code desktop session's server ran with its session's project dir as cwd), so
+    the digest is a stable, path-free proxy for "which session counts this
+    directory as its own". A later in-process chdir (tests, embedded callers)
+    must not silently re-bind the server to a different session.
+
+    No usable cwd (a deleted working directory) simply leaves cwd matching
+    unavailable for this server; lineage and refusal still apply.
+    """
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        return None
+    return cwd_digest(cwd)
+
+
 class SentinelMCPServer:
     def __init__(
         self,
@@ -1166,6 +1187,7 @@ class SentinelMCPServer:
         store_dir: Path | str,
         hook_env_session_id: str | None | Any = _AUTO,
         hook_consumer_ancestor_pids: Sequence[int] | None | Any = _AUTO,
+        hook_consumer_cwd: str | None | Any = _AUTO,
     ) -> None:
         # No silent home-store default: callers must resolve the store first
         # (see agentacct.store_resolution.resolve_store_dir).
@@ -1177,6 +1199,10 @@ class SentinelMCPServer:
             self._hook_env_session_id: str | None = os.environ.get("CLAUDE_CODE_SESSION_ID") or None
         else:
             self._hook_env_session_id = hook_env_session_id
+        if hook_consumer_cwd is _AUTO:
+            self._hook_consumer_cwd_digest: str | None = _process_cwd_digest()
+        else:
+            self._hook_consumer_cwd_digest = cwd_digest(hook_consumer_cwd)
         self._hook_consumer_ancestor_pids_seed = hook_consumer_ancestor_pids
         self._hook_consumer_ancestor_pids_cache: list[int] | None = None
         # Session-scoped join context. The most recent attach_client_context
@@ -1228,6 +1254,10 @@ class SentinelMCPServer:
             self.service.store.root,
             env_session_id=self._hook_env_session_id,
             consumer_ancestor_pids=self._consumer_ancestor_pids,
+            # This server's cwd is its session's project directory, so the
+            # digest is what separates concurrent sessions of one desktop app
+            # process whose ancestor chains collapse onto the same main pid.
+            consumer_cwd_digest=self._hook_consumer_cwd_digest,
             # Every client whose bridge captures a context file. Reading only
             # claude-code's slot is what left Codex sections with no session id.
             clients=HOOK_CONTEXT_CLIENTS,
@@ -1769,7 +1799,8 @@ class SentinelMCPServer:
                     context["client_context_inherited_from"] = selected_path or str(CLAUDE_CODE_HOOK_CONTEXT_RELATIVE_PATH)
                     if hook_selection is not None:
                         # Auditability: WHY inheriting this context was safe
-                        # (single_fresh | env_session_match | pid_lineage_match).
+                        # (single_fresh | env_session_match | cwd_match |
+                        # pid_lineage_match).
                         context["client_context_selection"] = hook_selection.reason
                 elif any(key in attach_inherited for key in CLIENT_CONTEXT_ID_KEYS) and self._attached_client_context_event_id:
                     context["client_context_inherited_from_event_id"] = self._attached_client_context_event_id

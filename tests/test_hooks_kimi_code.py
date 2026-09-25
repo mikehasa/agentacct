@@ -38,13 +38,16 @@ from agentacct.hooks import (
     KIMI_CODE_CONFIG_RELATIVE_PATH,
     KIMI_CODE_HOOK_EVENTS,
     KIMI_CODE_HOOK_RELATIVE_PATH,
+    capture_claude_code_client_context,
     claude_code_hook_context_dir,
     claude_code_hook_context_path,
     clear_ended_session_hook_context,
+    cwd_digest,
     kimi_code_hook_command,
     kimi_code_hook_doctor_checks,
     kimi_code_hooks_toml_block,
     kimi_code_hooks_unsupported_fields,
+    kimi_code_session_workdir,
     load_claude_code_hook_contexts,
     process_ancestor_pids,
     render_kimi_code_hook_wrapper,
@@ -357,6 +360,330 @@ def test_kimi_code_hook_context_refuses_when_lineage_cannot_disambiguate(tmp_pat
 
 
 # ---------------------------------------------------------------------------
+# The Kimi Code DESKTOP shape: one main process, many sessions
+# ---------------------------------------------------------------------------
+
+
+def test_kimi_code_hook_context_is_selected_by_cwd_digest_in_a_shared_ancestry(tmp_path: Path) -> None:
+    """Desktop Kimi Code runs every session inside ONE main process.
+
+    Measured on this machine: five live kimi-code contexts carried chains like
+    ``[hook_pid_i, 1095]`` while the MCP server (pid 1454) had that same main
+    pid as its nearest ancestor — every candidate holds the consumer's ancestor,
+    so all of them match at the same lineage rank, pid disambiguation can never
+    fire, and inheritance refused for every section. The session's project
+    directory still differs, and the server's cwd IS its session's project
+    directory, so the cwd digest picks the context that is this session's own.
+    """
+    store = tmp_path / "store"
+    now = time.time()
+    shared_main_pid = 1095
+
+    def _write(session_id: str, project: str, hook_pid: int) -> None:
+        write_claude_code_hook_context(
+            store,
+            {
+                "schema_version": "agent-sentinel.client-context.v1",
+                "client": "kimi-code",
+                "client_session_id": session_id,
+                "client_transcript_id": None,
+                "project_label": Path(project).name,
+                "cwd_digest": cwd_digest(project),
+                "source": "claude_code_hook",
+                "hook_event_name": "PreToolUse",
+                # This session's own hook process, then the ONE main process
+                # every desktop session lives under.
+                "hook_ancestor_pids": [hook_pid, shared_main_pid],
+            },
+            now=now,
+        )
+
+    own_project = "/Users/dev/Projects/agentacct"
+    _write("session_tofu", "/Users/dev/Projects/tofu", 1176)
+    _write("session_own", own_project, 1454)
+    _write("session_golive", "/Users/dev/Projects/golive-skill", 1815)
+
+    consumer_ancestors = [shared_main_pid]
+    # Lineage alone cannot tell these apart: that refusal IS the pre-fix outcome
+    # (each candidate's chain holds the shared main pid, so every one of them
+    # matches the consumer's own ancestry at the same rank).
+    refused = select_claude_code_hook_context(
+        store, now=now + 1, consumer_ancestor_pids=consumer_ancestors, clients=("kimi-code",)
+    )
+    assert refused.status == "refused"
+    assert refused.reason == "concurrent_contexts_ambiguous"
+
+    selection = select_claude_code_hook_context(
+        store,
+        now=now + 1,
+        consumer_ancestor_pids=consumer_ancestors,
+        consumer_cwd_digest=cwd_digest(own_project),
+        clients=("kimi-code",),
+    )
+    assert (selection.status, selection.reason) == ("selected", "cwd_match")
+    assert selection.fresh_count == 3
+    assert selection.context is not None
+    # Its OWN session, never the newest writer (session_golive's hook fired
+    # last) and never the first candidate.
+    assert selection.context["client_session_id"] == "session_own"
+    assert "client-context/kimi-code" in selection.context["context_path"]
+    # Every session keeps its own file: the single slot cannot say which id
+    # belongs to which process.
+    assert len(list(claude_code_hook_context_dir(store, "kimi-code").glob("*.json"))) == 3
+
+    # A consumer digest matching NO candidate must not pick anything by cwd; it
+    # falls through to lineage, which ties here -> refusal, not a guess.
+    unmatched = select_claude_code_hook_context(
+        store,
+        now=now + 1,
+        consumer_ancestor_pids=consumer_ancestors,
+        consumer_cwd_digest=cwd_digest("/Users/dev/Projects/unrelated"),
+        clients=("kimi-code",),
+    )
+    assert unmatched.status == "refused"
+    assert unmatched.context is None
+
+
+def test_kimi_code_cwd_digest_refuses_two_sessions_in_the_same_directory(tmp_path: Path) -> None:
+    """Two sessions opened on ONE project share a digest, so cwd cannot decide.
+
+    This is the desktop shape with a second session on the same project: both
+    candidates carry the consumer's shared main pid, so a fallback to lineage
+    would tie as well — and a fallback to newest would hand this server
+    whichever session wrote last. The rule refuses outright instead of trying
+    the next discriminator at all (the MCP-side test pins the sharper store
+    where lineage WOULD have picked one of them).
+    """
+    store = tmp_path / "store"
+    now = time.time()
+    same_project = "/Users/dev/Projects/agentacct"
+    for session_id, hook_pid in (("session_one", 1176), ("session_two", 1815)):
+        write_claude_code_hook_context(
+            store,
+            {
+                "schema_version": "agent-sentinel.client-context.v1",
+                "client": "kimi-code",
+                "client_session_id": session_id,
+                "client_transcript_id": None,
+                "project_label": "agentacct",
+                "cwd_digest": cwd_digest(same_project),
+                "source": "claude_code_hook",
+                "hook_event_name": "PreToolUse",
+                "hook_ancestor_pids": [hook_pid, 1095],
+            },
+            now=now,
+        )
+
+    selection = select_claude_code_hook_context(
+        store,
+        now=now + 1,
+        consumer_ancestor_pids=[1095],
+        consumer_cwd_digest=cwd_digest(same_project),
+        clients=("kimi-code",),
+    )
+    assert selection.status == "refused"
+    assert selection.reason == "cwd_match_ambiguous"
+    assert selection.fresh_count == 2
+    assert selection.context is None  # never the last writer, never a lineage pick
+
+
+def test_kimi_code_cwd_digest_never_decides_around_a_candidate_without_one(tmp_path: Path) -> None:
+    """A candidate with no digest cannot be ruled out, so cwd matching is OFF.
+
+    Mixed-version stores (contexts written before this feature, or a payload
+    that carried no cwd) hold digest-less candidates. Picking by cwd while one
+    of them exists could hand this server a DIFFERENT session's id, so the rule
+    is skipped entirely and the older discriminators decide — missing beats
+    wrong.
+    """
+    store = tmp_path / "store"
+    now = time.time()
+    own_project = "/Users/dev/Projects/agentacct"
+
+    def _write(session_id: str, ancestors: list[int], digest: str | None) -> None:
+        context: dict[str, object] = {
+            "schema_version": "agent-sentinel.client-context.v1",
+            "client": "kimi-code",
+            "client_session_id": session_id,
+            "client_transcript_id": None,
+            "project_label": "agentacct",
+            "source": "claude_code_hook",
+            "hook_event_name": "PreToolUse",
+            "hook_ancestor_pids": ancestors,
+        }
+        if digest is not None:
+            context["cwd_digest"] = digest
+        write_claude_code_hook_context(store, context, now=now)
+
+    # Unique lineage: a digest-less candidate somewhere else in the store must
+    # not disturb a lineage pick that is unambiguous on its own.
+    _write("session_own", [4242], cwd_digest(own_project))
+    _write("session_legacy", [7777], None)
+    selection = select_claude_code_hook_context(
+        store,
+        now=now + 1,
+        consumer_ancestor_pids=[7777],
+        consumer_cwd_digest=cwd_digest(own_project),
+        clients=("kimi-code",),
+    )
+    assert (selection.status, selection.reason) == ("selected", "pid_lineage_match")
+    assert selection.context is not None
+    assert selection.context["client_session_id"] == "session_legacy"
+
+    # Desktop shape (every session under the shared main pid). The control
+    # below differs from the blocked store ONLY by that missing digest.
+    def _write_desktop(root: Path, *, other_digest: str | None) -> None:
+        for session_id, digest in (("session_own", cwd_digest(own_project)), ("session_other", other_digest)):
+            write_claude_code_hook_context(
+                root,
+                {
+                    "schema_version": "agent-sentinel.client-context.v1",
+                    "client": "kimi-code",
+                    "client_session_id": session_id,
+                    "client_transcript_id": None,
+                    "project_label": "agentacct",
+                    "source": "claude_code_hook",
+                    "hook_event_name": "PreToolUse",
+                    "hook_ancestor_pids": [1454, 1095],
+                    **({"cwd_digest": digest} if digest else {}),
+                },
+                now=now,
+            )
+
+    # Control: both candidates carry a digest, so the rule applies and picks
+    # this server's own session.
+    control = tmp_path / "control"
+    _write_desktop(control, other_digest=cwd_digest("/Users/dev/Projects/tofu"))
+    selected = select_claude_code_hook_context(
+        control,
+        now=now + 1,
+        consumer_ancestor_pids=[1454, 1095],
+        consumer_cwd_digest=cwd_digest(own_project),
+        clients=("kimi-code",),
+    )
+    assert (selected.status, selected.reason) == ("selected", "cwd_match")
+    assert selected.context is not None
+    assert selected.context["client_session_id"] == "session_own"
+
+    # Same store shape, except the other candidate is digest-less: the rule is
+    # skipped, lineage ties (both chains hold the shared main pid), and nothing
+    # is inherited — the missing digest alone flips the outcome from cwd_match
+    # to refusal.
+    blocked = tmp_path / "blocked"
+    _write_desktop(blocked, other_digest=None)
+    blocked_selection = select_claude_code_hook_context(
+        blocked,
+        now=now + 1,
+        consumer_ancestor_pids=[1454, 1095],
+        consumer_cwd_digest=cwd_digest(own_project),
+        clients=("kimi-code",),
+    )
+    assert blocked_selection.status == "refused"
+    assert blocked_selection.reason == "concurrent_contexts_ambiguous"
+    assert blocked_selection.context is None
+
+
+def test_kimi_code_context_cwd_digest_is_a_fingerprint_not_a_path(tmp_path: Path) -> None:
+    """The cwd discriminator must not smuggle the project path into the store.
+
+    Fixture: the CLI capture path (what a real Kimi Code hook runs) writes the
+    same digest for the same directory however it is spelled, a different digest
+    for a different directory, and never the directory itself.
+    """
+    store = tmp_path / "store"
+    runner = CliRunner()
+    project = "/Users/dev/code/secret-project"
+    other_project = "/Users/dev/code/other-project"
+    for session_id, cwd in (
+        ("session_one", project),
+        ("session_two", other_project),
+        ("session_three", f"{project}/"),  # same directory, trailing slash
+    ):
+        result = runner.invoke(
+            app,
+            ["hooks", "kimi-code", "pre-tool-use", "--store-dir", str(store)],
+            input=_pre_tool(session_id=session_id, cwd=cwd),
+        )
+        assert result.exit_code == 0, result.output
+
+    digest = cwd_digest(project)
+    assert digest is not None
+    assert len(digest) == 16 and digest == digest.lower()
+    assert cwd_digest(other_project) != digest
+    assert cwd_digest(f"{project}/") == digest
+
+    slot = claude_code_hook_context_path(store, "kimi-code")
+    sources = [slot, *claude_code_hook_context_dir(store, "kimi-code").glob("*.json")]
+    written: dict[str, dict[str, object]] = {}
+    for path in sources:
+        text = path.read_text(encoding="utf-8")
+        payload = json.loads(text)
+        # No raw path in the file — only the basename display label (the
+        # pre-existing rule) and the fingerprint.
+        assert project not in text
+        assert other_project not in text
+        assert "/Users/dev/code" not in text
+        assert payload["project_label"] in {"secret-project", "other-project"}
+        assert isinstance(payload["cwd_digest"], str)
+        written[str(payload["client_session_id"])] = payload
+
+    # Same directory -> same digest (the trailing-slash spelling included);
+    # a different directory -> a different one.
+    assert written["session_one"]["cwd_digest"] == digest
+    assert written["session_three"]["cwd_digest"] == digest
+    assert written["session_two"]["cwd_digest"] != digest
+
+
+def test_every_bridged_client_writes_the_cwd_digest(tmp_path: Path) -> None:
+    """Every bridged client's hook payload carries cwd, so every client writes it.
+
+    The digest exists for the Kimi Code desktop shape, but the write rule is
+    per-client: Claude Code and Codex hook payloads carry cwd too, and the MCP
+    server reads all three clients' slots, so a client that skipped the digest
+    would silently lose the discriminator (and, worse, a digest-less candidate
+    turns the rule off for every client's candidates in that store).
+    """
+    store = tmp_path / "store"
+    project = "/Users/dev/code/every-client"
+    for client in HOOK_CONTEXT_CLIENTS:
+        written = capture_claude_code_client_context(
+            json.dumps(
+                {
+                    "hook_event_name": "PreToolUse",
+                    "session_id": f"{client}-session",
+                    "cwd": project,
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "echo ok"},
+                }
+            ),
+            store_dir=store,
+            client=client,
+        )
+        assert written is not None
+        # The single slot AND the per-session file both carry it.
+        slot = json.loads(claude_code_hook_context_path(store, client).read_text(encoding="utf-8"))
+        assert slot["client"] == client
+        assert slot["cwd_digest"] == cwd_digest(project)
+        assert project not in json.dumps(slot)
+        [per_session] = list(claude_code_hook_context_dir(store, client).glob("*.json"))
+        assert json.loads(per_session.read_text(encoding="utf-8"))["cwd_digest"] == cwd_digest(project)
+
+    # A payload with no usable cwd leaves the digest empty rather than inventing
+    # one; an empty digest only disables cwd matching for that candidate.
+    assert (
+        capture_claude_code_client_context(
+            json.dumps({"hook_event_name": "PreToolUse", "session_id": "no-cwd-session"}),
+            store_dir=store,
+            client="claude-code",
+        )
+        is not None
+    )
+    no_cwd = json.loads(claude_code_hook_context_path(store, "claude-code").read_text(encoding="utf-8"))
+    assert no_cwd["client_session_id"] == "no-cwd-session"
+    assert no_cwd["cwd_digest"] is None
+
+
+# ---------------------------------------------------------------------------
 # The wrapper
 # ---------------------------------------------------------------------------
 
@@ -640,3 +967,145 @@ def test_onboard_global_kimi_code_reports_a_refused_config_and_keeps_other_legs(
     assert cli._onboard_global_kimi_code(tmp_path / "store", "/abs/agentacct") == "wired"
     assert (kimi_home / KIMI_CODE_CONFIG_RELATIVE_PATH).read_bytes() == before
     assert (kimi_home / "AGENTS.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Desktop cwd: the payload carries "/", the session index carries the truth
+# ---------------------------------------------------------------------------
+
+
+def _write_session_index(home: Path, rows: list[object]) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    lines = [row if isinstance(row, str) else json.dumps(row) for row in rows]
+    (home / "session_index.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_kimi_code_session_workdir_prefers_the_last_live_row(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_session_index(
+        home,
+        [
+            {"sessionId": _SESSION, "workDir": "/Users/dev/first"},
+            "not json at all",
+            {"sessionId": _SESSION, "workDir": "/Users/dev/second"},
+            {"sessionId": "session_gone", "deleted": True},
+            {"sessionId": "session_relative", "workDir": "relative/dir"},
+        ],
+    )
+    assert kimi_code_session_workdir(_SESSION, home=home) == "/Users/dev/second"
+    assert kimi_code_session_workdir("session_gone", home=home) is None
+    assert kimi_code_session_workdir("session_relative", home=home) is None
+    assert kimi_code_session_workdir("session_absent", home=home) is None
+    assert kimi_code_session_workdir("", home=home) is None
+    assert kimi_code_session_workdir(_SESSION, home=tmp_path / "missing") is None
+
+
+def test_kimi_code_desktop_cwd_digest_comes_from_the_session_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The desktop app dispatches hooks from its OWN directory, so `cwd` is `/`.
+
+    Measured on this machine: five concurrent desktop sessions, 64 of 64
+    PreToolUse payloads carrying `cwd="/"` — one shared value, so a digest of
+    the payload could never tell two sessions apart. Kimi Code's own
+    `session_index.jsonl` maps the payload's `session_id` to the session's
+    project directory, and the digest is built from THAT; the unusable payload
+    value never reaches the context file.
+    """
+    kimi_home = tmp_path / "kimi-home"
+    project = tmp_path / "Projects" / "agentacct"
+    project.mkdir(parents=True)
+    _write_session_index(
+        kimi_home,
+        [{"sessionId": _SESSION, "sessionDir": str(tmp_path / "session-dir"), "workDir": str(project)}],
+    )
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+    store = tmp_path / "store"
+
+    result = CliRunner().invoke(
+        app,
+        ["hooks", "kimi-code", "pre-tool-use", "--store-dir", str(store)],
+        input=_payload(
+            "PreToolUse",
+            session_id=_SESSION,
+            client_type="kimi_code_desktop",
+            cwd="/",
+            tool_name="Bash",
+            tool_input={"command": "pytest -q"},
+        ),
+    )
+    assert result.exit_code == 0, result.output
+    raw_text = (store / "client-context" / "kimi-code.json").read_text(encoding="utf-8")
+    context = json.loads(raw_text)
+    assert context["cwd_digest"] == cwd_digest(str(project))
+    assert context["cwd_digest"] != cwd_digest("/")
+    assert context["project_label"] == "agentacct"
+    assert str(project) not in raw_text
+
+
+def test_kimi_code_payload_cwd_is_the_fallback_when_the_index_has_no_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kimi_home = tmp_path / "kimi-home"
+    _write_session_index(kimi_home, [{"sessionId": "session_other", "workDir": "/Users/dev/other"}])
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+    store = tmp_path / "store"
+
+    result = CliRunner().invoke(
+        app,
+        ["hooks", "kimi-code", "pre-tool-use", "--store-dir", str(store)],
+        input=_pre_tool(cwd="/Users/dev/proj"),
+    )
+    assert result.exit_code == 0, result.output
+    context = json.loads((store / "client-context" / "kimi-code.json").read_text(encoding="utf-8"))
+    assert context["cwd_digest"] == cwd_digest("/Users/dev/proj")
+    assert context["project_label"] == "proj"
+
+
+def test_kimi_code_desktop_sessions_disambiguate_through_the_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression the fix exists for: several sessions, one shared payload cwd.
+
+    Three desktop-shaped payloads (`cwd="/"`) from three sessions, each with its
+    own project directory in the index, must still let the MCP side pick its
+    OWN context by digest — the payload value cannot do that.
+    """
+    kimi_home = tmp_path / "kimi-home"
+    projects = {
+        "session_alpha1": tmp_path / "Projects" / "alpha",
+        "session_beta22": tmp_path / "Projects" / "beta",
+        "session_gamma3": tmp_path / "Projects" / "gamma",
+    }
+    for project in projects.values():
+        project.mkdir(parents=True)
+    _write_session_index(
+        kimi_home,
+        [{"sessionId": sid, "workDir": str(project)} for sid, project in projects.items()],
+    )
+    monkeypatch.setenv("KIMI_CODE_HOME", str(kimi_home))
+    store = tmp_path / "store"
+
+    for sid in projects:
+        result = CliRunner().invoke(
+            app,
+            ["hooks", "kimi-code", "pre-tool-use", "--store-dir", str(store)],
+            input=_payload(
+                "PreToolUse",
+                session_id=sid,
+                client_type="kimi_code_desktop",
+                cwd="/",
+                tool_name="Bash",
+                tool_input={"command": "true"},
+            ),
+        )
+        assert result.exit_code == 0, result.output
+
+    selection = select_claude_code_hook_context(
+        store,
+        consumer_cwd_digest=cwd_digest(str(projects["session_beta22"])),
+        clients=("kimi-code",),
+    )
+    assert (selection.status, selection.reason) == ("selected", "cwd_match")
+    assert selection.context is not None
+    assert selection.context["client_session_id"] == "session_beta22"

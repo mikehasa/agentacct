@@ -2167,6 +2167,195 @@ def test_concurrent_contexts_pid_lineage_selects_own_session(tmp_path):
     assert sibling_metadata["hook_context_fresh_count"] == 2
 
 
+def _write_desktop_hook_context(store_root, *, session_id, project, hook_pid, shared_main_pid, now=None):
+    """A Kimi Code DESKTOP session's context: its hook process under the ONE
+    shared main process every desktop session runs in."""
+    import time as _time
+
+    from agentacct.hooks import cwd_digest, write_claude_code_hook_context
+
+    write_claude_code_hook_context(
+        store_root,
+        {
+            "schema_version": "agent-sentinel.client-context.v1",
+            "client": "kimi-code",
+            "client_session_id": session_id,
+            "client_transcript_id": None,
+            "project_label": Path(project).name,
+            "cwd_digest": cwd_digest(project),
+            "source": "claude_code_hook",
+            "hook_event_name": "PreToolUse",
+            "hook_ancestor_pids": [hook_pid, shared_main_pid],
+        },
+        now=_time.time() if now is None else now,
+    )
+
+
+def test_hook_context_cwd_digest_selects_own_session_in_a_shared_ancestry(tmp_path):
+    """Kimi Code desktop, end to end: one main process, many sessions.
+
+    Measured on this machine: five live kimi-code contexts shared the ancestor
+    ``1095`` while this server's own ancestors were ``[1095]`` too, so every
+    candidate matched at the same rank and every section refused id inheritance
+    (``concurrent_hook_contexts``). The server's cwd is its session's project
+    directory, so its digest picks its own context and the section carries the
+    authoritative session id again.
+    """
+    server = SentinelMCPServer(
+        store_dir=tmp_path / "state",
+        hook_env_session_id=None,
+        hook_consumer_ancestor_pids=[1095],
+        hook_consumer_cwd="/Users/dev/Projects/agentacct",
+    )
+    store_root = server.service.store.root
+    _write_desktop_hook_context(
+        store_root, session_id="session_tofu", project="/Users/dev/Projects/tofu", hook_pid=1176, shared_main_pid=1095
+    )
+    _write_desktop_hook_context(
+        store_root, session_id="session_own", project="/Users/dev/Projects/agentacct", hook_pid=1454, shared_main_pid=1095
+    )
+    _write_desktop_hook_context(
+        store_root,
+        session_id="session_golive",
+        project="/Users/dev/Projects/golive-skill",
+        hook_pid=1815,
+        shared_main_pid=1095,
+    )
+
+    payload = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {
+                "source": "kimi-code",
+                "section_id": "desktop-shared-ancestry",
+                "section_status": "completed",
+                "section_title": "Fixture section title",
+                "summary": "Recorded outcome for this fixture section.",
+            },
+        )
+    )
+    metadata = payload["event"]["metadata"]
+    assert metadata["client_session_id"] == "session_own"
+    assert metadata["client_context_source"] == "claude_code_hook"
+    assert metadata["client_context_selection"] == "cwd_match"
+    assert metadata["context_freshness"] == "client_derived"
+    assert "client_context_inheritance_refused" not in metadata
+    # The ids are client-derived and now joinable; still not session-bound to
+    # this server, so the join hint stays below exact.
+    assert payload["join_hint_quality"] == "client_derived"
+    # Privacy: the digest disambiguates without any raw project path reaching
+    # the section (the cwd itself is never inherited).
+    assert "project_dir" not in metadata
+    assert "/Users/dev" not in json.dumps(metadata)
+
+
+def test_hook_contexts_in_one_cwd_refuse_instead_of_guessing(tmp_path):
+    """Two sessions in the SAME directory share a digest, so cwd cannot decide.
+
+    Both candidates carry the consumer's own digest, and one of them even
+    carries a lineage match that would win on its own — which is exactly the
+    guess the cwd rule exists to avoid. The rule refuses outright instead of
+    trying the next discriminator, and the section records the machine-readable
+    refusal rather than inheriting a possibly-foreign session id.
+    """
+    server = SentinelMCPServer(
+        store_dir=tmp_path / "state",
+        hook_env_session_id=None,
+        hook_consumer_ancestor_pids=[1095],
+        hook_consumer_cwd="/Users/dev/Projects/agentacct",
+    )
+    store_root = server.service.store.root
+    # Two sessions on the same project: the desktop one (its hook under the
+    # shared main process, which is also this server's only ancestor — so a
+    # lineage tie-break would pick it) and a CLI one (a different chain).
+    _write_desktop_hook_context(
+        store_root, session_id="session_own", project="/Users/dev/Projects/agentacct", hook_pid=1454, shared_main_pid=1095
+    )
+    from agentacct.hooks import cwd_digest, write_claude_code_hook_context
+
+    write_claude_code_hook_context(
+        store_root,
+        {
+            "schema_version": "agent-sentinel.client-context.v1",
+            "client": "kimi-code",
+            "client_session_id": "session_other",
+            "client_transcript_id": None,
+            "project_label": "agentacct",
+            "cwd_digest": cwd_digest("/Users/dev/Projects/agentacct"),
+            "source": "claude_code_hook",
+            "hook_event_name": "PreToolUse",
+            "hook_ancestor_pids": [1176, 9999],
+        },
+    )
+
+    payload = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {"source": "kimi-code", "section_id": "same-cwd", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+        )
+    )
+    metadata = payload["event"]["metadata"]
+    assert "client_session_id" not in metadata
+    assert "client" not in metadata
+    assert metadata["client_context_inheritance_refused"] == "concurrent_hook_contexts"
+    assert metadata["hook_context_fresh_count"] == 2
+    assert payload["refused_client_context"]["reason"] == "concurrent_hook_contexts"
+
+
+def test_hook_context_without_a_cwd_digest_blocks_cwd_matching(tmp_path):
+    """One digest-less candidate turns cwd matching OFF for the whole store.
+
+    A pre-upgrade context (or a payload that carried no cwd) cannot be ruled
+    out, so selecting by cwd while it exists could hand this server a foreign
+    session id. The rule is skipped and the older discriminator decides: here
+    lineage is unique for the session whose digest happens to match, and the
+    selection reason proves cwd was NOT what chose it.
+    """
+    server = SentinelMCPServer(
+        store_dir=tmp_path / "state",
+        hook_env_session_id=None,
+        hook_consumer_ancestor_pids=[1095],
+        hook_consumer_cwd="/Users/dev/Projects/agentacct",
+    )
+    store_root = server.service.store.root
+    _write_desktop_hook_context(
+        store_root, session_id="session_own", project="/Users/dev/Projects/agentacct", hook_pid=1454, shared_main_pid=1095
+    )
+    # Written by a pre-upgrade hook: same shape, no cwd_digest, unrelated chain.
+    from agentacct.hooks import write_claude_code_hook_context
+
+    write_claude_code_hook_context(
+        store_root,
+        {
+            "schema_version": "agent-sentinel.client-context.v1",
+            "client": "kimi-code",
+            "client_session_id": "session_legacy",
+            "client_transcript_id": None,
+            "project_label": "somewhere-else",
+            "source": "claude_code_hook",
+            "hook_event_name": "PreToolUse",
+            "hook_ancestor_pids": [7777],
+        },
+    )
+
+    metadata = _tool_payload(
+        _call_tool(
+            server,
+            1,
+            "agentacct_record_section",
+            {"source": "kimi-code", "section_id": "digest-less", "section_status": "completed", "section_title": "Fixture section title", "summary": "Recorded outcome for this fixture section."},
+        )
+    )["event"]["metadata"]
+    assert metadata["client_session_id"] == "session_own"
+    # NOT "cwd_match": the digest-less candidate blocked that rule.
+    assert metadata["client_context_selection"] == "pid_lineage_match"
+    assert metadata["client_context_source"] == "claude_code_hook"
+
+
 def test_explicit_ids_suppress_refusal_stamp(tmp_path):
     """A caller that passes its own id never needed inheritance: no refusal
     stamp, and the explicit id keeps exact quality."""
