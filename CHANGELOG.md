@@ -6,6 +6,14 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.5] — 2026-09-25
+
+No code or behavior changes: 0.12.5 re-releases 0.12.4 with its packaged macOS app attached. 0.12.1–0.12.4 were published without a `.dmg` asset, so `releases/latest` had no installable app for anyone without Python, pipx, or a terminal.
+
+### Changed
+
+- `pyproject.toml` and this entry are the only differences from 0.12.4. The app package is rebuilt from this commit so the bundle version, the embedded CLI version, and the recorded commit all identify 0.12.5.
+
 ## [0.12.4] — 2026-09-24
 
 Kimi Code desktop sessions can bind their work to the session: the hook context is now chosen by a working-directory digest, and the hook reads the session's real project directory from Kimi Code's own index.
@@ -1577,7 +1585,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.5...HEAD
+[0.12.5]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.5
 [0.12.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.0
 [0.11.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.2
 [0.11.1]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.1
