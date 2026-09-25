@@ -6,6 +6,31 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Kimi Code hook-bridge session-id inheritance works in the **desktop** app. Its
+  GUI runs every session inside one main process, so a session's hook process
+  and the MCP server share that main pid as their only common ancestor: every
+  candidate matched the consumer's ancestry at the same rank, pid lineage could
+  not disambiguate, and id inheritance refused for every section (measured: five
+  live contexts carrying chains like `[hook_pid_i, 1095]`, and the MCP server
+  naming that same main pid as its own nearest ancestor). Each bridged client's
+  hook context now also carries `cwd_digest` — a truncated SHA-256 of the
+  session's `cwd`, written by Claude Code, Codex, and Kimi Code alike, never the
+  raw path (`project_label` stays the basename) — and the MCP server digests its
+  own working directory (which IS its session's project directory) to select the
+  context that belongs to it. Kimi Code's desktop app hands hooks its OWN
+  working directory, so its payload `cwd` is `/` for every session (measured: 64
+  of 64 PreToolUse payloads), which could never tell two sessions apart; the
+  hook therefore takes the session's real project directory from the harness's
+  own `session_index.jsonl` mapping and keeps the payload `cwd` only as the
+  fallback when that index has no row.
+  The "don't guess" rules hold: the digest decides only when every fresh
+  candidate carries one and exactly one matches; a digest-less candidate turns
+  the rule off (lineage or refusal decides instead), and two sessions opened on
+  the same directory refuse id inheritance outright rather than falling back to
+  newest-or-lineage.
+
 ## [0.12.3] — 2026-09-24
 
 Kimi Code work can finally be attributed: a new observe-only hook bridge reports the authoritative session id, and an agent's MCP reports in the same session bind to it.

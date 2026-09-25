@@ -187,9 +187,10 @@ def test_kimi_code_manifest_upgrades_only_the_captured_lanes_and_leaves_cache_wr
     assert cache_write["verification"]["level"] == "synthetic_fixture"
     assert "never been observed" in " ".join(cache_write["limitations"])
     # The observe-only hook bridge landed after the capture lanes, so it is an
-    # experimental one-command-global lane with fixture evidence only: no live
-    # smoke has observed a real session firing the hook, and its limitations
-    # must keep saying that plus the opt-in [[hooks]] write and the per-tool-call
+    # experimental one-command-global lane with fixture evidence: live hook
+    # firing has since been observed, but the join it exists for (a real
+    # section inheriting a real session id) has not, and its limitations must
+    # keep saying both plus the opt-in [[hooks]] write and the per-tool-call
     # firing rate.
     mechanical = kimi["capabilities"]["mechanical_capture"]
     assert mechanical["state"] == "experimental"
@@ -200,9 +201,12 @@ def test_kimi_code_manifest_upgrades_only_the_captured_lanes_and_leaves_cache_wr
         "tests/test_hooks_kimi_code.py::test_kimi_code_pre_tool_use_records_a_tool_tick_and_context_file",
         "tests/test_hooks_kimi_code.py::test_kimi_code_install_merges_config_toml_and_is_idempotent",
         "tests/test_hooks_kimi_code.py::test_kimi_code_hook_context_is_selected_by_pid_lineage",
+        "tests/test_hooks_kimi_code.py::test_kimi_code_hook_context_is_selected_by_cwd_digest_in_a_shared_ancestry",
+        "tests/test_hooks_kimi_code.py::test_kimi_code_desktop_cwd_digest_comes_from_the_session_index",
     ]
     mechanical_limits = " ".join(mechanical["limitations"]).lower()
-    assert "no live smoke" in mechanical_limits
+    assert "live hook firing has been observed" in mechanical_limits
+    assert "no live mcp report has yet inherited" in mechanical_limits
     assert "opt-in" in mechanical_limits
     assert "event, matcher, command, and timeout" in mechanical_limits
     assert "once per tool call" in mechanical_limits

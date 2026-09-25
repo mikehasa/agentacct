@@ -178,6 +178,108 @@ def _client_context_slug(client: str) -> str:
     return client if client in HOOK_CONTEXT_CLIENTS else HOOK_CONTEXT_CLIENTS[0]
 
 
+# Truncated SHA-256 of a session's working directory. The hook payload carries
+# the raw cwd, and the consumer's own working directory IS the session's project
+# directory (measured: the Kimi Code desktop app's MCP servers run with the
+# session's project dir as cwd), so the digest is what lets a consumer prove
+# which concurrent session is its own when process lineage cannot. The RAW path
+# still never reaches disk: only this fingerprint does, and it can only be
+# compared by someone who already knows a candidate path. 16 hex chars is a
+# deliberately short fingerprint — a collision can only make two candidates
+# MATCH, which refuses instead of mis-picking, so collision resistance does not
+# need to carry the full digest length here.
+CWD_DIGEST_LENGTH = 16
+_CWD_DIGEST_PATTERN = re.compile(rf"[0-9a-f]{{{CWD_DIGEST_LENGTH}}}")
+
+
+def cwd_digest(cwd: str | Path | None) -> str | None:
+    """Digest of ``cwd`` for hook-context disambiguation; None when unusable.
+
+    Used on BOTH sides of the bridge — the hook digests the session cwd it was
+    handed, the consumer digests its own working directory — so it must be
+    deterministic for the same directory: ``~`` is expanded and the path is
+    normalized (trailing separators, ``.``/``..`` segments), which is also what
+    makes a trailing-slash spelling match. A symlinked ALIAS of a directory does
+    not digest as its target: resolving symlinks would need filesystem access in
+    a hook that must fail open, and a miss only disables the cwd discriminator,
+    which then falls back to lineage or refusal (never to a guess).
+    """
+    if cwd is None:
+        return None
+    text = str(cwd).strip()
+    if not text:
+        return None
+    try:
+        normalized = os.path.normpath(os.path.expanduser(text))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not normalized or normalized == ".":
+        return None
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:CWD_DIGEST_LENGTH]
+
+
+_KIMI_CODE_SESSION_INDEX_FILENAME = "session_index.jsonl"
+# One small row per session; the cap guards against damage, not size.
+_KIMI_CODE_SESSION_INDEX_MAX_BYTES = 8 * 1024 * 1024
+
+
+def kimi_code_home_dir() -> Path:
+    """Kimi Code's own home: ``$KIMI_CODE_HOME`` when set, else ``~/.kimi-code``.
+
+    The same precedence the CLI and the usage source detector apply, so a hook
+    reads the home Kimi Code itself writes.
+    """
+    env = (os.environ.get("KIMI_CODE_HOME") or "").strip()
+    if env:
+        return Path(env).expanduser()
+    return Path.home() / ".kimi-code"
+
+
+def kimi_code_session_workdir(session_id: str, *, home: Path | str | None = None) -> str | None:
+    """The project directory Kimi Code recorded for ``session_id``, or None.
+
+    The desktop app dispatches hook commands from the APP's own working
+    directory, so its payload's ``cwd`` is ``/`` for every session (measured on
+    this machine: 64 of 64 PreToolUse payloads, five concurrent sessions), and
+    digesting that shared value could never tell two sessions apart. Kimi
+    Code's own ``session_index.jsonl`` maps ``sessionId`` -> ``workDir``, so
+    this reads that mapping instead of trusting the payload: the last row for
+    the id wins, a ``deleted`` tombstone row is unresolved, and a ``workDir``
+    that is not absolute cannot match a consumer's ``os.getcwd()`` either.
+
+    Fail-open: an absent or damaged index, no row for the id, or any read
+    failure yields None, and the caller keeps the payload cwd as before.
+    """
+    if not session_id:
+        return None
+    root = Path(home).expanduser() if home is not None else kimi_code_home_dir()
+    index_path = root / _KIMI_CODE_SESSION_INDEX_FILENAME
+    try:
+        if index_path.stat().st_size > _KIMI_CODE_SESSION_INDEX_MAX_BYTES:
+            return None
+        text = index_path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+    workdir: str | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("sessionId") != session_id:
+            continue
+        if row.get("deleted"):
+            workdir = None
+            continue
+        value = row.get("workDir")
+        if isinstance(value, str) and value.strip() and os.path.isabs(value):
+            workdir = value
+    return workdir
+
+
 def claude_code_hook_context_path(store_dir: Path | str, client: str = "claude-code") -> Path:
     """The single-slot context file for ``client``.
 
@@ -288,13 +390,22 @@ def derive_claude_code_client_context(event: dict[str, Any], *, client: str = "c
         if stem and len(stem) <= _MAX_CONTEXT_ID_LENGTH:
             transcript_id = stem
     # Privacy: never persist the raw cwd — only its basename as a display
-    # label. Store resolution may USE the full cwd in memory, but the full
+    # label, plus (below) a truncated digest that no reader can invert into a
+    # path. Store resolution may USE the full cwd in memory, but the full
     # path must not be written to the context file or inherited into events.
     # Worktree remap (same rule as store resolution and read-time labels): a
     # cwd inside `<owner>/.claude/worktrees/<name>` labels as the OWNER repo,
     # not the meaningless worktree folder name. Pure string parse; the full
     # path is still never persisted, so this is the only chance to remap.
     cwd = event.get("cwd")
+    # Kimi Code's desktop app dispatches hook commands from the APP's own
+    # working directory, so its payload carries `cwd="/"` for every session
+    # (measured: 64 of 64 PreToolUse payloads, five concurrent sessions).
+    # Digesting that shared value could never tell two sessions apart, so the
+    # session's real project directory comes from Kimi Code's own index; a
+    # session the index does not name keeps the payload cwd as before.
+    if _client_context_slug(client) == "kimi-code":
+        cwd = kimi_code_session_workdir(session_id) or cwd
     project_label: str | None = None
     if isinstance(cwd, str) and cwd:
         owner_text = claude_worktree_owner_path_text(cwd)
@@ -315,6 +426,11 @@ def derive_claude_code_client_context(event: dict[str, Any], *, client: str = "c
         "client_session_id": session_id,
         "client_transcript_id": transcript_id,
         "project_label": project_label or None,
+        # Every bridged client's hook payload carries cwd (Claude Code, Codex,
+        # and Kimi Code alike), so every client's context — per-session AND
+        # single slot — gets the disambiguator. A payload without a usable cwd
+        # leaves it None, which only disables cwd matching for that candidate.
+        "cwd_digest": cwd_digest(cwd) if isinstance(cwd, str) and cwd else None,
         "source": "claude_code_hook",
         "hook_event_name": hook_event_name if isinstance(hook_event_name, str) else None,
     }
@@ -997,6 +1113,15 @@ def _validate_hook_context_payload(payload: Any, *, now: float, max_age_seconds:
     if transcript_id is not None and (not isinstance(transcript_id, str) or not transcript_id or len(transcript_id) > _MAX_CONTEXT_ID_LENGTH):
         transcript_id = None
     project_label = payload.get("project_label")
+    # A malformed digest is dropped without invalidating the context: it only
+    # disables cwd matching for this candidate (and a digest-less candidate
+    # BLOCKS cwd matching entirely, so dropping can never cause a wrong pick).
+    cwd_digest_raw = payload.get("cwd_digest")
+    cwd_digest_value = (
+        cwd_digest_raw
+        if isinstance(cwd_digest_raw, str) and _CWD_DIGEST_PATTERN.fullmatch(cwd_digest_raw)
+        else None
+    )
     ancestors_raw = payload.get("hook_ancestor_pids")
     hook_ancestor_pids: list[int] = []
     if (
@@ -1012,6 +1137,7 @@ def _validate_hook_context_payload(payload: Any, *, now: float, max_age_seconds:
         "client_session_id": session_id,
         "client_transcript_id": transcript_id,
         "project_label": project_label if isinstance(project_label, str) and project_label else None,
+        "cwd_digest": cwd_digest_value,
         "observed_at": float(observed_at),
         "hook_ancestor_pids": hook_ancestor_pids,
     }
@@ -1122,14 +1248,18 @@ def select_claude_code_hook_context(
     max_age_seconds: float = CLAUDE_CODE_HOOK_CONTEXT_MAX_AGE_SECONDS,
     env_session_id: str | None = None,
     consumer_ancestor_pids: Sequence[int] | Callable[[], Sequence[int]] | None = None,
+    consumer_cwd_digest: str | None = None,
     clients: tuple[str, ...] = ("claude-code",),
 ) -> HookContextSelection:
     """Select the hook context the consumer may safely inherit, if any.
 
-    Selection succeeds only on (1) exactly one fresh candidate (the common
-    single-session flow, identical to the pre-multi-slot behavior), (2) an
-    exact CLAUDE_CODE_SESSION_ID env match that is also STRICTLY newest, or
-    (3) a unique process-lineage match. Anything else refuses inheritance.
+    Discriminators are tried in this order, and inheritance happens only on an
+    unambiguous hit at one of them: (1) exactly one fresh candidate (the common
+    single-session flow, identical to the pre-multi-slot behavior), (2) an exact
+    CLAUDE_CODE_SESSION_ID env match that is also STRICTLY newest, (3) a unique
+    working-directory digest match (``consumer_cwd_digest`` — the discriminator
+    that still works when every session shares one main process), (4) a unique
+    process-lineage match. Anything else refuses inheritance.
     """
     candidates = load_claude_code_hook_contexts(
         store_dir, now=now, max_age_seconds=max_age_seconds, clients=clients
@@ -1152,6 +1282,27 @@ def select_claude_code_hook_context(
             # wrong pick.
             if all(match["observed_at"] > other["observed_at"] for other in candidates if other is not match):
                 return HookContextSelection(match, "selected", "env_session_match", len(candidates))
+    # Working-directory discriminator, for the shape pid lineage cannot handle:
+    # the Kimi Code desktop app runs EVERY session inside one main process, so
+    # the hook processes' chains and the MCP server's chain intersect on that
+    # shared main pid — every candidate hits the same lineage rank and lineage
+    # can never disambiguate. The session's project directory still differs, and
+    # the consumer's own working directory IS its session's project directory.
+    #
+    # Same "don't guess" rule as the pid chain: usable only when EVERY fresh
+    # candidate carries a digest. A digest-less candidate cannot be ruled out,
+    # so selecting around it could hand the consumer a DIFFERENT session's id
+    # (a mixed-version store, or a payload that carried no cwd).
+    if consumer_cwd_digest and all(candidate.get("cwd_digest") for candidate in candidates):
+        matches = [candidate for candidate in candidates if candidate["cwd_digest"] == consumer_cwd_digest]
+        if len(matches) == 1:
+            return HookContextSelection(matches[0], "selected", "cwd_match", len(candidates))
+        if len(matches) > 1:
+            # Several sessions in the SAME directory: the digest cannot tell
+            # them apart. Falling back to newest/lineage here would be exactly
+            # the coin-flip guess this discriminator exists to avoid, so this
+            # refuses outright instead of trying the next rule.
+            return HookContextSelection(None, "refused", "cwd_match_ambiguous", len(candidates))
     # Pid lineage applies only when EVERY candidate carries an ancestry
     # chain: a chain-less candidate cannot be ruled out, so selecting around
     # it could pick the wrong session (mixed-version/nested-session hole).

@@ -356,6 +356,8 @@ _KIMI_CODE_HOOK_FIXTURE = _verification_record(
         "tests/test_hooks_kimi_code.py::test_kimi_code_pre_tool_use_records_a_tool_tick_and_context_file",
         "tests/test_hooks_kimi_code.py::test_kimi_code_install_merges_config_toml_and_is_idempotent",
         "tests/test_hooks_kimi_code.py::test_kimi_code_hook_context_is_selected_by_pid_lineage",
+        "tests/test_hooks_kimi_code.py::test_kimi_code_hook_context_is_selected_by_cwd_digest_in_a_shared_ancestry",
+        "tests/test_hooks_kimi_code.py::test_kimi_code_desktop_cwd_digest_comes_from_the_session_index",
     ),
 )
 _KIMI_CODE_GLOBAL_ONBOARD_FIXTURE = _verification_record(
@@ -954,7 +956,7 @@ _CLIENTS: tuple[dict[str, Any], ...] = (
                 activation="one_command_global",
                 verification=_KIMI_CODE_HOOK_FIXTURE,
                 limitations=(
-                    "No live smoke has been recorded yet: the bridge is proven by synthetic fixtures, not by an observed real Kimi Code session.",
+                    "Live hook firing has been observed (2026-09-24: 64 PreToolUse payloads across five sessions on the maintainer machine, contexts written and refreshed), but no live MCP report has yet inherited a session id — the running MCP server predates the digest fix — so the join itself stays unclaimed.",
                     "The hook config is opt-in — installation writes the user's ~/.kimi-code/config.toml, and a Kimi Code [[hooks]] entry accepts only the event, matcher, command, and timeout fields.",
                     "The hook fires once per tool call.",
                 ),
