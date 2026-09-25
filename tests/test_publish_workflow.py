@@ -28,16 +28,22 @@ def _workflow() -> dict:
     return yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
 
 
+def _needs(job: dict) -> set[str]:
+    needs = job.get("needs", [])
+    return {needs} if isinstance(needs, str) else set(needs)
+
+
 def test_publish_workflow_gates_everything_on_a_green_test_job() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
     assert "test" in jobs, "publish.yml must run the test suite before building"
     test_steps = " ".join(str(step.get("run", "")) for step in jobs["test"]["steps"])
     assert "pytest" in test_steps
-    assert jobs["build"]["needs"] == "test" or jobs["build"]["needs"] == ["test"]
-    # Transitively, both publish jobs sit behind the tests.
-    assert jobs["publish-testpypi"]["needs"] in ("build", ["build"])
-    assert jobs["publish-pypi"]["needs"] in ("publish-testpypi", ["publish-testpypi"])
+    assert _needs(jobs["build"]) == {"test"}
+    # Transitively, both publish jobs sit behind the tests — and real PyPI
+    # additionally waits for the published release's DMG asset.
+    assert _needs(jobs["publish-testpypi"]) == {"build"}
+    assert _needs(jobs["publish-pypi"]) == {"publish-testpypi", "release-dmg-asset"}
 
 
 def test_publish_workflow_checks_tag_matches_pyproject_version() -> None:
@@ -60,9 +66,34 @@ def test_publish_workflow_real_pypi_requires_a_published_release() -> None:
     assert "github.event_name == 'release'" not in testpypi_condition
 
 
+def test_publish_workflow_real_pypi_requires_the_release_to_carry_a_dmg() -> None:
+    # Second structural gate: the DMG is built locally (the signing identity
+    # lives in the maintainer's keychain, so CI cannot build one) and attached
+    # by the release itself, so a published release with no .dmg asset means
+    # the packaging step was skipped — 0.12.1-0.12.4 shipped that way. Real
+    # PyPI waits on this check, so the omission cannot pass unnoticed again.
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    gate = jobs["release-dmg-asset"]
+    assert _needs(jobs["publish-pypi"]) == {"publish-testpypi", "release-dmg-asset"}
+    condition = gate.get("if", "")
+    assert "github.event_name == 'release'" in condition
+    assert "github.repository_owner == 'mikehasa'" in condition
+    assert gate.get("permissions") == {"contents": "read"}, (
+        "the gate only reads the release's asset list"
+    )
+    runs = " ".join(str(step.get("run", "")) for step in gate["steps"])
+    assert "releases/tags/$TAG" in runs
+    assert "grep -q '\\.dmg$'" in runs, "the gate must look for a .dmg asset"
+    # An audited reuse keeps the previous version's DMG filename (release
+    # process §3b), so the check must accept any .dmg name, never demand the
+    # tag's own version in the filename.
+    assert '".dmg"' not in runs
+
+
 def test_publish_workflow_publish_jobs_never_run_from_forks() -> None:
     workflow = _workflow()
-    for job in ("publish-testpypi", "publish-pypi"):
+    for job in ("publish-testpypi", "publish-pypi", "release-dmg-asset"):
         condition = workflow["jobs"][job].get("if", "")
         # repository_owner (not repository) so the repo rename doesn't break it.
         assert "github.repository_owner == 'mikehasa'" in condition, job
