@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.4] — 2026-09-24
+
+Kimi Code desktop sessions can bind their work to the session: the hook context is now chosen by a working-directory digest, and the hook reads the session's real project directory from Kimi Code's own index.
+
 ### Fixed
 
 - Kimi Code hook-bridge session-id inheritance works in the **desktop** app. Its
