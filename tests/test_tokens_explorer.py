@@ -1727,7 +1727,20 @@ def test_usage_summary_range_period_slices_add_up_to_the_range_totals(tmp_path, 
     # distinct sessions, so a session with rows on two days appears twice —
     # which is exactly why period_attribution flags exact_daily_usage false
     # and why the range total is the number to quote, never the column sum.
-    assert sum(entry["sessions"] for entry in periods) > payload["totals"]["sessions"]
+    # Whether that split is visible depends on the grain AND the calendar: the
+    # fixture's two days (1 and 5 back) are two days apart in every daily
+    # grain, but a Mon-anchored weekly grain splits them only when they fall in
+    # different ISO weeks — true Tuesday to Friday, false from Saturday to
+    # Monday, where the weekly sum equals the range total. So assert the
+    # fixture's own expectation, and keep the ">" where the split is guaranteed.
+    expected_session_sum = sum(
+        len(lane["session_keys"])
+        for period in expected_periods.values()
+        for lane in period["by_client"].values()
+    )
+    assert sum(entry["sessions"] for entry in periods) == expected_session_sum
+    if granularity == "daily":
+        assert expected_session_sum > payload["totals"]["sessions"]
     assert payload["totals"]["sessions"] == sum(
         len(expected["session_keys"]) for expected in expected_clients.values()
     )
