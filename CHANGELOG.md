@@ -6,6 +6,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.6] — 2026-09-27
+
+No code or behavior changes: the CLI, daemon, MCP servers, and recorded data behave exactly as in 0.12.5. This release carries the README screenshot refresh and the test fix that had left `main` red since a Saturday merge.
+
+### Fixed
+
+- The Usage range test pins the per-period session split against its own fixture
+  instead of asserting a strict ">" over the range total. Its two-day session
+  falls in one Mon-anchored ISO week from Saturday to Monday, so the assertion
+  failed every Sat/Sun/Mon — `main` went red on 2026-09-26 for a merge that
+  touched nothing in that file. (#342)
+
+### Changed
+
+- README and README.zh-CN name Kimi Code in the supported-client list, describe
+  the independent Usage date/agent/model/provider filters and the local-data
+  freshness stamp, and re-record every app and TUI screenshot from the current
+  UI. (#341)
+
 ## [0.12.5] — 2026-09-25
 
 No code or behavior changes: 0.12.5 re-releases 0.12.4 with its packaged macOS app attached. 0.12.1–0.12.4 were published without a `.dmg` asset, so `releases/latest` had no installable app for anyone without Python, pipx, or a terminal.
@@ -1585,7 +1604,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.5...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.6...HEAD
+[0.12.6]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.6
 [0.12.5]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.5
 [0.12.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.0
 [0.11.2]: https://github.com/mikehasa/agentacct/releases/tag/v0.11.2
