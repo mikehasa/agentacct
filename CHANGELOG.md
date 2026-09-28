@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.7] — 2026-09-28
+
+DeepSeek Harness (dsh) usage rows are priced again after a provider-name mismatch left every one cost-unknown.
+
 ### Fixed
 
 - DeepSeek Harness (dsh) usage rows are priced: dsh records its own route name
@@ -1618,7 +1622,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.6...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.7...HEAD
+[0.12.7]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.7
 [0.12.6]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.6
 [0.12.5]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.5
 [0.12.0]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.0
