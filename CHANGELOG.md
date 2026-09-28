@@ -6,6 +6,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- DeepSeek Harness (dsh) usage rows are priced: dsh records its own route name
+  `deepseek-official` as the provider, which matched no pricing-catalog row, so
+  every imported dsh row stayed cost-unknown and the cost grammar printed
+  `unpriced`. A provider alias (`deepseek-official` → `deepseek`) resolves those
+  rows to the catalog's DeepSeek-keyed prices — a name mapping only: the target
+  row's list price applies, nothing is invented, and a dsh model id no row covers
+  still stays cost-unknown. The dsh import fixture now carries the live route
+  name and model ids instead of the stale `deepseek`/`deepseek-chat` shape.
+  Stored dsh rows already in a ledger are repriced by
+  `usage import-local --refresh --estimate-costs` (the watcher path does the
+  same on its scans). (#344)
+
 ## [0.12.6] — 2026-09-27
 
 No code or behavior changes: the CLI, daemon, MCP servers, and recorded data behave exactly as in 0.12.5. This release carries the README screenshot refresh and the test fix that had left `main` red since a Saturday merge.

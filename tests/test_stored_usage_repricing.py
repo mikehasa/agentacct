@@ -37,6 +37,24 @@ def _event(session_id="historical", *, client="codex", model="gpt-6-astra"):
     return mark_trusted_local_usage_import_event(event)
 
 
+def _dsh_event(session_id="dsh-historical"):
+    """A stored dsh row: the client reports its OWN route name for DeepSeek's
+    official API ("deepseek-official"), never the catalog's "deepseek" key."""
+
+    event = ClientUsageEvent(
+        client="dsh", client_session_id=session_id, source_path=Path("/old/session.v3.jsonl.zstd"),
+        title=None, cwd="/old/project", model="deepseek-flash",
+        input_tokens=1_200, output_tokens=300, cached_input_tokens=5_040,
+        cache_read_input_tokens=5_000, cache_creation_input_tokens=40,
+        cache_creation_tokens_reported=True, cache_read_tokens_reported=True,
+        provider_name="deepseek-official",
+        source_namespace_fingerprint="sha256:" + "b" * 64,
+        source_revision_at=200_000_000, source_revision_basis="source_timestamp",
+    ).to_sentinel_event()
+    event.update(event_id="evt_" + session_id, created_at=300)
+    return mark_trusted_local_usage_import_event(event)
+
+
 def _catalog(*, cache_read=1.0, cache_write_5m=None, cache_write_1h=None):
     return PricingCatalog([
         PricingCatalogEntry("openai", "gpt-6-astra", 10, 50, cache_read_cost_per_1m=cache_read,
@@ -223,6 +241,46 @@ def test_history_reprice_prices_missing_category_rates_with_the_same_fallbacks_a
     # fallback rate out explicitly yields the same amount.
     assert row["estimated_cost_usd"] == pytest.approx(explicit_rate["estimated_cost_usd"])
     # Planning never mutates the stored row it read.
+    assert stored["estimated_cost_usd"] is None and stored["cost_confidence"] == "unknown"
+
+
+def test_history_reprice_prices_dsh_official_route_rows():
+    """The live dsh gap on the stored-row path: dsh rows carry provider
+    "deepseek-official" (the client's own route name), which matched no catalog
+    row, so every stored dsh row stayed unknown. With the provider alias the
+    reprice lands on the deepseek-keyed row — the exact row, dollars and
+    provenance a fresh import produces."""
+
+    catalog = PricingCatalog(
+        [
+            PricingCatalogEntry(
+                "deepseek", "deepseek-flash", 0.30, 1.20,
+                cache_read_cost_per_1m=0.006, cache_write_5m_cost_per_1m=0.0,
+            ),
+        ],
+        provider_aliases={"deepseek-official": "deepseek"},
+    )
+    stored = _dsh_event()
+
+    with pricing_catalog_scope(catalog):
+        fresh_import = deepcopy(stored)
+        assert apply_pricing_estimate_to_event(fresh_import) is True
+        repriced = build_stored_unknown_cost_reprice_batch(
+            [stored], client="dsh", excluded_bases=set(),
+        )[0]
+
+    assert [row["event_id"] for row in repriced] == [stored["event_id"]]
+    row = repriced[0]
+    assert row == fresh_import
+    assert row["cost_confidence"] == "estimated_from_tokens"
+    assert row["cost_basis"] == "pricing_table"
+    # 1,200 in * $0.30/1M + 300 out * $1.20/1M + 5,000 cache read * $0.006/1M;
+    # the 40 cache-write tokens are priced at the row's explicit 0.0 rate.
+    assert row["estimated_cost_usd"] == pytest.approx(
+        1_200 * 0.30 / 1_000_000 + 300 * 1.20 / 1_000_000 + 5_000 * 0.006 / 1_000_000
+    )
+    assert row["metadata"]["pricing_source_provider"] == "deepseek"
+    assert row["metadata"]["pricing_source_model"] == "deepseek-flash"
     assert stored["estimated_cost_usd"] is None and stored["cost_confidence"] == "unknown"
 
 

@@ -164,6 +164,18 @@ PRICING_PROVIDER_ALIASES = {
     # models the builtin table never listed (e.g. gpt-5.6*) at LiteLLM list
     # price.
     "codex": "openai",
+    # DeepSeek Harness (dsh) reports its OWN route name for DeepSeek's official
+    # API: "@deepseek-ai/dsh-llm-deepseek" registers the single route
+    # "deepseek-official" (selected by ~/.dsh/settings.yaml and recorded verbatim
+    # on every assistant/message row as message.source.provider), while the price
+    # tables key DeepSeek's own models under provider "deepseek"
+    # (deepseek-flash, deepseek-v4-flash, deepseek-v4-flash-vision-exp,
+    # deepseek-v4-pro, deepseek-chat, deepseek-reasoner). Without this alias the
+    # client's route name matches no row at all and every dsh row stays
+    # cost-unknown. Same kind as the aliases above: a NAME mapping carrying no
+    # price of its own — the target row's list price applies, and a dsh model id
+    # no catalog row covers still stays unpriced.
+    "deepseek-official": "deepseek",
 }
 
 # Client model ids the public price tables do not key under the same name.
