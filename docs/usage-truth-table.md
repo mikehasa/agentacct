@@ -142,10 +142,12 @@ You can still point at an explicit local agentacct or LiteLLM JSON catalog with
 `--catalog-path` or `AGENTACCT_PRICING_CATALOG_PATH`; a pinned catalog is
 respected as-is and is never auto-refreshed.
 
-Provider aliases: `claude-code` rows fall back to `anthropic`-keyed prices and
-`codex` rows to `openai`-keyed prices when no exact `(provider, model)` entry
-exists — exact entries (including the deliberate builtin `codex`/`gpt-5.5`
-fast-pricing rows) always win before the alias. The builtin fast-pricing rows
+Provider aliases: `claude-code` rows fall back to `anthropic`-keyed prices,
+`codex` rows to `openai`-keyed prices and `deepseek-official` rows (DeepSeek
+Harness's own route name for DeepSeek's official API) to `deepseek`-keyed prices
+when no exact `(provider, model)` entry exists — exact entries (including the
+deliberate builtin `codex`/`gpt-5.5` fast-pricing rows) always win before the
+alias. The builtin fast-pricing rows
 (the ones carrying a cost multiplier) are also protected on the merge path:
 an external snapshot or pinned-file row keyed exactly `codex`/`gpt-5.5` never
 replaces them, so the 2.5x convention cannot be silently dropped by upstream

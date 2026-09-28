@@ -563,6 +563,101 @@ def test_builtin_multiplier_rows_survive_exact_key_snapshot_collision(tmp_path, 
     assert extended.input_cost_per_1m == 2.0
 
 
+# ---------------------------------------------------------------------------
+# deepseek-official -> deepseek provider alias (DeepSeek Harness's route name)
+# ---------------------------------------------------------------------------
+
+_DSH_DEEPSEEK_LITELLM_ROWS = {
+    "deepseek/deepseek-flash": {
+        "litellm_provider": "deepseek",
+        "input_cost_per_token": 3e-07,
+        "output_cost_per_token": 1.2e-06,
+        "cache_read_input_token_cost": 6e-09,
+        "cache_creation_input_token_cost": 0.0,
+    },
+    "deepseek/deepseek-v4-pro": {
+        "litellm_provider": "deepseek",
+        "input_cost_per_token": 1.32e-06,
+        "output_cost_per_token": 3.96e-06,
+        "cache_read_input_token_cost": 4.4e-08,
+        "cache_creation_input_token_cost": 0.0,
+    },
+}
+
+
+def test_dsh_official_route_alias_prices_deepseek_models(tmp_path, monkeypatch):
+    """The live gap: DeepSeek Harness records provider "deepseek-official" — its
+    own route name for DeepSeek's official API — which matches no catalog row,
+    so every dsh row stayed cost-unknown. The alias resolves that name to the
+    deepseek-keyed rows; no price is invented and an uncovered id stays
+    unpriced."""
+
+    _pin_catalog(monkeypatch, tmp_path, _DSH_DEEPSEEK_LITELLM_ROWS)
+
+    flash = model_pricing_entry("deepseek-official", "deepseek-flash")
+    assert flash is not None
+    assert (flash.provider, flash.model) == ("deepseek", "deepseek-flash")
+    assert flash.source_provider == "deepseek"
+    assert flash.source_model == "deepseek/deepseek-flash"
+    assert flash.input_cost_per_1m == 0.30
+    assert flash.output_cost_per_1m == 1.20
+    assert flash.cache_read_cost_per_1m == 0.006
+    assert flash.cache_write_5m_cost_per_1m == 0.0
+    assert flash.cost_multiplier == 1.0
+
+    # The adapter's other default ids resolve through the same alias.
+    assert has_model_price("deepseek-official", "deepseek-v4-pro") is True
+
+    breakdown = estimate_model_cost_breakdown_usd(
+        "deepseek-official",
+        "deepseek-flash",
+        input_tokens=1_000_000,
+        output_tokens=1_000_000,
+        cache_read_input_tokens=1_000_000,
+    )
+    assert breakdown["input_cost_usd"] == 0.30
+    assert breakdown["output_cost_usd"] == 1.20
+    assert breakdown["cache_read_cost_usd"] == 0.006
+
+    # Honesty boundary: the alias covers names, not models — an id no row
+    # carries still resolves to nothing.
+    assert has_model_price("deepseek-official", "deepseek-not-a-model") is False
+
+
+def test_dsh_event_prices_end_to_end_through_apply_pricing_estimate(tmp_path, monkeypatch):
+    """The live dsh row shape (provider "deepseek-official", cache tokens
+    reported, cost unknown) becomes an estimated_from_tokens row whose stored
+    provenance names the catalog row the price came from."""
+
+    from agentacct.client_usage import apply_pricing_estimate_to_event
+
+    _pin_catalog(monkeypatch, tmp_path, _DSH_DEEPSEEK_LITELLM_ROWS)
+
+    row = {
+        "event_type": "model_usage",
+        "provider": "deepseek-official",
+        "model": "deepseek-flash",
+        "estimated_input_tokens": 1_000,
+        "estimated_output_tokens": 2_000,
+        "cost_confidence": "unknown",
+        "estimated_cost_usd": None,
+        "metadata": {
+            "cache_read_input_tokens": 44_800,
+            "cache_creation_input_tokens": 40,
+        },
+    }
+    assert apply_pricing_estimate_to_event(row) is True
+    assert row["cost_confidence"] == "estimated_from_tokens"
+    assert row["cost_basis"] == "pricing_table"
+    assert row["estimated_cost_usd"] == pytest.approx(
+        1_000 * 0.30 / 1_000_000 + 2_000 * 1.20 / 1_000_000 + 44_800 * 0.006 / 1_000_000
+    )
+    assert row["metadata"]["pricing_source"] == "litellm_model_cost_map"
+    assert row["metadata"]["pricing_source_provider"] == "deepseek"
+    assert row["metadata"]["pricing_source_model"] == "deepseek/deepseek-flash"
+    assert row["metadata"]["pricing_warning"]
+
+
 def test_new_builtin_model_prices_cover_fable_and_gpt_5_4_mini(monkeypatch):
     monkeypatch.delenv(PRICING_CATALOG_PATH_ENV, raising=False)
     reset_pricing_catalog_cache()

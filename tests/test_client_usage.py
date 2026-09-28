@@ -767,7 +767,7 @@ def _make_dsh_home(root: Path) -> Path:
         "seq": 1,
         "time": 1_769_753_001_000,
         "data": {
-            "message": {"source": {"provider": "deepseek", "model": "deepseek-chat"}},
+            "message": {"source": {"provider": "deepseek-official", "model": "deepseek-flash"}},
             "usage": {
                 "inputTokens": 1200,
                 "outputTokens": 300,
@@ -783,7 +783,7 @@ def _make_dsh_home(root: Path) -> Path:
         "seq": 2,
         "time": 1_769_753_002_000,
         "data": {
-            "message": {"source": {"provider": "deepseek", "model": "deepseek-reasoner"}},
+            "message": {"source": {"provider": "deepseek-official", "model": "deepseek-v4-pro"}},
             "usage": {"inputTokens": 10, "outputTokens": 20},
         },
     }
@@ -4453,9 +4453,9 @@ def test_discover_dsh_usage_reads_zstd_jsonl_tokens_and_no_cost(tmp_path):
     event = events[0]
     assert event.client == "dsh"
     assert event.client_session_id == "sess-abc"
-    assert event.provider == "deepseek"
+    assert event.provider == "deepseek-official"
     # A multi-model session is attributed to the latest model seen.
-    assert event.model == "deepseek-reasoner"
+    assert event.model == "deepseek-v4-pro"
     # inputTokens is uncached input; totals sum across both assistant/message rows.
     assert event.input_tokens == 1210
     assert event.output_tokens == 320
@@ -4471,7 +4471,7 @@ def test_discover_dsh_usage_reads_zstd_jsonl_tokens_and_no_cost(tmp_path):
     # dsh persists no cost, so the row must not fabricate one.
     assert event.client_reported_cost_usd is None
     payload = event.to_sentinel_event()
-    assert payload["provider"] == "deepseek"
+    assert payload["provider"] == "deepseek-official"
     assert payload["cost_confidence"] == "unknown"
     assert payload["metadata"]["usage_update_semantics"] == "dsh_assistant_usage_rows"
     assert "content" not in json.dumps(payload).lower()
