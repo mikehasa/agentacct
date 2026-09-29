@@ -371,6 +371,11 @@ class ManagedProcess:
     same process we launched -- not merely the same number.  An OS-recycled PID
     pointing at an unrelated program would fail every field checked by
     ``RuntimeManager._matches``.
+
+    ``executable`` is the launch path (``argv[0]``) resolved at spawn time;
+    ``image`` is the program file the kernel reports the process actually
+    running (see ``_running_image``).  ``image`` is empty for records written
+    before it existed, or where the platform would not report it.
     """
 
     role: str
@@ -383,6 +388,7 @@ class ManagedProcess:
     nonce: str
     log_path: str
     started_at: float
+    image: str = ""
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "ManagedProcess":
@@ -410,12 +416,60 @@ class ManagedProcess:
             nonce=nonce,
             log_path=str(value.get("log_path") or ""),
             started_at=float(value.get("started_at")),
+            image=str(value.get("image") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["argv"] = list(self.argv)
         return value
+
+
+def _running_image(process: Any) -> str:
+    """Return the resolved path of the program file ``process`` is running, or "".
+
+    Unlike ``argv[0]``, this is the file the kernel actually executed, so it
+    does not change when a symlink on the launch path is retargeted after the
+    process started.  For example, reinstalling a uv/pipx tool recreates its
+    venv's ``bin/python`` link, and ``uv python upgrade`` moves the
+    minor-version interpreter link it goes through.
+
+    A running program file is a regular file, so a symlink here no longer
+    names the running image.  It is one of two things: psutil guessing from
+    ``argv[0]`` because the kernel would not say (macOS, once the running file
+    has been deleted), or a stale kernel path whose file has since been
+    replaced by a link.  Either way the result is discarded.  An unknown image
+    is "" and never an error: callers treat it as missing evidence, not as a
+    mismatch.
+
+    ``psutil`` caches ``exe()`` per ``Process`` object, so pass a freshly
+    constructed one while the image may still be changing.
+    """
+    try:
+        image = process.exe()
+        if not image or os.path.islink(image):
+            return ""
+        return str(Path(image).resolve())
+    except (OSError, RuntimeError, psutil.Error):
+        return ""
+
+
+def _executable_matches(record: ManagedProcess, *, launched: str, image: str) -> bool:
+    """Decide whether a live process's program is the one recorded at spawn.
+
+    ``launched`` is the live ``argv[0]`` resolved now, the only check older
+    releases made.  It is still accepted, so a record that matched before
+    still matches.  The kernel-reported ``image`` also matches, either against
+    the recorded image or, for a record written before images were recorded,
+    against its resolved launch path.  That second route is what keeps
+    ``stop`` working after an interpreter symlink is retargeted under a
+    running process.
+    """
+    recorded = {str(Path(record.executable).resolve())} if record.executable else set()
+    if record.image:
+        recorded.add(record.image)
+    observed = {path for path in (launched, image) if path}
+    return bool(recorded & observed)
 
 
 @dataclass(frozen=True)
@@ -587,7 +641,10 @@ class RuntimeManager:
         process group, executable, cwd, full argv, AND injected nonce all still
         match the record.  A bare PID match is not enough -- the OS recycles
         PIDs, so a same-number process could be an unrelated program.  Any
-        mismatch or unreadable identity returns ``(False, <reason>)``.
+        mismatch or unreadable identity returns ``(False, <reason>)``.  The
+        executable is matched by ``_executable_matches``, which also accepts
+        the kernel-reported image, so a venv or interpreter symlink
+        retargeted by a reinstall does not disown a running process.
         """
         try:
             process = psutil.Process(record.pid)
@@ -602,7 +659,8 @@ class RuntimeManager:
             pgid = os.getpgid(record.pid)
             cwd = str(Path(process.cwd()).resolve())
             argv = tuple(process.cmdline())
-            executable = str(Path(argv[0]).resolve()) if argv else ""
+            launched = str(Path(argv[0]).resolve()) if argv else ""
+            image = _running_image(process)
             nonce = read_env_alias("AGENTACCT_RUNTIME_NONCE", process.environ())
         except (ProcessLookupError, psutil.NoSuchProcess, psutil.ZombieProcess):
             return False, "not_running"
@@ -613,7 +671,7 @@ class RuntimeManager:
             # create_time; a larger delta means a different (recycled) process.
             abs(create_time - record.create_time) > 0.05
             or pgid != record.process_group_id
-            or executable != str(Path(record.executable).resolve())
+            or not _executable_matches(record, launched=launched, image=image)
             or cwd != str(Path(record.cwd).resolve())
             or argv != record.argv
             or nonce != record.nonce
@@ -664,7 +722,7 @@ class RuntimeManager:
             # status check look like PID reuse.  Require a stable final image
             # and our nonce across consecutive observations.
             observed = psutil.Process(process.pid)
-            stable_fingerprint: tuple[float, str, tuple[str, ...], int] | None = None
+            stable_fingerprint: tuple[float, str, tuple[str, ...], int, str] | None = None
             stable_count = 0
             deadline = time.monotonic() + self.OWNERSHIP_HANDSHAKE_SECONDS
             poll_delay = self.OWNERSHIP_POLL_INITIAL_SECONDS
@@ -675,6 +733,9 @@ class RuntimeManager:
                         str(Path(observed.cwd()).resolve()),
                         tuple(observed.cmdline()),
                         os.getpgid(process.pid),
+                        # A fresh Process each poll: ``observed`` would cache
+                        # the transient pre-exec image (e.g. /usr/bin/env).
+                        _running_image(psutil.Process(process.pid)),
                     )
                     observed_nonce = read_env_alias("AGENTACCT_RUNTIME_NONCE", observed.environ())
                 except (OSError, psutil.AccessDenied):
@@ -710,7 +771,7 @@ class RuntimeManager:
                     time.sleep(min(poll_delay, remaining))
             if stable_fingerprint is None or stable_count < 3:
                 raise RuntimeManagerError("child process did not complete the agentacct ownership handshake")
-            create_time, process_cwd, process_argv, process_group_id = stable_fingerprint
+            create_time, process_cwd, process_argv, process_group_id, image = stable_fingerprint
             executable = str(Path(process_argv[0]).resolve()) if process_argv else ""
             return ManagedProcess(
                 role=role,
@@ -723,6 +784,7 @@ class RuntimeManager:
                 nonce=nonce,
                 log_path=str(log_path),
                 started_at=time.time(),
+                image=image,
             )
         except Exception:
             try:

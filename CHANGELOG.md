@@ -6,6 +6,37 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `agentacct stop`, `start`, `status` and `repair` no longer disown a running
+  recorder after its interpreter symlink is retargeted. The ownership proof
+  re-resolved the live `argv[0]` at every check. On non-framework
+  interpreters (uv's standalone builds, conda, pyenv, Linux) that is the
+  venv's `bin/python` link, which reinstalling the tool (`uv tool install
+  --force`, pipx reinstall) recreates and `uv python upgrade` moves along with
+  its minor-version link. Once either one changed the interpreter the link
+  resolves to, the resolved path no longer matched the path recorded at start.
+  The runtime then refused to stop its own watcher
+  and dashboard ("does not match agentacct ownership proof; no process was
+  signalled"), and `start` refused to replace them. The deploy order
+  `uv tool install … && agentacct stop && agentacct start` hit this whenever
+  the reinstall picked a different interpreter.
+  - Each managed process's record now also stores the program file the kernel
+    reports it running (`image`, from `psutil`'s `exe()`). A match on that
+    image is accepted.
+  - Records written by earlier releases have no `image`, so their launch path
+    is compared against the live image instead. A runtime started before this
+    fix can therefore be stopped after upgrading to it.
+  - This holds as long as the interpreter the recorder started with is still
+    installed. On Linux it holds even after that file is deleted. On macOS a
+    deleted interpreter can no longer be identified, and the runtime still
+    refuses rather than guess.
+  - The previous launch-path check is still accepted, so nothing that matched
+    before stops matching.
+  - Birth time, process group, working directory, full argv and the per-start
+    nonce are still required unchanged. A record whose program matches neither
+    the live launch path nor the running image is still refused.
+
 ## [0.12.8] — 2026-09-29
 
 A reboot no longer strands the macOS app with a dead recorder and no way to act: the error surfaces now carry a **Start recorder** button that runs `agentacct start` in the background, and it also works on a machine whose `agentacct` came from pipx/uv instead of the app's own install.
