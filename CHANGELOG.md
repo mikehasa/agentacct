@@ -35,7 +35,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     before stops matching.
   - Birth time, process group, working directory, full argv and the per-start
     nonce are still required unchanged. A record whose program matches neither
-    the live launch path nor the running image is still refused.
+    the live launch path nor the running image is still refused. (#350)
 
 ## [0.12.8] — 2026-09-29
 
