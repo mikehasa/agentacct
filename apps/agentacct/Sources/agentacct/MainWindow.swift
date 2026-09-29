@@ -50,19 +50,63 @@ struct MainWindow: View {
         RecorderDisplayStoreGate.explanation(display: try? GlanceClient.storeDir(), managedPath: setup.recordingStorePath)
     }
 
+    /// nil means the connection recovery may be attempted. The store comparison
+    /// exists to protect the app-owned recorder; a user-installed one is started
+    /// against the displayed store explicitly, so it does not apply there. When
+    /// nothing can start a recorder, keep naming the actual blocker.
+    private var recoveryUnavailableReason: String? {
+        guard setupRecoveryKind == .connection else { return nil }
+        switch setup.recorderStartTarget {
+        case .appOwned:
+            return reconnectStoreExplanation
+        case .external:
+            return nil
+        case nil:
+            return reconnectStoreExplanation ?? setup.presentation.reconnectUnavailableReason
+        }
+    }
+
     /// The one-click restart control for the always-visible health surfaces.
-    /// Present only when the app owns a recorder it can actually start (a matching
-    /// packaged CLI, and the displayed store is the managed one). Otherwise the
+    /// Present when the app owns a recorder it can actually start (a matching
+    /// packaged CLI, and the displayed store is the managed one), or when a
+    /// user-installed recorder CLI has been verified for exactly this explicit
+    /// action — the case a reboot leaves a pipx/uv install in. Otherwise the
     /// unreachable cause keeps its existing "Open Connections" path, and it is
     /// suppressed entirely in deterministic snapshot renders.
     private var recorderRestart: RecorderRestartControl? {
-        guard !SnapshotMode.enabled,
-              setup.canReconnectRecorder,
-              reconnectStoreExplanation == nil else { return nil }
+        guard !SnapshotMode.enabled, let target = setup.recorderStartTarget else { return nil }
+        switch target {
+        case .appOwned:
+            guard reconnectStoreExplanation == nil else { return nil }
+        case .external:
+            // The app manages no recorder here, so the managed-store comparison
+            // does not apply: the start names the displayed store explicitly.
+            guard let store = try? GlanceClient.storeDir(), !store.path.isEmpty else { return nil }
+        }
         return RecorderRestartControl(
             inFlight: setup.reconnectPhase == .working,
+            detail: target.detail,
             onRestart: { restartRecorderFromHealth() }
         )
+    }
+
+    /// The recovery gate's actions. The one-click start leads when it exists —
+    /// this state is exactly where a reboot leaves someone whose recorder is not
+    /// app-owned, so the terminal command must not be the only way out.
+    @ViewBuilder
+    private var recorderRecoveryActions: some View {
+        if let restart = recorderRestart {
+            RecorderRestartButton(control: restart, identifier: "dashboard.recorder-restart")
+            if savedWork?.hasWork == true {
+                Button("View saved work") { openSavedOrLiveWork() }.buttonStyle(.bordered)
+            }
+            Button("Open recording setup") { showSetup = true }.buttonStyle(.bordered)
+        } else {
+            if savedWork?.hasWork == true {
+                Button("View saved work") { openSavedOrLiveWork() }.buttonStyle(.bordered)
+            }
+            Button("Open recording setup") { showSetup = true }.buttonStyle(.borderedProminent)
+        }
     }
 
     private var canViewSavedWork: Bool {
@@ -139,7 +183,7 @@ struct MainWindow: View {
                         onOpenWork: { openSavedOrLiveWork() },
                         recoveryReason: setupRecoveryReason,
                         recoveryKind: setupRecoveryKind,
-                        recoveryUnavailableReasonOverride: setupRecoveryKind == .connection ? reconnectStoreExplanation : nil,
+                        recoveryUnavailableReasonOverride: recoveryUnavailableReason,
                         onReconnect: { await recoverRecorder() }
                     )
                     .transition(.opacity)
@@ -171,11 +215,7 @@ struct MainWindow: View {
                                 .font(Type.titleSection)
                             Text("Reconnect the local recorder before loading work in this window.")
                                 .foregroundStyle(Theme.muted)
-                            if savedWork?.hasWork == true {
-                                Button("View saved work") { openSavedOrLiveWork() }.buttonStyle(.bordered)
-                            }
-                            Button("Open recording setup") { showSetup = true }
-                                .buttonStyle(.borderedProminent)
+                            recorderRecoveryActions
                         } else {
                             ProgressView("Preparing the local recorder…")
                                 .controlSize(.small)
@@ -227,6 +267,14 @@ struct MainWindow: View {
             guard !Task.isCancelled, savedWork == nil,
                   safetyRevision == dashboard.projectionSafetyRevision else { return }
             savedWork = loaded
+        }
+        .task {
+            // Fixture-backed design review must stay deterministic and must
+            // never consult the developer's live daemon/account data.
+            guard !SnapshotMode.enabled else { return }
+            // The one-click start must know whether it would run the app-owned
+            // recorder or a user-installed CLI before any surface offers it.
+            await setup.resolveRecorderStartTargetIfNeeded()
         }
         .task {
             // Fixture-backed design review must stay deterministic and must
@@ -384,8 +432,9 @@ struct MainWindow: View {
             await retrySetupAndRecorderSynchronization()
             return recorderSynchronizationFinished
         }
-        guard reconnectStoreExplanation == nil else { return false }
-        let succeeded = await setup.reconnectRecorder()
+        // Routes to the app-owned reconnect, or to the user-installed recorder
+        // when the app owns none; both share one in-flight state.
+        let succeeded = await setup.startRecorder()
         if succeeded {
             // The route keeps its frozen reason so the success confirmation and
             // diagnostics remain visible until the user leaves deliberately.
@@ -412,17 +461,19 @@ struct MainWindow: View {
     }
 
     /// One-click recovery from the always-visible health surfaces (the toolbar
-    /// popover and the notice stack). Runs the verified app-owned `agentacct
-    /// start`; on success it refreshes, and on failure it opens the full recovery
-    /// flow so the reconnect log and the specific reason are visible rather than
-    /// failing silently. Gated upstream by `recorderRestart` being non-nil.
+    /// popover and the notice stack). Runs the same `agentacct start` a user
+    /// would: the app-owned recorder when there is one, otherwise the verified
+    /// user-installed CLI. On success it refreshes, and on failure it opens the
+    /// full recovery flow so the reconnect log and the specific reason are
+    /// visible rather than failing silently. Gated upstream by `recorderRestart`
+    /// being non-nil.
     private func restartRecorderFromHealth() {
         Task { @MainActor in
             // If another surface (e.g. the menu bar) already has a restart in
             // flight, do nothing rather than misread its busy no-op as a failure
             // and pop an unwanted setup sheet over a reconnect that is proceeding.
             guard setup.reconnectPhase != .working else { return }
-            let succeeded = await setup.reconnectRecorder()
+            let succeeded = await setup.startRecorder()
             if succeeded {
                 offlineDashboard = nil
                 refreshHealthAndWork()

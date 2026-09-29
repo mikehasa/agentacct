@@ -2185,6 +2185,39 @@ final class RecorderReconnectTests: XCTestCase {
     }
 }
 
+/// Routing between the app-owned recorder and a user-installed CLI: exactly one
+/// of them is ever run, and the owned recorder always wins when it is available.
+final class RecorderStartRoutingTests: XCTestCase {
+    private let commit = "2222222222222222222222222222222222222222"
+
+    @MainActor
+    func testStartRecorderPrefersTheOwnedRecorderAndNeverRunsAnInstalledCLI() async throws {
+        let fixture = try UpgradeFixture(
+            bundleCommit: commit, installedCommit: commit, installedAsVersioned: true
+        )
+        defer { fixture.remove() }
+        var commands: [[String]] = []
+        let model = fixture.model { _, arguments in
+            commands.append(arguments)
+            return SetupModelTests.stream(
+                lines: arguments.first == "status" ? [fixture.readyRuntimeStatus] : []
+            )
+        }
+        XCTAssertTrue(model.canReconnectRecorder)
+        XCTAssertEqual(model.recorderStartTarget, .appOwned)
+        commands = []
+
+        let started = await model.startRecorder()
+
+        XCTAssertTrue(started)
+        XCTAssertEqual(commands, [
+            ["start", "--no-sync-clients", "--store-dir", fixture.store.path, "--json"],
+            ["status", "--store-dir", fixture.store.path, "--json"],
+        ])
+        XCTAssertEqual(model.reconnectPhase, .done)
+    }
+}
+
 final class SetupContentPreviewModelTests: XCTestCase {
     private let commit = "2222222222222222222222222222222222222222"
 

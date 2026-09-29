@@ -42,7 +42,10 @@ struct AgentacctApp: App {
                     // share one SetupModel). Report that as "in progress", not a
                     // failure, so a second tap never spuriously opens the window.
                     if lifecycle.setup.reconnectPhase == .working { return true }
-                    let started = await lifecycle.setup.reconnectRecorder()
+                    // Runs the app-owned recorder, or the user-installed CLI when
+                    // this app owns none — the same single entry point the window
+                    // surfaces use.
+                    let started = await lifecycle.setup.startRecorder()
                     if started {
                         lifecycle.glance.refreshNow()
                         await dashboard.refresh()

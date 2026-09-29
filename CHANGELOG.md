@@ -6,6 +6,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+A reboot no longer strands the macOS app with a dead recorder and no way to act: the error surfaces now carry a **Start recorder** button that runs `agentacct start` in the background, and it also works on a machine whose `agentacct` came from pipx/uv instead of the app's own install.
+
+### Added
+
+- One-click recorder start from the app's dead-end surfaces. The window's
+  "The recorder needs recovery" gate previously offered only *View saved work*
+  and *Open recording setup*; it now leads with the same **Start recorder**
+  control the recording-health popover, the notice stack, and the menu-bar
+  dropdown already use, and the setup sheet's reconnect button routes through
+  the same entry point. The start runs `agentacct start --no-sync-clients
+  --store-dir <the store this window displays> --json`, then verifies readiness
+  with `status --json` against the same check the app-owned reconnect uses. The
+  CLI's runtime manager spawns the watcher and dashboard detached, so the
+  recorder is a real background process that outlives the app. (#NNN)
+- The start is no longer limited to an app-owned recorder. When this build owns
+  no recorder it can prove (a development build, or a CLI installed with
+  pipx/uv that replaced the app's wrapper), the app resolves
+  `~/.local/bin/agentacct` — then `agentacct` on PATH — and accepts a candidate
+  only if its own `--version` banner says `agentacct <version>`. The button's
+  caption names exactly what will run ("Starts agentacct 0.12.4 at
+  ~/.local/bin/agentacct — not installed or managed by this app."). The app
+  never installs, updates, replaces or uninstalls that CLI, never refreshes
+  client integrations (`--no-sync-clients`), and never signals a process it did
+  not start; `reconnectRecorder`'s verified app-owned path is unchanged and
+  still takes precedence whenever it is available. (#NNN)
+
 ## [0.12.7] — 2026-09-28
 
 DeepSeek Harness (dsh) usage rows are priced again after a provider-name mismatch left every one cost-unknown.

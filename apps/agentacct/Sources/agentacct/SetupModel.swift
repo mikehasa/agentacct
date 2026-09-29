@@ -286,6 +286,16 @@ final class SetupModel: ObservableObject {
     /// Endpoint readiness after reconnect, separate from original onboarding and
     /// never evidence that the selected client has captured any new work.
     @Published private(set) var reconnectCompletedAt: Date?
+    /// A user-installed `agentacct` this app can start when it owns no recorder
+    /// of its own. Resolved once per process by an explicit launch probe; nil
+    /// until then and when no verifiable candidate exists, so no surface can
+    /// offer a start the app would not actually run.
+    @Published private(set) var externalRecorder: ExternalRecorderCLI?
+    /// Why no user-installed recorder CLI was accepted, when that is the case.
+    /// Presentation advice only: a start runs the binary whose `--version`
+    /// banner was already accepted, and nothing else about it is re-checked.
+    @Published private(set) var externalRecorderUnavailableReason: String?
+    private var externalRecorderResolution: Task<Void, Never>?
     /// Why the last launch-time upgrade check carried the recorder no further,
     /// when a recorder is present but could not be upgraded. nil after a clean
     /// upgrade or when the installed recorder already matches this app. This is
@@ -302,6 +312,12 @@ final class SetupModel: ObservableObject {
     private let bundleResourceURL: URL?
     private let bundleInfoDictionary: [String: Any]?
     private let storeDirectory: () throws -> URL
+    /// The store the window actually displays and reads. External recorder
+    /// starts name this store explicitly, so what a user sees is what is started.
+    private let displayStoreDirectory: () throws -> URL
+    /// The environment used to find a user-installed CLI. Injected so tests
+    /// never depend on the machine running them.
+    private let environment: [String: String]
     private let copyDirectory: (URL, URL) throws -> Void
     private let writeWrapper: (String, URL) throws -> Void
     private let transactionLockObserver: (() -> Void)?
@@ -314,6 +330,8 @@ final class SetupModel: ObservableObject {
         bundleResourceURL: URL? = Bundle.main.resourceURL,
         bundleInfoDictionary: [String: Any]? = Bundle.main.infoDictionary,
         storeDirectory: @escaping () throws -> URL = GlanceClient.globalStoreDir,
+        displayStoreDirectory: @escaping () throws -> URL = GlanceClient.storeDir,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         copyDirectory: ((URL, URL) throws -> Void)? = nil,
         writeWrapper: ((String, URL) throws -> Void)? = nil,
         transactionLockObserver: (() -> Void)? = nil,
@@ -325,6 +343,8 @@ final class SetupModel: ObservableObject {
         self.bundleResourceURL = bundleResourceURL
         self.bundleInfoDictionary = bundleInfoDictionary
         self.storeDirectory = storeDirectory
+        self.displayStoreDirectory = displayStoreDirectory
+        self.environment = environment
         self.copyDirectory = copyDirectory ?? { source, destination in
             try FileManager.default.copyItem(at: source, to: destination)
         }
@@ -357,6 +377,8 @@ final class SetupModel: ObservableObject {
         bundleResourceURL = Bundle.main.resourceURL
         bundleInfoDictionary = Bundle.main.infoDictionary
         storeDirectory = GlanceClient.globalStoreDir
+        displayStoreDirectory = GlanceClient.storeDir
+        environment = ProcessInfo.processInfo.environment
         copyDirectory = { source, destination in
             try FileManager.default.copyItem(at: source, to: destination)
         }
@@ -701,9 +723,7 @@ final class SetupModel: ObservableObject {
             reconnectLog.append("Starting the verified recorder without refreshing client configuration")
             let arguments = ["start", "--no-sync-clients", "--store-dir", store.path, "--json"]
             for try await line in processRunner(installedBinary, arguments) {
-                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { reconnectLog.append(trimmed) }
-                if reconnectLog.count > 200 { reconnectLog.removeFirst(reconnectLog.count - 200) }
+                appendReconnect(line)
             }
             try verify()
             guard autostartMatches(autostart) else { throw SetupError.unsafeAutostart }
@@ -741,6 +761,144 @@ final class SetupModel: ObservableObject {
             case .notReady: return "The recorder start command finished, but the endpoint and watcher are not ready. Review the reconnect output and try again."
             }
         }
+    }
+
+    /// What a user's explicit "Start recorder" click would run right now: the
+    /// app-owned recorder whenever it is available, otherwise a user-installed
+    /// CLI this app neither installed nor manages. nil means no control should
+    /// be offered — never a start that would fail silently.
+    var recorderStartTarget: RecorderStartTarget? {
+        if canReconnectRecorder { return .appOwned }
+        return externalRecorder.map(RecorderStartTarget.external)
+    }
+
+    /// Resolve the user-installed recorder CLI, once per process, when this app
+    /// has no owned recorder to offer. Each candidate is probed with its own
+    /// `--version`, so a path that is not an agentacct CLI is refused before
+    /// anything is started. Review renders never probe: they must not consult
+    /// the developer's machine.
+    func resolveRecorderStartTargetIfNeeded() async {
+        guard !SnapshotMode.enabled, !canReconnectRecorder, externalRecorder == nil else { return }
+        if let externalRecorderResolution {
+            await externalRecorderResolution.value
+            return
+        }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.resolveExternalRecorder()
+        }
+        externalRecorderResolution = task
+        await task.value
+        // A failed resolution is not cached: a later ask (after the user
+        // installs a CLI) must be able to succeed.
+        if externalRecorder == nil { externalRecorderResolution = nil }
+    }
+
+    private func resolveExternalRecorder() async {
+        let candidates = ExternalRecorderCLIResolver.launchPoints(
+            home: home,
+            environment: environment
+        )
+        guard !candidates.isEmpty else {
+            externalRecorderUnavailableReason = "No user-installed agentacct was found at ~/.local/bin/agentacct or on PATH."
+            return
+        }
+        var failures: [String] = []
+        for candidate in candidates {
+            do {
+                let output = try await runCommand(executable: candidate, arguments: ["--version"])
+                guard let version = ExternalRecorderCLI.version(fromBanner: output) else {
+                    failures.append("\(candidate.path) is not an agentacct CLI.")
+                    continue
+                }
+                externalRecorder = ExternalRecorderCLI(
+                    launcher: candidate,
+                    executable: candidate.standardizedFileURL.resolvingSymlinksInPath(),
+                    version: version,
+                    banner: output.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+                externalRecorderUnavailableReason = nil
+                return
+            } catch {
+                failures.append("\(candidate.path) could not report its version.")
+            }
+        }
+        externalRecorderUnavailableReason = failures.isEmpty
+            ? "No user-installed agentacct could be verified."
+            : failures.joined(separator: " ")
+    }
+
+    /// The one entry point behind every "Start recorder" control, whatever the
+    /// surface. The app-owned path is exactly `reconnectRecorder`; the fallback
+    /// runs a binary this app did not install, so it is deliberately narrower:
+    /// see `startExternalRecorder`.
+    @discardableResult
+    func startRecorder() async -> Bool {
+        await resolveRecorderStartTargetIfNeeded()
+        switch recorderStartTarget {
+        case .appOwned:
+            return await reconnectRecorder()
+        case .external(let cli):
+            return await startExternalRecorder(cli)
+        case nil:
+            return false
+        }
+    }
+
+    /// Start the recorder from a user-installed CLI, in the background.
+    ///
+    /// Hard limits, because this binary is not app-owned: it runs only
+    /// `start --no-sync-clients` and `status` against the store this app
+    /// already displays, so no client integration, install, update or removal
+    /// is ever triggered; the CLI's own runtime manager owns the processes it
+    /// spawns (detached, so the recorder outlives this app); and the app never
+    /// signals a process it did not start. Success is claimed only when the
+    /// same readiness check the app-owned path uses confirms it.
+    @discardableResult
+    func startExternalRecorder(_ cli: ExternalRecorderCLI) async -> Bool {
+        guard reconnectPhase != .working else { return false }
+        if case .working = phase { return false }
+        defer { refreshPresentation() }
+        reconnectLog = []
+        reconnectPhase = .working
+        do {
+            guard let store = try? displayStoreDirectory(), !store.path.isEmpty else {
+                throw RecorderReconnectError.unavailable(
+                    "The displayed recorder store could not be identified. Resolve the store configuration before starting a recorder."
+                )
+            }
+            appendReconnect("Starting \(cli.banner) at \(cli.launcher.path) — a recorder this app does not manage")
+            let arguments = ["start", "--no-sync-clients", "--store-dir", store.path, "--json"]
+            for try await line in processRunner(cli.executable, arguments) {
+                appendReconnect(line)
+            }
+            appendReconnect("Checking recorder endpoint and watcher readiness")
+            let output = try await runCommand(
+                executable: cli.executable,
+                arguments: ["status", "--store-dir", store.path, "--json"]
+            )
+            guard let data = output.data(using: .utf8),
+                  let status = try? JSONDecoder().decode(RuntimeStatus.self, from: data),
+                  status.isReady(store: store) else {
+                throw RecorderReconnectError.notReady
+            }
+            reconnectCompletedAt = Date()
+            appendReconnect("Recorder endpoint is ready. Fresh client capture is still unconfirmed.")
+            reconnectPhase = .done
+            return true
+        } catch {
+            let message = error.localizedDescription
+            appendReconnect("Start stopped: \(message)")
+            reconnectPhase = .failed(message)
+            return false
+        }
+    }
+
+    private func appendReconnect(_ line: String) {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        reconnectLog.append(trimmed)
+        if reconnectLog.count > 200 { reconnectLog.removeFirst(reconnectLog.count - 200) }
     }
 
     enum AutomaticUpgradeOutcome: Equatable {
