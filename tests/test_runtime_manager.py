@@ -4,6 +4,8 @@ import http.client
 import json
 import os
 import signal
+import sys
+import sysconfig
 import time
 from pathlib import Path
 
@@ -71,6 +73,7 @@ def test_spawn_waits_for_a_slow_env_shebang_to_reach_the_owned_final_image(
     nonce = "n" * 32
     pid = 4242
     final_argv = ("/virtual/venv/bin/python", str(executable), "serve")
+    final_image = str(tmp_path / "interpreter" / "python3.12")
     killed: list[tuple[int, int]] = []
 
     class FakeChild:
@@ -79,7 +82,7 @@ def test_spawn_waits_for_a_slow_env_shebang_to_reach_the_owned_final_image(
 
     class SlowEnvExecProcess:
         def __init__(self, _pid: int) -> None:
-            pass
+            self._exe: str | None = None
 
         def create_time(self) -> float:
             return 1.0
@@ -91,6 +94,12 @@ def test_spawn_waits_for_a_slow_env_shebang_to_reach_the_owned_final_image(
             if now[0] < 2.5:
                 return ["/usr/bin/env", "python3", str(executable), "serve"]
             return list(final_argv)
+
+        def exe(self) -> str:
+            # Like psutil, the first answer is cached per Process object.
+            if self._exe is None:
+                self._exe = "/usr/bin/env" if now[0] < 2.5 else final_image
+            return self._exe
 
         def environ(self) -> dict[str, str]:
             if now[0] < 2.5:
@@ -111,6 +120,9 @@ def test_spawn_waits_for_a_slow_env_shebang_to_reach_the_owned_final_image(
     assert now[0] < manager.OWNERSHIP_HANDSHAKE_SECONDS
     assert record.argv == final_argv
     assert record.nonce == nonce
+    # The settled image, not the transient /usr/bin/env one a reused (caching)
+    # Process object would have kept.
+    assert record.image == str(Path(final_image).resolve())
     assert killed == []
 
 
@@ -141,6 +153,9 @@ def test_spawn_fails_closed_when_the_nonce_never_appears(
 
         def cmdline(self) -> list[str]:
             return ["/usr/bin/env", "python3", str(executable), "serve"]
+
+        def exe(self) -> str:
+            return "/usr/bin/env"
 
         def environ(self) -> dict[str, str]:
             return {}
@@ -197,6 +212,178 @@ def test_stop_refuses_a_process_identity_mismatch(tmp_path: Path) -> None:
             manager.stop()
     finally:
         os.killpg(pgid, signal.SIGTERM)
+
+
+def _runtime_behind_interpreter_symlink(tmp_path: Path) -> tuple[Path, Path]:
+    """A runtime whose shebang goes through a venv-style ``bin/python`` link.
+
+    That is how a uv/pipx console script launches on a standalone interpreter
+    (uv's python-build-standalone, conda, pyenv, CI's setup-python): the live
+    argv[0] stays the link, while the kernel runs the interpreter it pointed
+    at.  A macOS framework build's launcher instead re-execs into Python.app
+    and rewrites argv[0] to that path, so there is no venv link left in the
+    live argv to retarget, and these tests would not exercise anything.
+    """
+    if sys.platform == "darwin" and sysconfig.get_config_var("PYTHONFRAMEWORK"):
+        pytest.skip("a framework build rewrites argv[0] to Python.app, so there is no link to retarget")
+    venv_python = tmp_path / "venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.symlink_to(os.path.realpath(sys.executable))
+    script = tmp_path / "agent-chronicle"
+    script.write_text(f"#!{venv_python}\n" + FAKE_RUNTIME.split("\n", 1)[1], encoding="utf-8")
+    script.chmod(0o755)
+    return script, venv_python
+
+
+def _retarget(link: Path, tmp_path: Path) -> Path:
+    """Point ``link`` at a different interpreter, as a tool reinstall does."""
+    upgraded = tmp_path / "upgraded-python"
+    upgraded.write_text("", encoding="utf-8")
+    upgraded.chmod(0o755)
+    link.unlink()
+    link.symlink_to(upgraded)
+    return upgraded
+
+
+def test_stop_and_start_survive_the_interpreter_link_being_retargeted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, venv_python = _runtime_behind_interpreter_symlink(tmp_path)
+    store = tmp_path / "state"
+    manager = RuntimeManager(store, executable=script, port=45111, cwd=tmp_path)
+    monkeypatch.setattr(manager, "_dashboard_health", lambda: "healthy")
+    started = manager.start(external_watcher_running=True)
+    pid = started["processes"][0]["pid"]
+    pgid = os.getpgid(pid)
+    try:
+        recorded = json.loads(manager.state_path.read_text(encoding="utf-8"))["processes"][0]
+        assert recorded["argv"][0] == str(venv_python)
+        assert recorded["image"]
+
+        _retarget(venv_python, tmp_path)
+        # The launch path now resolves elsewhere, so a launch-path-only proof
+        # would disown the process that is still running the old interpreter.
+        assert str(venv_python.resolve()) != recorded["executable"]
+
+        assert manager.status(external_watcher_running=True)["processes"][0]["state"] == "running"
+        again = manager.start(external_watcher_running=True)
+        assert again["processes"][0]["pid"] == pid
+        stopped = manager.stop()
+    except BaseException:
+        os.killpg(pgid, signal.SIGKILL)
+        raise
+    assert stopped["state"] == "stopped"
+    assert not manager.state_path.exists()
+
+
+def test_a_pre_image_record_stays_stoppable_after_the_link_is_retargeted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    script, venv_python = _runtime_behind_interpreter_symlink(tmp_path)
+    store = tmp_path / "state"
+    manager = RuntimeManager(store, executable=script, port=45112, cwd=tmp_path)
+    monkeypatch.setattr(manager, "_dashboard_health", lambda: "healthy")
+    started = manager.start(external_watcher_running=True)
+    pgid = os.getpgid(started["processes"][0]["pid"])
+    try:
+        raw = json.loads(manager.state_path.read_text(encoding="utf-8"))
+        process = raw["processes"][0]
+        assert process["argv"][0] == str(venv_python)
+        if process["image"] != process["executable"]:
+            pytest.skip("this interpreter re-execs into another image, so an older record cannot match by image")
+        # Exactly what a release before `image` existed wrote.
+        del process["image"]
+        manager.state_path.write_text(json.dumps(raw), encoding="utf-8")
+        assert manager._read()[0].processes[0].image == ""
+
+        _retarget(venv_python, tmp_path)
+        stopped = manager.stop()
+    except BaseException:
+        os.killpg(pgid, signal.SIGKILL)
+        raise
+    assert stopped["state"] == "stopped"
+
+
+def test_stop_still_refuses_a_record_naming_a_different_program(tmp_path: Path) -> None:
+    executable = _fake_executable(tmp_path)
+    store = tmp_path / "state"
+    manager = RuntimeManager(store, executable=executable, port=45113, cwd=tmp_path)
+    started = manager.start(external_watcher_running=True)
+    pid = started["processes"][0]["pid"]
+    pgid = os.getpgid(pid)
+    other = tmp_path / "some-other-program"
+    other.write_text("", encoding="utf-8")
+    raw = json.loads(manager.state_path.read_text(encoding="utf-8"))
+    raw["processes"][0]["executable"] = str(other.resolve())
+    raw["processes"][0]["image"] = str(other.resolve())
+    manager.state_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    try:
+        with pytest.raises(RuntimeManagerError, match="no process was signalled"):
+            manager.stop()
+        assert psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    finally:
+        os.killpg(pgid, signal.SIGTERM)
+
+
+@pytest.mark.parametrize(
+    ("image", "launched", "live_image", "expected"),
+    [
+        # A record written before images existed matches exactly as it used to...
+        ("", "/launch/python", "", True),
+        # ...and also by the live image, which survives a retargeted link.
+        ("", "/upgraded/python", "/launch/python", True),
+        ("/image/python", "/upgraded/python", "/image/python", True),
+        # An unreadable live image falls back to the launch-path check.
+        ("/image/python", "/launch/python", "", True),
+        ("/image/python", "/upgraded/python", "", False),
+        ("/image/python", "/upgraded/python", "/another/python", False),
+        ("", "/upgraded/python", "/another/python", False),
+    ],
+)
+def test_executable_matches_accepts_the_launch_path_or_the_running_image(
+    image: str, launched: str, live_image: str, expected: bool
+) -> None:
+    record = ManagedProcess(
+        role="dashboard",
+        pid=1,
+        process_group_id=1,
+        create_time=1.0,
+        executable="/launch/python",
+        cwd="/",
+        argv=("/launch/python",),
+        nonce="n" * 32,
+        log_path="/dev/null",
+        started_at=1.0,
+        image=image,
+    )
+
+    assert activation._executable_matches(record, launched=launched, image=live_image) is expected
+
+
+def test_running_image_is_empty_when_the_platform_will_not_report_it(tmp_path: Path) -> None:
+    target = tmp_path / "python3.12"
+    target.write_text("", encoding="utf-8")
+    link = tmp_path / "python"
+    link.symlink_to(target)
+
+    class Reports:
+        def __init__(self, result: object) -> None:
+            self.result = result
+
+        def exe(self) -> str:
+            if isinstance(self.result, BaseException):
+                raise self.result
+            return str(self.result)
+
+    assert activation._running_image(Reports(target)) == str(target.resolve())
+    # The kernel never names a symlink as the image; this is psutil guessing
+    # from argv[0], and following the link would name whatever it points at now.
+    assert activation._running_image(Reports(link)) == ""
+    assert activation._running_image(Reports("")) == ""
+    assert activation._running_image(Reports(psutil.AccessDenied(1))) == ""
+    assert activation._running_image(Reports(psutil.NoSuchProcess(1))) == ""
+    assert activation._running_image(Reports(PermissionError())) == ""
 
 
 def test_repair_clears_only_dead_owned_state(tmp_path: Path) -> None:
