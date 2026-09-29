@@ -23,9 +23,14 @@ extension RecordingHealthTone {
 /// A one-click recovery control for an unreachable recorder. `onRestart` runs the
 /// same `agentacct start` the CLI would; `inFlight` reflects the in-progress start
 /// so the button can show progress and disable itself. It is supplied only when
-/// the app owns a matching recorder it can actually start.
+/// the app owns a matching recorder it can actually start, or when a
+/// user-installed CLI has been verified for exactly this action.
 struct RecorderRestartControl {
     var inFlight: Bool
+    /// What a click will run. nil for the app-owned recorder, whose ownership the
+    /// surrounding copy already states; set when the app would start a
+    /// user-installed CLI, because then it must name the binary it starts.
+    var detail: String? = nil
     var onRestart: () -> Void
 }
 
@@ -36,6 +41,20 @@ struct RecorderRestartButton: View {
     var identifier: String
 
     var body: some View {
+        if let detail = control.detail {
+            VStack(alignment: .leading, spacing: 4) {
+                button
+                Text(detail)
+                    .workFont(.caption)
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } else {
+            button
+        }
+    }
+
+    private var button: some View {
         Button {
             control.onRestart()
         } label: {
@@ -85,10 +104,14 @@ struct RecordingHealthToolbarButton: View {
                 // here the restart fires directly (not via onAction), so without
                 // this it would linger over the setup pane on a failed start.
                 restart: restart.map { control in
-                    RecorderRestartControl(inFlight: control.inFlight, onRestart: {
-                        isPresented = false
-                        control.onRestart()
-                    })
+                    RecorderRestartControl(
+                        inFlight: control.inFlight,
+                        detail: control.detail,
+                        onRestart: {
+                            isPresented = false
+                            control.onRestart()
+                        }
+                    )
                 },
                 lastKnownCauses: coordinator?.notices.filter {
                     !$0.isRecovered && !snapshot.causes.contains($0.cause)
