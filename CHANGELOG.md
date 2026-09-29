@@ -19,7 +19,7 @@ A reboot no longer strands the macOS app with a dead recorder and no way to act:
   --store-dir <the store this window displays> --json`, then verifies readiness
   with `status --json` against the same check the app-owned reconnect uses. The
   CLI's runtime manager spawns the watcher and dashboard detached, so the
-  recorder is a real background process that outlives the app. (#NNN)
+  recorder is a real background process that outlives the app. (#346)
 - The start is no longer limited to an app-owned recorder. When this build owns
   no recorder it can prove (a development build, or a CLI installed with
   pipx/uv that replaced the app's wrapper), the app resolves
@@ -30,7 +30,7 @@ A reboot no longer strands the macOS app with a dead recorder and no way to act:
   never installs, updates, replaces or uninstalls that CLI, never refreshes
   client integrations (`--no-sync-clients`), and never signals a process it did
   not start; `reconnectRecorder`'s verified app-owned path is unchanged and
-  still takes precedence whenever it is available. (#NNN)
+  still takes precedence whenever it is available. (#346)
 
 ## [0.12.7] — 2026-09-28
 
