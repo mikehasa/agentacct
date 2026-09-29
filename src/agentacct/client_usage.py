@@ -6940,6 +6940,167 @@ def build_stored_unknown_cost_reprice_batch(
     return replacements, should_replace, guard, recognized_local_usage_row_identity
 
 
+# The three provable answers to "why does this stored row have no cost?".
+# Stored vocabulary: `usage unpriced --json` is consumed by scripts and, later,
+# by the app; the CLI prints human text for each.
+UNPRICED_REASON_REPAIRABLE = "reprice_available"
+UNPRICED_REASON_NO_CATALOG_ROW = "no_catalog_row"
+UNPRICED_REASON_NOT_PRICEABLE = "usage_not_priceable"
+
+
+def unpriced_usage_repair_command(client: str) -> str:
+    command = "agentacct usage import-local --refresh --estimate-costs"
+    return command if client == "all" else f"{command} --client {client}"
+
+
+# Why a row the catalog does cover still stays excluded from pricing. The first
+# three are stored facts about the row itself; "ambiguous_identity" is the
+# honest residual the reprice path refused for a structural reason (a
+# duplicated identity, a mixed source namespace, a missing event id, or a value
+# redaction it cannot attest again).
+UNPRICED_BLOCKER_NON_ADDITIVE = "non_additive"
+UNPRICED_BLOCKER_SPLIT_NOT_REPORTED = "input_output_split_not_reported"
+UNPRICED_BLOCKER_REDACTED = "redacted_value"
+UNPRICED_BLOCKER_AMBIGUOUS_IDENTITY = "ambiguous_identity"
+
+
+def unpriced_row_blocker(event: dict[str, Any], metadata: dict[str, Any]) -> str:
+    if not local_usage_event_additivity(event)[0]:
+        return UNPRICED_BLOCKER_NON_ADDITIVE
+    if metadata.get("input_tokens_reported") is False or metadata.get("output_tokens_reported") is False:
+        return UNPRICED_BLOCKER_SPLIT_NOT_REPORTED
+    if "value_redaction_applied" in metadata or "value_redaction_fields" in metadata:
+        return UNPRICED_BLOCKER_REDACTED
+    return UNPRICED_BLOCKER_AMBIGUOUS_IDENTITY
+
+
+def summarize_unpriced_usage_events(
+    stored_events: list[dict[str, Any]],
+    *,
+    client: str = "all",
+) -> dict[str, Any]:
+    """Inventory stored usage rows that carry no cost, and say why.
+
+    Read-only: nothing is imported, repriced or written here. "Repairable" is
+    *proved* rather than guessed — the stored-row reprice path the repair
+    command uses (``build_stored_unknown_cost_reprice_batch``) is run over these
+    very rows with nothing excluded, and only the rows it would really price
+    are called repairable. The other two answers are honest too: the active
+    catalog has no row for the reported (provider, model) pair (aliases
+    included), or the row is excluded from pricing by design — non-additive
+    usage, an unreported input/output split, a redacted value, or an ambiguous
+    identity.
+
+    A row that already holds an amount is never listed: unpriced means no
+    dollar figure exists, not that a figure is doubtful.
+    """
+
+    replacements, *_ = build_stored_unknown_cost_reprice_batch(
+        stored_events, client=client, excluded_bases=set()
+    )
+    repairable_event_ids = {
+        event_id
+        for row in replacements
+        if isinstance(event_id := row.get("event_id"), str) and event_id
+    }
+    groups: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for event in stored_events:
+        identity = recognized_local_usage_row_identity(event)
+        if identity is None or not is_local_usage_import_event(event):
+            continue
+        row_client = identity[0]
+        if client != "all" and row_client != client:
+            continue
+        if event.get("cost_confidence") not in (None, "", COST_UNKNOWN):
+            continue
+        if event.get("estimated_cost_usd") is not None:
+            continue
+        provider = str(event.get("provider") or "")
+        model = str(event.get("model") or "")
+        metadata = event.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        key = (row_client, provider, model)
+        group = groups.get(key)
+        if group is None:
+            entry = model_pricing_entry(provider, model)
+            group = groups[key] = {
+                "client": row_client,
+                # The name the client reported, verbatim: for dsh that is its
+                # own route ("deepseek-official"), not the catalog's provider.
+                "provider": provider,
+                "model": model,
+                # The catalog row a repair would price it from, when one exists.
+                # The raw catalog key already carries its vendor prefix where
+                # the table has one ("deepseek/deepseek-flash"), so it is kept
+                # verbatim and never prefixed twice.
+                "catalog_provider": (entry.source_provider or entry.provider) if entry is not None else None,
+                "catalog_model": (entry.source_model or entry.model) if entry is not None else None,
+                "rows": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "oldest_at": None,
+                "newest_at": None,
+                "reprice_available_rows": 0,
+                "no_catalog_row_rows": 0,
+                "not_priceable_rows": 0,
+                "blockers": {},
+            }
+        event_id = event.get("event_id")
+        created_at = event.get("created_at")
+        group["rows"] += 1
+        group["input_tokens"] += _safe_nonnegative_int(event.get("estimated_input_tokens"))
+        group["output_tokens"] += _safe_nonnegative_int(event.get("estimated_output_tokens"))
+        cache_read_tokens = _safe_nonnegative_int(metadata.get("cache_read_input_tokens"))
+        if cache_read_tokens <= 0:
+            cache_read_tokens = _safe_nonnegative_int(metadata.get("cached_input_tokens"))
+        group["cache_read_tokens"] += cache_read_tokens
+        if isinstance(created_at, (int, float)):
+            oldest, newest = group["oldest_at"], group["newest_at"]
+            group["oldest_at"] = created_at if oldest is None else min(oldest, created_at)
+            group["newest_at"] = created_at if newest is None else max(newest, created_at)
+        if isinstance(event_id, str) and event_id in repairable_event_ids:
+            group["reprice_available_rows"] += 1
+        elif group["catalog_model"] is None:
+            group["no_catalog_row_rows"] += 1
+        else:
+            blocker = unpriced_row_blocker(event, metadata)
+            group["not_priceable_rows"] += 1
+            group["blockers"][blocker] = group["blockers"].get(blocker, 0) + 1
+
+    models: list[dict[str, Any]] = []
+    repair_commands: list[str] = []
+    blocked_by: dict[str, int] = {}
+    for key in sorted(groups):
+        group = groups[key]
+        if group["reprice_available_rows"]:
+            group["reason"] = UNPRICED_REASON_REPAIRABLE
+        elif group["catalog_model"] is None:
+            group["reason"] = UNPRICED_REASON_NO_CATALOG_ROW
+        else:
+            group["reason"] = UNPRICED_REASON_NOT_PRICEABLE
+            for blocker, count in group["blockers"].items():
+                blocked_by[blocker] = blocked_by.get(blocker, 0) + count
+        group["repair_command"] = (
+            unpriced_usage_repair_command(group["client"])
+            if group["reason"] == UNPRICED_REASON_REPAIRABLE
+            else None
+        )
+        if group["repair_command"] and group["repair_command"] not in repair_commands:
+            repair_commands.append(group["repair_command"])
+        models.append(group)
+    return {
+        "client": client,
+        "rows": sum(group["rows"] for group in models),
+        "reprice_available_rows": sum(group["reprice_available_rows"] for group in models),
+        "no_catalog_row_rows": sum(group["no_catalog_row_rows"] for group in models),
+        "not_priceable_rows": sum(group["not_priceable_rows"] for group in models),
+        "blocked_by": blocked_by,
+        "models": models,
+        "repair_commands": repair_commands,
+    }
+
+
 def apply_pricing_estimate_to_event(event: dict[str, Any]) -> bool:
     """Attach a local list-price estimate to a client usage event when known."""
 

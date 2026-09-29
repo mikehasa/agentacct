@@ -161,6 +161,31 @@ they assume list-price API usage: a subscription/coding-plan user is not charged
 per token, so the estimate is not what they actually paid. Unknown models remain
 unpriced until a trusted catalog entry exists.
 
+**Why a row has no cost, and how to repair it.** `agentacct usage unpriced`
+lists stored unknown-cost rows grouped by client, provider and model, and gives
+each group one of three provable answers:
+
+- the local catalog covers the model, so the rows are repairable — the report
+  proves it by running the same stored-row reprice path the repair command uses,
+  names the catalog row it would price from (`priceable as
+  deepseek/deepseek-flash` for a dsh row reported under the client's own
+  `deepseek-official` route), and prints the exact per-client command;
+- no catalog row covers the reported `(provider, model)` pair even through the
+  aliases above, so the rows stay unknown rather than guessed;
+- the row is excluded from pricing by design: non-additive usage, a client that
+  reported no input/output split, a redacted value, or an ambiguous identity.
+
+It is read-only: nothing is imported, repriced or written, and the store's
+existing snapshot is used as-is (run `cost pricing-catalog --refresh` or any
+pricing-aware import to refresh it). A row that already holds an amount is never
+listed — unpriced means no figure exists, not that a figure is doubtful.
+
+```bash
+agentacct usage unpriced --store-dir .agent-sentinel/state
+agentacct usage unpriced --store-dir .agent-sentinel/state --client dsh --json
+```
+
+
 **Stored-row stability vs. the unknown→priced transition.** Once a stored row
 is priced, later catalog price drift never rewrites it. The ONE exception is
 the unknown→priced transition: a `--refresh --estimate-costs` scan also fills

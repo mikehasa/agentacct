@@ -91,6 +91,17 @@ To see what each integration path can and cannot prove:
 agentacct usage truth-table
 ```
 
+To see which stored usage rows still have no cost, and why:
+
+```bash
+agentacct usage unpriced
+```
+
+It names the exact repair command for rows the local catalog can still price
+(`agentacct usage import-local --refresh --estimate-costs`), and says plainly
+when no catalog row covers a model — those rows stay unpriced by design, not by
+accident. Read-only: nothing is imported, repriced or written.
+
 ## Cost and usage confidence
 
 agentacct keeps usage confidence separate from cost confidence so dashboards do not imply more precision than the data supports.

@@ -6,6 +6,22 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `agentacct usage unpriced` says why stored usage rows have no cost, instead of
+  leaving `unpriced` as a dead end. It groups stored unknown-cost rows by
+  client, provider and model and gives each group a provable reason: the local
+  catalog covers the model, so the rows are repairable — the report proves it by
+  running the same stored-row reprice path the repair command uses, names the
+  catalog row (`priceable as deepseek/deepseek-flash` for a dsh row reported
+  under the client's own `deepseek-official` route) and prints the exact
+  per-client `usage import-local --refresh --estimate-costs` command; no catalog
+  row covers the reported pair even through the provider aliases, so the rows
+  stay unknown rather than guessed; or the row is excluded from pricing by
+  design (non-additive usage, an unreported input/output split, a redacted
+  value, an ambiguous identity). It is read-only — nothing is imported, repriced
+  or written, and the store's existing snapshot is used as-is. (#NNN)
+
 ## [0.12.8] — 2026-09-29
 
 A reboot no longer strands the macOS app with a dead recorder and no way to act: the error surfaces now carry a **Start recorder** button that runs `agentacct start` in the background, and it also works on a machine whose `agentacct` came from pipx/uv instead of the app's own install.
