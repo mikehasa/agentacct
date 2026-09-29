@@ -20,7 +20,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   stay unknown rather than guessed; or the row is excluded from pricing by
   design (non-additive usage, an unreported input/output split, a redacted
   value, an ambiguous identity). It is read-only — nothing is imported, repriced
-  or written, and the store's existing snapshot is used as-is. (#NNN)
+  or written, and the store's existing snapshot is used as-is. (#348)
 
 ## [0.12.8] — 2026-09-29
 
