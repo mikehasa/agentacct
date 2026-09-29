@@ -60,6 +60,12 @@ from .usage_snapshot import (
 )
 from .client_usage import (
     SUPPORTED_CLIENTS,
+    UNPRICED_BLOCKER_AMBIGUOUS_IDENTITY,
+    UNPRICED_BLOCKER_NON_ADDITIVE,
+    UNPRICED_BLOCKER_REDACTED,
+    UNPRICED_BLOCKER_SPLIT_NOT_REPORTED,
+    UNPRICED_REASON_NO_CATALOG_ROW,
+    UNPRICED_REASON_REPAIRABLE,
     apply_pricing_estimate_to_event,
     bind_discovered_usage_source_namespaces,
     build_stored_unknown_cost_reprice_batch,
@@ -75,6 +81,7 @@ from .client_usage import (
     recognized_local_usage_row_identity,
     select_usage_import_candidates,
     source_namespace_adoption_candidates,
+    summarize_unpriced_usage_events,
     usage_less_session_observations,
 )
 from .ingestion_health import (
@@ -10899,6 +10906,117 @@ def usage_truth_table_command(
     console.print("Details:")
     for row in rows:
         console.print(f"- {row['integration']}: {row['setup_path']}")
+
+
+@usage_app.command("unpriced")
+def usage_unpriced(
+    store_dir: Annotated[Optional[Path], typer.Option(help=_STORE_DIR_HELP)] = None,
+    client: Annotated[
+        str,
+        typer.Option(help="Filter to one client (e.g. dsh, codex); 'all' or omit for every client."),
+    ] = "all",
+    json_output: Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")] = False,
+) -> None:
+    """List stored usage rows that carry no cost, and what each one needs.
+
+    Read-only: nothing is imported, repriced or written. Rows the local price
+    catalog can still price are called out with the exact repair command; rows
+    no catalog row covers, and rows excluded from pricing by design, are named
+    too, so "unpriced" never stays a mystery.
+    """
+
+    resolved_store_dir = _resolve_cli_store_dir(store_dir).path
+    previous_catalog_path = os.environ.get(PRICING_CATALOG_PATH_ENV)
+    activate_pricing_catalog_for_store(resolved_store_dir)
+    try:
+        events = SentinelService(resolved_store_dir, create=False).list_all_events()
+        summary = summarize_unpriced_usage_events(events, client=client)
+    finally:
+        _restore_pricing_catalog_env(previous_catalog_path)
+    summary["store_dir"] = str(resolved_store_dir)
+    if json_output:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return
+    if not summary["rows"]:
+        console.print("No unpriced usage rows: every stored usage row carries a cost or a client-reported amount.")
+        return
+    table = Table(title="agentacct usage rows without a cost")
+    table.add_column("Client")
+    table.add_column("Model")
+    table.add_column("Rows", justify="right")
+    table.add_column("Tokens in/out/cache read", justify="right")
+    table.add_column("Why")
+    for model in summary["models"]:
+        if model["reason"] == UNPRICED_REASON_REPAIRABLE:
+            why = f"priceable as {_unpriced_catalog_text(model['catalog_provider'], model['catalog_model'])}"
+            if model["not_priceable_rows"]:
+                why += f"; {model['not_priceable_rows']} row(s) excluded by design"
+        elif model["reason"] == UNPRICED_REASON_NO_CATALOG_ROW:
+            why = "no local price row covers it"
+        else:
+            why = _unpriced_blocker_text(model["blockers"])
+        table.add_row(
+            str(model["client"]),
+            str(model["model"]),
+            str(model["rows"]),
+            f"{model['input_tokens']:,} / {model['output_tokens']:,} / {model['cache_read_tokens']:,}",
+            why,
+        )
+    console.print(table)
+    console.print(
+        f"Total: {summary['rows']} unpriced row(s) in {len(summary['models'])} model(s)."
+    )
+    for command in summary["repair_commands"]:
+        console.print(
+            f"Repair: {command}  "
+            f"(prices {summary['reprice_available_rows']} row(s) from the local catalog)"
+        )
+    if summary["no_catalog_row_rows"]:
+        console.print(
+            f"{summary['no_catalog_row_rows']} row(s) have no local price row for their model; "
+            "they stay cost-unknown rather than guessed."
+        )
+    for blocker, count in sorted(summary["blocked_by"].items()):
+        console.print(
+            f"{count} row(s) excluded by design: "
+            f"{_UNPRICED_BLOCKER_TEXT.get(blocker, blocker)}."
+        )
+
+
+_UNPRICED_BLOCKER_TEXT = {
+    UNPRICED_BLOCKER_NON_ADDITIVE: "the row records non-additive usage",
+    UNPRICED_BLOCKER_SPLIT_NOT_REPORTED: "the client reported no input/output split",
+    UNPRICED_BLOCKER_REDACTED: "a value was redacted",
+    UNPRICED_BLOCKER_AMBIGUOUS_IDENTITY: "the row's identity is ambiguous or conflicted",
+}
+
+
+def _unpriced_catalog_text(provider: object, model: object) -> str:
+    """The catalog row a repair would use, without a doubled vendor prefix.
+
+    A LiteLLM key like ``deepseek/deepseek-flash`` already names its vendor, so
+    the resolved provider is only joined to keys that do not carry one (e.g.
+    ``gpt-5.6-sol`` under provider ``openai``).
+    """
+
+    model_text = str(model or "").strip()
+    provider_text = str(provider or "").strip()
+    if not model_text:
+        return "the local catalog"
+    if not provider_text or "/" in model_text:
+        return model_text
+    return f"{provider_text}/{model_text}"
+
+
+def _unpriced_blocker_text(blockers: dict[str, int]) -> str:
+    """The dominant reason one model's rows stay excluded from pricing."""
+
+    if not blockers:
+        return "excluded from pricing by design"
+    blocker = max(sorted(blockers), key=lambda key: blockers[key])
+    text = _UNPRICED_BLOCKER_TEXT.get(blocker, "excluded from pricing by design")
+    others = sum(blockers.values()) - blockers[blocker]
+    return f"{text}; {others} more excluded for another reason" if others else text
 
 
 _SERVE_PORT_FALLBACK_SPAN = 20
