@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.8] — 2026-09-29
+
 A reboot no longer strands the macOS app with a dead recorder and no way to act: the error surfaces now carry a **Start recorder** button that runs `agentacct start` in the background, and it also works on a machine whose `agentacct` came from pipx/uv instead of the app's own install.
 
 ### Added
@@ -1648,7 +1650,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.7...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.8...HEAD
+[0.12.8]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.8
 [0.12.7]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.7
 [0.12.6]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.6
 [0.12.5]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.5
