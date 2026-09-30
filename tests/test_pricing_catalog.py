@@ -691,6 +691,78 @@ def test_new_builtin_model_prices_cover_fable_and_gpt_5_4_mini(monkeypatch):
     assert mini["cache_read_cost_usd"] == 0.075
 
 
+def test_builtin_rows_price_gpt_6_1_sol_on_both_codex_routes(monkeypatch):
+    """The live gap: codex was reporting gpt-6.1-sol, which no builtin row and
+    no snapshot row covered, so every such row stayed cost-unknown until a
+    snapshot refresh happened to pick the model up. The builtin rows price it on
+    both routes codex can record — its own ("codex", ...) key and OpenAI's — at
+    list price, with no ccusage multiplier (the 2.5x convention is gpt-5.5's
+    alone)."""
+
+    monkeypatch.delenv(PRICING_CATALOG_PATH_ENV, raising=False)
+    reset_pricing_catalog_cache()
+
+    assert has_model_price("codex", "gpt-6.1-sol") is True
+    assert has_model_price("openai", "gpt-6.1-sol") is True
+
+    for provider in ("codex", "openai"):
+        entry = model_pricing_entry(provider, "gpt-6.1-sol")
+        assert entry.source == "agent_sentinel_builtin"
+        assert entry.cost_multiplier == 1.0
+        assert (entry.input_cost_per_1m, entry.output_cost_per_1m) == (2.0, 10.0)
+        assert entry.cache_read_cost_per_1m == 0.10
+        assert entry.cache_write_5m_cost_per_1m == 2.50
+        assert entry.cache_write_1h_cost_per_1m is None
+
+        breakdown = estimate_model_cost_breakdown_usd(
+            provider,
+            "gpt-6.1-sol",
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_creation_5m_input_tokens=1_000_000,
+            cache_read_input_tokens=1_000_000,
+        )
+        assert breakdown["input_cost_usd"] == 2.0
+        assert breakdown["output_cost_usd"] == 10.0
+        assert breakdown["cache_creation_5m_cost_usd"] == 2.5
+        assert breakdown["cache_read_cost_usd"] == 0.10
+
+    # Coverage is per model: the sibling sol ids the builtin still does not
+    # carry stay unpriced rather than borrowing gpt-6.1-sol's row.
+    assert has_model_price("codex", "gpt-6.1-sol-pro") is False
+    assert has_model_price("codex", "gpt-6.1-sol-not-a-model") is False
+
+
+def test_builtin_gpt_6_1_sol_row_wins_over_a_snapshot_row(tmp_path, monkeypatch):
+    """A snapshot that carries the model (LiteLLM keys it under "openai" and
+    resolves it for codex through the provider alias) must not change the price
+    or the provenance: same dollars as the keyed route, and the builtin row
+    still answers for its exact ("codex", ...) key."""
+
+    _pin_catalog(
+        monkeypatch,
+        tmp_path,
+        {
+            "gpt-6.1-sol": {
+                "litellm_provider": "openai",
+                "input_cost_per_token": 2e-06,
+                "output_cost_per_token": 1e-05,
+                "cache_read_input_token_cost": 1e-07,
+                "cache_creation_input_token_cost": 2.5e-06,
+            }
+        },
+    )
+
+    keyed = model_pricing_entry("openai", "gpt-6.1-sol")
+    assert keyed.source == "litellm_model_cost_map"
+    codex_row = model_pricing_entry("codex", "gpt-6.1-sol")
+    assert codex_row.source == "agent_sentinel_builtin"
+
+    assert estimate_model_cost_usd("codex", "gpt-6.1-sol", 1_000_000, 1_000_000) == pytest.approx(
+        estimate_model_cost_usd("openai", "gpt-6.1-sol", 1_000_000, 1_000_000)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Kimi Code's routing ids: client model aliases + vendor-namespace fallback
 # ---------------------------------------------------------------------------

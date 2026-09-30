@@ -6,6 +6,21 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- gpt-6.1-sol usage rows are priced. Codex was writing rows for this model while
+  neither the builtin price table nor the local pricing snapshot carried it, so
+  the rows imported cost-unknown and every later scan left them that way until a
+  snapshot refresh happened to pick the model up. The builtin table now carries
+  the model's published rates on both routes a codex row can report — the
+  client's own `codex` key and OpenAI's `openai` key — at list price ($2/1M in,
+  $10/1M out, $0.10/1M cache read, $2.50/1M cache write) with no multiplier; the
+  2.5x ccusage fast-pricing convention stays scoped to gpt-5.5. Stored rows
+  already in a ledger are repriced by
+  `usage import-local --refresh --estimate-costs` (the watcher path does the
+  same on its scans), and coverage stays per model: a sibling sol id no row
+  carries remains cost-unknown rather than borrowing this row's price.
+
 ## [0.12.8] — 2026-09-29
 
 A reboot no longer strands the macOS app with a dead recorder and no way to act: the error surfaces now carry a **Start recorder** button that runs `agentacct start` in the background, and it also works on a machine whose `agentacct` came from pipx/uv instead of the app's own install.

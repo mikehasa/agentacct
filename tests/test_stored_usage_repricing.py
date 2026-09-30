@@ -16,8 +16,13 @@ from agentacct.client_usage import (
     apply_pricing_estimate_to_event,
     build_stored_unknown_cost_reprice_batch,
 )
-from agentacct.cost import pricing_catalog_scope
-from agentacct.pricing_catalog import PricingCatalog, PricingCatalogEntry, default_pricing_catalog_snapshot_path
+from agentacct.cost import pricing_catalog_scope, reset_pricing_catalog_cache
+from agentacct.pricing_catalog import (
+    PRICING_CATALOG_PATH_ENV,
+    PricingCatalog,
+    PricingCatalogEntry,
+    default_pricing_catalog_snapshot_path,
+)
 from agentacct.refreshable_usage import refreshable_usage_truth_digest
 from agentacct.service import SentinelService
 from agentacct.usage_truth import mark_trusted_local_usage_import_event
@@ -240,6 +245,38 @@ def test_history_reprice_prices_missing_category_rates_with_the_same_fallbacks_a
     # Priced under the documented fallback rather than skipped: writing the
     # fallback rate out explicitly yields the same amount.
     assert row["estimated_cost_usd"] == pytest.approx(explicit_rate["estimated_cost_usd"])
+    # Planning never mutates the stored row it read.
+    assert stored["estimated_cost_usd"] is None and stored["cost_confidence"] == "unknown"
+
+
+def test_history_reprice_prices_gpt_6_1_sol_codex_rows_from_the_builtin_table(monkeypatch):
+    """The live gap on the stored-row path: codex writes gpt-6.1-sol rows and no
+    catalog row covered the model, so they stayed cost-unknown. The builtin rows
+    price them without a snapshot, so the stored history reprices at list price
+    with the exact provenance a fresh import produces."""
+
+    monkeypatch.delenv(PRICING_CATALOG_PATH_ENV, raising=False)
+    reset_pricing_catalog_cache()
+    stored = _event(session_id="sol", model="gpt-6.1-sol")
+
+    fresh_import = deepcopy(stored)
+    assert apply_pricing_estimate_to_event(fresh_import) is True
+    repriced = build_stored_unknown_cost_reprice_batch(
+        [stored], client="codex", excluded_bases=set(),
+    )[0]
+
+    assert [row["event_id"] for row in repriced] == [stored["event_id"]]
+    row = repriced[0]
+    assert row == fresh_import
+    assert row["cost_confidence"] == "estimated_from_tokens"
+    assert row["cost_basis"] == "pricing_table"
+    # 1,000 in * $2/1M + 100 out * $10/1M + 2,000 cache read * $0.10/1M.
+    assert row["estimated_cost_usd"] == pytest.approx(
+        1_000 * 2.00 / 1_000_000 + 100 * 10.00 / 1_000_000 + 2_000 * 0.10 / 1_000_000
+    )
+    assert row["metadata"]["pricing_source"] == "agent_sentinel_builtin"
+    assert row["metadata"]["pricing_source_provider"] == "codex"
+    assert row["metadata"]["pricing_source_model"] == "gpt-6.1-sol"
     # Planning never mutates the stored row it read.
     assert stored["estimated_cost_usd"] is None and stored["cost_confidence"] == "unknown"
 
