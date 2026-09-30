@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.9] — 2026-09-30
+
+Codex's gpt-6.1-sol usage rows are priced instead of importing cost-unknown. A pricing-only release: the macOS app is unchanged, but the DMG embeds the frozen Python CLI, so the 0.12.9 DMG is rebuilt to carry this fix.
+
 ### Fixed
 
 - gpt-6.1-sol usage rows are priced. Codex was writing rows for this model while
@@ -19,7 +23,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   already in a ledger are repriced by
   `usage import-local --refresh --estimate-costs` (the watcher path does the
   same on its scans), and coverage stays per model: a sibling sol id no row
-  carries remains cost-unknown rather than borrowing this row's price.
+  carries remains cost-unknown rather than borrowing this row's price. (#351)
 
 ## [0.12.8] — 2026-09-29
 
@@ -1665,7 +1669,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.8...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.9...HEAD
+[0.12.9]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.9
 [0.12.8]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.8
 [0.12.7]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.7
 [0.12.6]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.6
