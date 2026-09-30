@@ -47,6 +47,15 @@ MODEL_PRICES_PER_1M_INPUT: dict[tuple[str, str], float] = {
     ("openai", "gpt-5.4-mini"): 0.75,
     ("openai", "gpt-5.5"): 5.00,
     ("codex", "gpt-5.5"): 5.00,
+    # gpt-6.1-sol standard rates, the family flagship codex reports for
+    # gpt-5.5-class work (upstream gpt-6.1-sol, 2026-09-29):
+    # https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json
+    # Both provider keys are listed for the same reason as gpt-5.5 above: a row
+    # reported as ("openai", ...) is priced by its exact key, and the codex
+    # local logs' ("codex", ...) key is priced from the builtin row rather than
+    # waiting on the snapshot's TTL refresh to alias it onto OpenAI's row.
+    ("openai", "gpt-6.1-sol"): 2.00,
+    ("codex", "gpt-6.1-sol"): 2.00,
     ("codex", "gpt-5"): 1.25,
     ("claude-code", "claude-fable-5"): 10.00,
     ("claude-code", "claude-opus-4-8"): 5.00,
@@ -77,6 +86,8 @@ MODEL_PRICES_PER_1M_OUTPUT: dict[tuple[str, str], float] = {
     ("openai", "gpt-5.4-mini"): 4.50,
     ("openai", "gpt-5.5"): 30.00,
     ("codex", "gpt-5.5"): 30.00,
+    ("openai", "gpt-6.1-sol"): 10.00,
+    ("codex", "gpt-6.1-sol"): 10.00,
     ("codex", "gpt-5"): 10.00,
     ("claude-code", "claude-fable-5"): 50.00,
     ("claude-code", "claude-opus-4-8"): 25.00,
@@ -106,6 +117,10 @@ MODEL_PRICES_PER_1M_CACHE_WRITE_5M: dict[tuple[str, str], float] = {
     ("claude-code", "claude-fable-5"): 12.50,
     ("claude-code", "claude-opus-4-8"): 6.25,
     ("claude-code", "claude-haiku-4-5-20251001"): 1.25,
+    # OpenAI's cache write is 1.25x input, published per family rather than per
+    # TTL; the 5m column carries it and the 1h column stays unset.
+    ("openai", "gpt-6.1-sol"): 2.50,
+    ("codex", "gpt-6.1-sol"): 2.50,
     ("anthropic", "claude-fable-5"): 12.50,
     ("anthropic", "claude-opus-5-5"): 5.00,
     ("anthropic", "claude-sonnet-4"): 3.75,
@@ -127,6 +142,8 @@ MODEL_PRICES_PER_1M_CACHE_WRITE_1H: dict[tuple[str, str], float] = {
 MODEL_PRICES_PER_1M_CACHE_READ: dict[tuple[str, str], float] = {
     ("openai", "gpt-5.4-mini"): 0.075,
     ("codex", "gpt-5.5"): 0.50,
+    ("openai", "gpt-6.1-sol"): 0.10,
+    ("codex", "gpt-6.1-sol"): 0.10,
     ("codex", "gpt-5"): 0.125,
     ("claude-code", "claude-fable-5"): 1.00,
     ("claude-code", "claude-opus-4-8"): 0.50,
