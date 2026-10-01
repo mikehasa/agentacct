@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.10] — 2026-10-01
+
+The macOS app stops piling up recovery notifications and identifies which source issue recovered.
+
 ### Fixed
 
 - Recovered recording-health notices no longer pile up behind identical
@@ -13,7 +17,7 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   previous recovery banner, and recoveries automatically leave the notification
   stack after 10 seconds while remaining available in Recent updates. Source
   recovery titles name the affected client and issue; active faults stay visible
-  until dismissed or confirmed recovered.
+  until dismissed or confirmed recovered. (#353)
 
 ## [0.12.9] — 2026-09-30
 
@@ -1678,7 +1682,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.9...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.10...HEAD
+[0.12.10]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.10
 [0.12.9]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.9
 [0.12.8]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.8
 [0.12.7]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.7
