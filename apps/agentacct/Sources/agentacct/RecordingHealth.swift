@@ -48,7 +48,10 @@ struct RecordingHealthCause: Equatable, Identifiable, Codable {
         case "ingestion:unavailable": return "Source health is available again"
         case "ingestion:watcher": return "Import watcher reports running"
         case "ingestion:evidence_refreshable_usage_failed": return "Reconciliation issue no longer reported"
-        default: return "Source issue no longer reported"
+        default:
+            let sources = affectedSources.map(recordingHealthClientName).joined(separator: ", ")
+            let issue = "\(title) no longer reported"
+            return sources.isEmpty ? issue : "\(sources): \(issue)"
         }
     }
 
@@ -256,6 +259,7 @@ struct RecordingHealthNotice: Equatable, Identifiable {
 @MainActor
 @Observable
 final class RecordingHealthCoordinator {
+    static let recoveryNoticeDuration: TimeInterval = 10
     private(set) var notices: [RecordingHealthNotice] = []
     private(set) var activeCauseIDs: Set<String> = []
     @ObservationIgnored private var episode = 0
@@ -268,7 +272,24 @@ final class RecordingHealthCoordinator {
     }
     var recentRecoveries: [RecordingHealthNotice] { Array(notices.filter(\.isRecovered).suffix(5).reversed()) }
 
+    /// The window schedules this deadline even when health stops changing.
+    /// History stays available in Recent updates after a banner expires.
+    var nextRecoveryDismissalAt: Date? {
+        notices.filter { !$0.dismissed }.compactMap(\.recoveredAt).min()?
+            .addingTimeInterval(Self.recoveryNoticeDuration)
+    }
+
+    func dismissExpiredRecoveries(now: Date = Date()) {
+        for index in notices.indices {
+            if let recoveredAt = notices[index].recoveredAt,
+               now.timeIntervalSince(recoveredAt) >= Self.recoveryNoticeDuration {
+                notices[index].dismissed = true
+            }
+        }
+    }
+
     func update(_ snapshot: RecordingHealthSnapshot, now: Date = Date()) {
+        dismissExpiredRecoveries(now: now)
         let current = Set(snapshot.causes.map(\.id))
         for index in notices.indices where !notices[index].isRecovered {
             let cause = notices[index].cause
@@ -282,6 +303,11 @@ final class RecordingHealthCoordinator {
         }
         for cause in snapshot.causes {
             if activeCauseIDs.insert(cause.id).inserted {
+                // A recurring fault supersedes its previous recovery banner.
+                // Keep the episode in history without queuing identical notices.
+                for index in notices.indices where notices[index].cause.id == cause.id && notices[index].isRecovered {
+                    notices[index].dismissed = true
+                }
                 episode += 1
                 notices.append(.init(id: "\(cause.id):\(episode)", cause: cause, observedAt: now))
             } else if let index = notices.lastIndex(where: { $0.cause.id == cause.id && !$0.isRecovered }) {

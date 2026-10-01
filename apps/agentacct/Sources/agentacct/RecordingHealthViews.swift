@@ -304,31 +304,43 @@ struct RecordingHealthNoticeStack: View {
 
     var body: some View {
         let visible = coordinator.visibleNotices
-        if !visible.isEmpty {
-            VStack(alignment: .leading, spacing: Space.s) {
-                if showsAll && visible.count > 1 {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: Space.s) {
-                            ForEach(visible) { notice in noticeRow(notice) }
+        Group {
+            if !visible.isEmpty {
+                VStack(alignment: .leading, spacing: Space.s) {
+                    if showsAll && visible.count > 1 {
+                        ScrollView {
+                            LazyVStack(alignment: .leading, spacing: Space.s) {
+                                ForEach(visible) { notice in noticeRow(notice) }
+                            }
                         }
+                        .frame(maxHeight: 300)
+                    } else if let notice = visible.first {
+                        noticeRow(notice)
                     }
-                    .frame(maxHeight: 300)
-                } else if let notice = visible.first {
-                    noticeRow(notice)
-                }
-                if visible.count > 1 {
-                    Button(showsAll ? "Show fewer notices" : "Show \(visible.count - 1) more recording \(visible.count == 2 ? "notice" : "notices")") {
-                        showsAll.toggle()
+                    if visible.count > 1 {
+                        Button(showsAll ? "Show fewer notices" : "Show \(visible.count - 1) more recording \(visible.count == 2 ? "notice" : "notices")") {
+                            showsAll.toggle()
+                        }
+                        .buttonStyle(.borderless)
+                        .workFont(.caption)
                     }
-                    .buttonStyle(.borderless)
-                    .workFont(.caption)
                 }
+                .frame(width: 400, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: !showsAll)
+                .workFont(.body)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("recording-health-notices")
             }
-            .frame(width: 400, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: !showsAll)
-            .workFont(.body)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("recording-health-notices")
+        }
+        .task(id: coordinator.nextRecoveryDismissalAt) {
+            guard let deadline = coordinator.nextRecoveryDismissalAt else { return }
+            do {
+                try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
+                try Task.checkCancellation()
+                coordinator.dismissExpiredRecoveries()
+            } catch {
+                // A changed deadline or removed notice stack cancels this timer.
+            }
         }
     }
 

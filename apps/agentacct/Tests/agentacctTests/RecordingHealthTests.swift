@@ -145,21 +145,141 @@ final class RecordingHealthTests: XCTestCase {
         XCTAssertEqual(coordinator.recentRecoveries.map(\.cause.id), ["setup:failed"])
     }
 
-    func testRepeatedFailurePrecedesUndismissedRecoveryWithoutLosingHistory() throws {
+    func testRepeatedFailureHidesPreviousRecoveryWithoutLosingHistory() throws {
         let coordinator = RecordingHealthCoordinator()
         let failed = try project(phase: .disconnected("connection refused"), ingestion: healthy())
         coordinator.update(failed, now: Date(timeIntervalSince1970: 10))
         let firstID = try XCTUnwrap(coordinator.visibleNotices.first?.id)
         coordinator.update(try project(ingestion: healthy()), now: Date(timeIntervalSince1970: 20))
         XCTAssertTrue(try XCTUnwrap(coordinator.visibleNotices.first).isRecovered)
-        coordinator.update(failed, now: Date(timeIntervalSince1970: 30))
+        coordinator.update(failed, now: Date(timeIntervalSince1970: 21))
         let renewedID = try XCTUnwrap(coordinator.visibleNotices.first?.id)
         XCTAssertNotEqual(renewedID, firstID)
         XCTAssertFalse(try XCTUnwrap(coordinator.visibleNotices.first).isRecovered)
-        XCTAssertEqual(coordinator.visibleNotices.last?.id, firstID)
-        coordinator.update(failed, now: Date(timeIntervalSince1970: 40))
-        XCTAssertEqual(coordinator.visibleNotices.map(\.id), [renewedID, firstID])
+        XCTAssertEqual(coordinator.visibleNotices.map(\.id), [renewedID])
+        coordinator.update(failed, now: Date(timeIntervalSince1970: 22))
+        XCTAssertEqual(coordinator.visibleNotices.map(\.id), [renewedID])
         XCTAssertEqual(coordinator.recentRecoveries.map(\.id), [firstID])
+    }
+
+    func testRepeatedSourceRecoveriesCoalesceWhileKeepingBoundedHistory() throws {
+        let coordinator = RecordingHealthCoordinator()
+        let failed = try project(ingestion: sourceFaults(["claude-code"]))
+        let recovered = try project(ingestion: healthy())
+        for episode in 0..<25 {
+            let startedAt = Date(timeIntervalSince1970: Double(episode) / 4)
+            coordinator.update(failed, now: startedAt)
+            XCTAssertEqual(coordinator.visibleNotices.count, 1)
+            XCTAssertFalse(try XCTUnwrap(coordinator.visibleNotices.first).isRecovered)
+            coordinator.update(recovered, now: startedAt.addingTimeInterval(0.1))
+            XCTAssertEqual(coordinator.visibleNotices.count, 1)
+            XCTAssertTrue(try XCTUnwrap(coordinator.visibleNotices.first).isRecovered)
+        }
+        XCTAssertEqual(coordinator.notices.count, 20)
+        XCTAssertEqual(coordinator.recentRecoveries.count, 5)
+        XCTAssertEqual(coordinator.visibleNotices.first?.id, coordinator.recentRecoveries.first?.id)
+        let latestID = try XCTUnwrap(coordinator.visibleNotices.first?.id)
+        coordinator.dismiss(latestID)
+        XCTAssertTrue(coordinator.visibleNotices.isEmpty)
+        XCTAssertEqual(coordinator.notices.count, 20)
+        XCTAssertEqual(coordinator.recentRecoveries.first?.id, latestID)
+        XCTAssertNil(coordinator.nextRecoveryDismissalAt)
+    }
+
+    func testRecoveryExpiresAfterTenSecondsWithoutRefreshExtendingDeadline() throws {
+        let coordinator = RecordingHealthCoordinator()
+        let failed = try project(ingestion: sourceFaults(["claude-code"]))
+        let recovered = try project(ingestion: healthy())
+        let recoveredAt = Date(timeIntervalSince1970: 100)
+        coordinator.update(failed, now: recoveredAt.addingTimeInterval(-1))
+        coordinator.update(recovered, now: recoveredAt)
+        let recoveryID = try XCTUnwrap(coordinator.visibleNotices.first?.id)
+        let deadline = recoveredAt.addingTimeInterval(10)
+        XCTAssertEqual(RecordingHealthCoordinator.recoveryNoticeDuration, 10)
+        XCTAssertEqual(coordinator.nextRecoveryDismissalAt, deadline)
+
+        coordinator.update(recovered, now: recoveredAt.addingTimeInterval(8))
+        XCTAssertEqual(coordinator.nextRecoveryDismissalAt, deadline)
+        coordinator.dismissExpiredRecoveries(now: deadline.addingTimeInterval(-0.001))
+        XCTAssertEqual(coordinator.visibleNotices.map(\.id), [recoveryID])
+        coordinator.dismissExpiredRecoveries(now: deadline)
+        XCTAssertTrue(coordinator.visibleNotices.isEmpty)
+        XCTAssertNil(coordinator.nextRecoveryDismissalAt)
+        XCTAssertEqual(coordinator.recentRecoveries.first?.id, recoveryID)
+        XCTAssertEqual(coordinator.recentRecoveries.first?.recoveredAt, recoveredAt)
+
+        coordinator.update(recovered, now: deadline.addingTimeInterval(1))
+        XCTAssertTrue(coordinator.visibleNotices.isEmpty)
+        coordinator.update(failed, now: deadline.addingTimeInterval(2))
+        XCTAssertEqual(coordinator.visibleNotices.count, 1)
+        XCTAssertFalse(try XCTUnwrap(coordinator.visibleNotices.first).isRecovered)
+        XCTAssertNotEqual(coordinator.visibleNotices.first?.id, recoveryID)
+        XCTAssertNil(coordinator.nextRecoveryDismissalAt)
+    }
+
+    func testIndependentRecoveriesExpireAtTheirOwnEarliestDeadline() throws {
+        let coordinator = RecordingHealthCoordinator()
+        let firstRecoveryAt = Date(timeIntervalSince1970: 100)
+        coordinator.update(try project(ingestion: sourceFaults(["claude-code", "codex"])), now: firstRecoveryAt.addingTimeInterval(-1))
+        coordinator.update(try project(ingestion: sourceFaults(["codex"])), now: firstRecoveryAt)
+        let firstID = try XCTUnwrap(coordinator.visibleNotices.first { $0.isRecovered }?.id)
+        coordinator.update(try project(ingestion: healthy()), now: firstRecoveryAt.addingTimeInterval(5))
+        XCTAssertEqual(coordinator.visibleNotices.count, 2)
+        XCTAssertEqual(coordinator.nextRecoveryDismissalAt, firstRecoveryAt.addingTimeInterval(10))
+
+        coordinator.dismissExpiredRecoveries(now: firstRecoveryAt.addingTimeInterval(10))
+        XCTAssertEqual(coordinator.visibleNotices.map(\.cause.affectedSources), [["codex"]])
+        XCTAssertEqual(coordinator.nextRecoveryDismissalAt, firstRecoveryAt.addingTimeInterval(15))
+        XCTAssertTrue(coordinator.recentRecoveries.contains { $0.id == firstID })
+        coordinator.dismissExpiredRecoveries(now: firstRecoveryAt.addingTimeInterval(15))
+        XCTAssertTrue(coordinator.visibleNotices.isEmpty)
+        XCTAssertEqual(coordinator.recentRecoveries.count, 2)
+        XCTAssertNil(coordinator.nextRecoveryDismissalAt)
+    }
+
+    func testManuallyDismissingRecoveryAdvancesDeadlineWithoutReappearing() throws {
+        let coordinator = RecordingHealthCoordinator()
+        let firstRecoveryAt = Date(timeIntervalSince1970: 100)
+        coordinator.update(try project(ingestion: sourceFaults(["claude-code", "codex"])), now: firstRecoveryAt.addingTimeInterval(-1))
+        coordinator.update(try project(ingestion: sourceFaults(["codex"])), now: firstRecoveryAt)
+        let firstID = try XCTUnwrap(coordinator.visibleNotices.first { $0.isRecovered }?.id)
+        coordinator.update(try project(ingestion: healthy()), now: firstRecoveryAt.addingTimeInterval(5))
+        coordinator.dismiss(firstID)
+        XCTAssertEqual(coordinator.nextRecoveryDismissalAt, firstRecoveryAt.addingTimeInterval(15))
+        XCTAssertEqual(coordinator.visibleNotices.map(\.cause.affectedSources), [["codex"]])
+        coordinator.update(try project(ingestion: healthy()), now: firstRecoveryAt.addingTimeInterval(6))
+        XCTAssertEqual(coordinator.visibleNotices.count, 1)
+        XCTAssertEqual(coordinator.recentRecoveries.count, 2)
+    }
+
+    func testRecoveryExpiryDoesNotDismissAnActiveFault() throws {
+        let coordinator = RecordingHealthCoordinator()
+        let recoveredAt = Date(timeIntervalSince1970: 100)
+        coordinator.update(try project(ingestion: sourceFaults(["claude-code"])), now: recoveredAt.addingTimeInterval(-1))
+        coordinator.update(try project(ingestion: healthy()), now: recoveredAt)
+        coordinator.update(try project(phase: .disconnected("offline")), now: recoveredAt.addingTimeInterval(1))
+        XCTAssertEqual(coordinator.visibleNotices.count, 2)
+        coordinator.dismissExpiredRecoveries(now: recoveredAt.addingTimeInterval(60))
+        XCTAssertEqual(coordinator.visibleNotices.map(\.cause.id), ["endpoint:unreachable"])
+        XCTAssertEqual(coordinator.activeCauseIDs, ["endpoint:unreachable"])
+        XCTAssertEqual(coordinator.recentRecoveries.count, 1)
+        XCTAssertNil(coordinator.nextRecoveryDismissalAt)
+    }
+
+    func testSourceRecoveryTitleIdentifiesClientAndOriginalIssue() throws {
+        let snapshot = try project(ingestion: sourceFaults(["claude-code"], code: "source_changed_during_scan"))
+        let cause = try XCTUnwrap(snapshot.causes.first)
+        XCTAssertEqual(cause.recoveryTitle, "Claude Code: Source Changed During Scan no longer reported")
+        let multiSourceCause = try XCTUnwrap(RecordingHealthSnapshot.groupedIssues([
+            .init(code: "source_scan_failed", source: nil, action: "Retry", affectedSources: ["codex", "claude-code"])
+        ]).first)
+        XCTAssertEqual(multiSourceCause.recoveryTitle, "Claude Code, Codex: Source Scan Failed no longer reported")
+        let unnamedCause = try XCTUnwrap(RecordingHealthSnapshot.groupedIssues([
+            .init(code: "scan_stuck", source: nil, action: "Retry")
+        ]).first)
+        XCTAssertEqual(unnamedCause.recoveryTitle, "Scan Stuck no longer reported")
+        let endpoint = try XCTUnwrap(project(phase: .disconnected("offline")).causes.first)
+        XCTAssertEqual(endpoint.recoveryTitle, "Recorder connection restored")
     }
 
     func testUnreachableRecorderIsTheOnlyCauseThatOffersARestart() throws {
@@ -201,5 +321,11 @@ final class RecordingHealthTests: XCTestCase {
         .init(state: "degraded", lastSuccessAt: 100, sources: [], watcher: .init(state: "running", intervalSeconds: 30, heartbeatAt: 100), issues: [
             .init(code: "evidence_refreshable_usage_failed", source: "codex", action: "Inspect evidence")
         ])
+    }
+
+    private func sourceFaults(_ sources: [String], code: String = "source_scan_failed") -> V1IngestionSnapshot {
+        .init(state: "degraded", lastSuccessAt: 100, sources: [], watcher: .init(state: "running", intervalSeconds: 30, heartbeatAt: 100), issues: sources.map {
+            .init(code: code, source: $0, action: "Retry this source")
+        })
     }
 }
