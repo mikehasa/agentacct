@@ -6,6 +6,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Recovered recording-health notices no longer pile up behind identical
+  "Source issue no longer reported" banners. A recurring issue replaces its
+  previous recovery banner, and recoveries automatically leave the notification
+  stack after 10 seconds while remaining available in Recent updates. Source
+  recovery titles name the affected client and issue; active faults stay visible
+  until dismissed or confirmed recovered.
+
 ## [0.12.9] — 2026-09-30
 
 Codex's gpt-6.1-sol usage rows are priced instead of importing cost-unknown. A pricing-only release: the macOS app is unchanged, but the DMG embeds the frozen Python CLI, so the 0.12.9 DMG is rebuilt to carry this fix.
