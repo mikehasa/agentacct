@@ -30,15 +30,7 @@ final class RecordingHealthNoticeStackTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(coordinator.visibleNotices.first).isRecovered)
 
         let expired = expectation(description: "the mounted notice expires without a health refresh")
-        let root = RecordingHealthNoticeStack(
-            coordinator: coordinator,
-            onSetup: { XCTFail("expiry must not open setup") },
-            onSources: { XCTFail("expiry must not open diagnostics") },
-            onRefresh: { XCTFail("expiry must not request another health snapshot") }
-        )
-        .onChange(of: coordinator.visibleNotices.isEmpty) { _, isEmpty in
-            if isEmpty { expired.fulfill() }
-        }
+        let root = RecoveryNoticeTimerObserver(coordinator: coordinator, onExpired: { expired.fulfill() })
         let window = NSWindow(
             contentRect: NSRect(x: -6000, y: -6000, width: 440, height: 240),
             styleMask: [.borderless], backing: .buffered, defer: false
@@ -57,5 +49,25 @@ final class RecordingHealthNoticeStackTests: XCTestCase {
         XCTAssertNil(coordinator.nextRecoveryDismissalAt)
         XCTAssertEqual(coordinator.recentRecoveries.map(\.id), [recoveryID])
         XCTAssertEqual(coordinator.recentRecoveries.first?.recoveredAt, recoveredAt)
+    }
+}
+
+@MainActor
+private struct RecoveryNoticeTimerObserver: View {
+    let coordinator: RecordingHealthCoordinator
+    let onExpired: () -> Void
+
+    var body: some View {
+        RecordingHealthNoticeStack(
+            coordinator: coordinator,
+            onSetup: { XCTFail("expiry must not open setup") },
+            onSources: { XCTFail("expiry must not open diagnostics") },
+            onRefresh: { XCTFail("expiry must not request another health snapshot") }
+        )
+        // Read inside an observing body so this value is reevaluated when the
+        // coordinator changes, rather than freezing it while creating the host.
+        .onChange(of: coordinator.visibleNotices.isEmpty) { _, isEmpty in
+            if isEmpty { onExpired() }
+        }
     }
 }
