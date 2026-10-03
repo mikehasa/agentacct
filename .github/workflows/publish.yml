@@ -4,7 +4,9 @@
 #   - Pushing a `v*` tag runs tests + build + TestPyPI ONLY (a rehearsal).
 #   - Publishing a GitHub release runs the full chain including real PyPI.
 #     The `github.event_name == 'release'` condition on the publish-pypi job
-#     is the STRUCTURAL gate: a bare tag push can never reach real PyPI.
+#     is the STRUCTURAL gate: a bare tag push can never reach real PyPI. A
+#     second one joins it: `release-dmg-asset` requires the published release
+#     to carry its notarized .dmg before real PyPI is reached.
 #
 # This workflow cannot publish until the repository owner completes these
 # one-time steps (agents must never do them; they involve account credentials):
@@ -123,12 +125,48 @@ jobs:
           # run's re-upload of identical filenames must not go red.
           skip-existing: true
 
+  release-dmg-asset:
+    # A published release must carry its notarized DMG before real PyPI is
+    # reachable. The DMG is built locally and attached in the SAME
+    # `gh release create` that publishes the release (see
+    # docs/release-process.md) because the signing identity lives in the
+    # maintainer's keychain — CI cannot build one. A release with no .dmg
+    # asset therefore means the release was cut off-process: 0.12.1–0.12.4
+    # shipped with no DMG at all, which is what this gate exists to prevent.
+    #
+    # `gh release create` publishes the release before it uploads the assets,
+    # so poll instead of judging on the first look.
+    needs: test
+    if: github.repository_owner == 'mikehasa' && github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Require a .dmg asset on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          for _ in $(seq 1 30); do
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+                --jq '.assets[].name' | grep -q '\.dmg$'; then
+              echo "release $TAG carries a .dmg asset"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::release $TAG has no .dmg asset. Build it from the release commit (bash packaging/build-dmg.sh --release), attach it to the release, then re-run this job." >&2
+          exit 1
+
   publish-pypi:
     # STRUCTURAL gate: real PyPI only on a published GitHub release, never on
     # a bare tag push, never from forks. The `pypi` environment's
     # required-reviewer approval (owner setup step 4) adds a human gate ON TOP
-    # — it exists only if the owner configured protection rules.
-    needs: publish-testpypi
+    # — it exists only if the owner configured protection rules. The release's
+    # own DMG asset is a second structural gate: a release that never got its
+    # packaged macOS app cannot reach real PyPI.
+    needs: [publish-testpypi, release-dmg-asset]
     if: github.repository_owner == 'mikehasa' && github.event_name == 'release'
     runs-on: ubuntu-latest
     environment: pypi

@@ -111,6 +111,11 @@ For MCP tools, update all of these together:
 
 For CLI behavior, preserve machine-readable `--json` output where it exists.
 
+## Releasing
+
+The version bump, the frozen-CLI macOS DMG (every release must carry one), and
+the PyPI gates are in [docs/release-process.md](docs/release-process.md).
+
 ## Reporting security issues
 
 Do not open public issues with vulnerability details, real API keys, private logs, or secrets. See `SECURITY.md` for the private reporting flow.

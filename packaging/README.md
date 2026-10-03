@@ -37,6 +37,11 @@ source description match the app build. Missing CLI output remains a normal
 fast dev build; stale, dirty, or unstamped output fails closed. `build-dmg.sh`
 always refreshes the frozen CLI first.
 
+Every GitHub release must carry its signed, notarized DMG. The release
+procedure — the reuse-vs-rebuild decision, the credentials, and the CI gate
+that blocks real PyPI when a published release has no `.dmg` asset — is
+[docs/release-process.md](../docs/release-process.md).
+
 ## What setup and launch-time CLI sync do
 
 The packaged app keeps registrations stable without overwriting a live frozen
