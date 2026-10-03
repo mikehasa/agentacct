@@ -93,6 +93,122 @@ def test_spool_path_follows_env_and_claude_config_dir(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# account attribution (the statusLine payload itself carries no account — the
+# config home's user-level .claude.json oauthAccount is the identity source)
+# --------------------------------------------------------------------------- #
+
+
+def _write_account_config(path: Path, *, email="user@example.com", account_uuid="acct-1",
+                          organization_uuid="org-1") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "oauthAccount": {
+            "emailAddress": email,
+            "accountUuid": account_uuid,
+            "organizationUuid": organization_uuid,
+        },
+        "someOtherConfig": {"not": "identity"},
+    }), encoding="utf-8")
+    return path
+
+
+def test_claude_account_path_matches_claude_codes_own_global_config(tmp_path, monkeypatch):
+    # Claude Code reads join(CLAUDE_CONFIG_DIR or homedir(), ".claude.json"), so
+    # with the default home the account file is the SIBLING ~/.claude.json.
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert rl.default_claude_account_path() == tmp_path / ".claude.json"
+    # First CLAUDE_CONFIG_DIR entry (comma-separated for the rest of agentacct),
+    # aligned with the home the statusLine spool is read from.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", f"{tmp_path / 'cfg'},{tmp_path / 'other'}")
+    assert rl.default_claude_account_path() == tmp_path / "cfg" / ".claude.json"
+
+
+def test_read_claude_account_identity_reads_only_oauth_identity(tmp_path):
+    config = _write_account_config(tmp_path / ".claude.json")
+    assert rl.read_claude_account_identity(config) == {
+        "email": "user@example.com",
+        "account_uuid": "acct-1",
+        "organization_uuid": "org-1",
+    }
+
+    # Fail-soft: absent / unreadable / malformed / no usable identity.
+    assert rl.read_claude_account_identity(tmp_path / "missing.json") is None
+    bad = tmp_path / "bad.json"
+    bad.write_text("{ not json", encoding="utf-8")
+    assert rl.read_claude_account_identity(bad) is None
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps({"projects": {}}), encoding="utf-8")
+    assert rl.read_claude_account_identity(plain) is None  # no oauthAccount
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"oauthAccount": {}}), encoding="utf-8")
+    assert rl.read_claude_account_identity(empty) is None
+    # A hostile/corrupt non-string identity is never returned as one.
+    weird = tmp_path / "weird.json"
+    weird.write_text(json.dumps({"oauthAccount": {"emailAddress": {"x": 1}}}), encoding="utf-8")
+    assert rl.read_claude_account_identity(weird) is None
+
+
+def test_statusline_reading_is_attributed_to_the_config_home_account(tmp_path, monkeypatch):
+    home = tmp_path / "cfg"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(home))
+    monkeypatch.delenv(rl.STATUSLINE_SPOOL_ENV, raising=False)
+    _write_account_config(home / ".claude.json")
+    rl.write_claude_statusline_spool(_statusline_payload()["rate_limits"], captured_at=7777.0)
+
+    snap = rl.read_claude_statusline_latest()
+    assert snap is not None
+    assert snap.account_email == "user@example.com"
+    assert snap.account_uuid == "acct-1"
+    assert snap.account_org == "org-1"
+    event = rl.snapshot_to_event(snap)
+    assert event["metadata"]["account_email"] == "user@example.com"
+    assert event["metadata"]["account_uuid"] == "acct-1"
+    assert event["metadata"]["account_org"] == "org-1"
+
+
+def test_relocated_spool_makes_no_account_claim(tmp_path, monkeypatch):
+    """A custom spool path may not belong to the default config home; a wrong
+    attribution is worse than none, so a relocated spool claims no account."""
+    spool = tmp_path / "sl.json"
+    rl.write_claude_statusline_spool(_statusline_payload()["rate_limits"], captured_at=1.0, path=spool)
+    explicit = rl.read_claude_statusline_latest(spool)
+    assert explicit is not None
+    assert explicit.account_email is None and explicit.account_uuid is None and explicit.account_org is None
+
+    monkeypatch.setenv(rl.STATUSLINE_SPOOL_ENV, str(spool))
+    override = rl.read_claude_statusline_latest()
+    assert override is not None
+    assert override.account_email is None and override.account_uuid is None and override.account_org is None
+
+
+def test_account_switch_changes_signature_but_not_identity_less_streams():
+    identity = {"email": "a@example.com", "account_uuid": "acct-a", "organization_uuid": "org-a"}
+    one = rl.normalize_claude_statusline(_statusline_payload(), account=identity)
+    two = rl.normalize_claude_statusline(
+        _statusline_payload(),
+        account={"email": "b@example.com", "account_uuid": "acct-b", "organization_uuid": "org-b"},
+    )
+    # The SAME percentages from a different account must be a state change, or a
+    # switch would keep the old account's label on the new readings.
+    assert rl.snapshot_state_signature(one) != rl.snapshot_state_signature(two)
+
+    # Identity-less snapshots (codex; rows recorded before this feature) keep the
+    # historical signature — pinned so a schema tweak can never mint a duplicate
+    # event for every existing stream on upgrade.
+    plain = rl.normalize_claude_statusline(_statusline_payload(), captured_at=1000.0)
+    assert rl.snapshot_state_signature(plain) == "rl_98c488a61a0e79eeb6b4fc6c38114a57"
+    assert rl.snapshot_state_signature(plain) != rl.snapshot_state_signature(one)
+
+
+def test_snapshot_to_event_account_fields_default_to_none():
+    event = rl.snapshot_to_event(rl.normalize_claude_statusline(_statusline_payload()))
+    assert event["metadata"]["account_email"] is None
+    assert event["metadata"]["account_uuid"] is None
+    assert event["metadata"]["account_org"] is None
+
+
+# --------------------------------------------------------------------------- #
 # the hook itself: fast, fail-open, spools + prints
 # --------------------------------------------------------------------------- #
 

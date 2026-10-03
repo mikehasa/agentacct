@@ -3583,6 +3583,11 @@ def _build_usage_parts(
         if limit.plan_type:
             name += f"  [{pal['dim']}]{_escape(str(limit.plan_type))}[/]"
         left_rows = [name]
+        # Name the reporting source/account when the stream proved one, so two
+        # Claude accounts (CLI statusLine + desktop plan usage) never render as
+        # one client's contradictory meters. Same label the macOS app shows.
+        if limit.account_label:
+            left_rows.append(f"  [{pal['dim']}]{_escape(limit.account_label)}[/]")
         for wi, window in enumerate(_order_windows(limit.windows)):
             if wi:  # a breath between a client's stacked meters (artifact rhythm)
                 left_rows.append("")

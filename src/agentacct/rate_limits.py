@@ -33,6 +33,11 @@ Design notes:
   display.
 * Codex limits are account-wide (``limit_id == "codex"``), so the codex stream
   uses one stable ``run_id``; Claude's series is per-org.
+* The Claude statusLine payload carries no account field (verified against Claude
+  Code 2.1.288), so the CLI feed is attributed at import time to the account the
+  spool's config home is signed in as — ``oauthAccount`` identity (email + org
+  uuid only, never credentials) read from that home's user-level ``.claude.json``.
+  The desktop plan-usage series is already keyed per org.
 """
 
 from __future__ import annotations
@@ -128,6 +133,15 @@ class RateLimitSnapshot:
     credits: Mapping[str, Any] | None = None
     reached_type: str | None = None
     org: str | None = None
+    # The signed-in account a reading belongs to, when the source proves one
+    # (today: the Claude Code config home's ``oauthAccount`` for the statusLine
+    # stream). Identity only — never credentials — and deliberately NOT part of
+    # the ``org`` field: ``latest_limit_events`` keys streams by
+    # ``(client, org, run_id)``, so backfilling ``org`` would fork every existing
+    # org-less statusLine stream into a duplicate.
+    account_email: str | None = None
+    account_uuid: str | None = None
+    account_org: str | None = None
     source_session_id: str | None = None
     source_file: str | None = None
     # Codex quota-bucket identity. Different ``limit_id`` values are DIFFERENT
@@ -148,6 +162,20 @@ def _str_or_none(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
+    return text or None
+
+
+def _identity_text(value: Any) -> str | None:
+    """A trimmed non-empty STRING, or ``None``.
+
+    Identity fields never coerce non-strings: a hostile or corrupt
+    ``{"emailAddress": {"x": 1}}`` must read as "no identity", not mint
+    ``"{'x': 1}"`` as an account label.
+    """
+
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
     return text or None
 
 
@@ -327,12 +355,16 @@ def normalize_claude_statusline(
     *,
     captured_at: float | None = None,
     source_file: str | None = None,
+    account: Mapping[str, Any] | None = None,
 ) -> RateLimitSnapshot | None:
     """Turn a Claude Code statusLine payload into a snapshot, or ``None``.
 
     The statusLine JSON carries ``rate_limits.five_hour`` / ``.seven_day`` with
     ``used_percentage`` + ``resets_at`` (Pro/Max subscriptions only; absent for
     API-key auth). Unlike the desktop plan-usage file, this feed HAS reset times.
+    The payload carries NO account field (verified against Claude Code 2.1.288),
+    so ``account`` is the identity the reader resolved from the config home's
+    ``oauthAccount`` — optional, and absent for payloads read outside that path.
     """
 
     if not isinstance(payload, Mapping):
@@ -361,11 +393,15 @@ def normalize_claude_statusline(
         )
     if not windows:
         return None
+    identity = account if isinstance(account, Mapping) else {}
     return RateLimitSnapshot(
         client="claude-code",
         windows=tuple(windows),
         origin=ORIGIN_CLAUDE_STATUSLINE,
         captured_at=_epoch_seconds(captured_at),
+        account_email=_identity_text(identity.get("email")),
+        account_uuid=_identity_text(identity.get("account_uuid")),
+        account_org=_identity_text(identity.get("organization_uuid")),
         source_file=source_file,
     )
 
@@ -418,6 +454,10 @@ def snapshot_state_signature(snapshot: RateLimitSnapshot) -> str:
     accounts and would otherwise mint a snapshot every tick). Two snapshots with
     the same signature represent the same limit state; a change in any window
     percent/size/reset, plan, reached-state, or credit availability changes it.
+    Account identity is folded in only when present: a switch of the signed-in
+    account on the same spool must record a fresh reading even when the new
+    account's percentages happen to match the old one's — while identity-less
+    streams (codex, pre-enrichment events) keep their existing signatures.
     """
 
     payload = {
@@ -435,6 +475,13 @@ def snapshot_state_signature(snapshot: RateLimitSnapshot) -> str:
             else None
         ),
     }
+    for key, value in (
+        ("account_email", snapshot.account_email),
+        ("account_uuid", snapshot.account_uuid),
+        ("account_org", snapshot.account_org),
+    ):
+        if value:
+            payload[key] = value
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()[:32]
     return f"rl_{digest}"
@@ -459,6 +506,11 @@ def snapshot_to_event(snapshot: RateLimitSnapshot) -> dict[str, Any]:
         "credits": dict(snapshot.credits) if snapshot.credits else None,
         "reached_type": snapshot.reached_type,
         "org": snapshot.org,
+        # Account identity the source proved (Claude Code config home), persisted
+        # for display attribution. Identity only; never credentials.
+        "account_email": snapshot.account_email,
+        "account_uuid": snapshot.account_uuid,
+        "account_org": snapshot.account_org,
         "source_client_session_id": snapshot.source_session_id,
         "source_file": snapshot.source_file,
         # Bucket identity, persisted so a future per-epoch calibrator can keep
@@ -571,8 +623,8 @@ def default_claude_plan_usage_path() -> Path:
     )
 
 
-def _claude_config_home() -> Path:
-    """The Claude Code config home: the first CLAUDE_CONFIG_DIR entry, else ~/.claude.
+def _claude_config_dir_env() -> Path | None:
+    """The first CLAUDE_CONFIG_DIR entry, or ``None`` when unset/empty.
 
     CLAUDE_CONFIG_DIR is comma-separated for the rest of agentacct (see
     source_paths), so we split the same way — NOT on os.pathsep — to stay
@@ -584,7 +636,56 @@ def _claude_config_home() -> Path:
         parts = [p.strip() for p in configured.split(",") if p.strip()]
         if parts:
             return Path(parts[0]).expanduser()
-    return Path.home() / ".claude"
+    return None
+
+
+def _claude_config_home() -> Path:
+    """The Claude Code config home: the first CLAUDE_CONFIG_DIR entry, else ~/.claude."""
+
+    return _claude_config_dir_env() or Path.home() / ".claude"
+
+
+def default_claude_account_path() -> Path:
+    """The user-level Claude config that carries ``oauthAccount``.
+
+    Claude Code reads its global config from ``join(CLAUDE_CONFIG_DIR or
+    homedir(), ".claude.json")`` (the 2.1.288 binary's own rule), so with the
+    default home the account file is the SIBLING ``~/.claude.json`` — never
+    ``~/.claude/.claude.json``. The first CLAUDE_CONFIG_DIR entry keeps it aligned
+    with the statusLine spool the import reads.
+    """
+
+    root = _claude_config_dir_env()
+    return (root if root is not None else Path.home()) / ".claude.json"
+
+
+def read_claude_account_identity(
+    path: Path | str | None = None,
+) -> dict[str, str | None] | None:
+    """The signed-in Claude account identity from the user-level config, or ``None``.
+
+    Reads ONLY the non-secret identity fields of ``oauthAccount`` (email, account
+    uuid, organization uuid) — never credentials, which live in the OS keychain
+    (or ``.credentials.json``) and are never opened here. Fail-soft: an absent,
+    unreadable, or malformed document reads as "no identity known".
+    """
+
+    target = Path(path).expanduser() if path is not None else default_claude_account_path()
+    try:
+        document = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, Mapping):
+        return None
+    account = document.get("oauthAccount")
+    if not isinstance(account, Mapping):
+        return None
+    email = _identity_text(account.get("emailAddress"))
+    account_uuid = _identity_text(account.get("accountUuid"))
+    organization_uuid = _identity_text(account.get("organizationUuid"))
+    if email is None and account_uuid is None and organization_uuid is None:
+        return None
+    return {"email": email, "account_uuid": account_uuid, "organization_uuid": organization_uuid}
 
 
 def default_claude_statusline_spool_path() -> Path:
@@ -636,9 +737,19 @@ def write_claude_statusline_spool(
 def read_claude_statusline_latest(
     path: Path | str | None = None,
 ) -> RateLimitSnapshot | None:
-    """Read the statusLine spool into a snapshot, or ``None`` if absent/malformed."""
+    """Read the statusLine spool into a snapshot, or ``None`` if absent/malformed.
 
-    target = Path(path).expanduser() if path is not None else default_claude_statusline_spool_path()
+    On the standard path (no explicit ``path`` and no AGENTACCT_STATUSLINE_SPOOL
+    override) the reading is attributed to the account the spool's config home is
+    signed in as, read from that home's user-level ``.claude.json`` — the
+    statusLine payload itself carries no account field (checked against Claude
+    Code 2.1.288). A caller that relocates the spool keeps today's behavior and
+    gets no account claim: a custom path may not belong to the default home, and
+    a wrong attribution is worse than none.
+    """
+
+    explicit = path is not None
+    target = Path(path).expanduser() if explicit else default_claude_statusline_spool_path()
     try:
         raw = target.read_text(encoding="utf-8")
     except OSError:
@@ -649,10 +760,14 @@ def read_claude_statusline_latest(
         return None
     if not isinstance(document, Mapping):
         return None
+    account = None
+    if not explicit and not os.environ.get(STATUSLINE_SPOOL_ENV):
+        account = read_claude_account_identity()
     return normalize_claude_statusline(
         {"rate_limits": document.get("rate_limits")},
         captured_at=document.get("captured_at"),
         source_file=str(target),
+        account=account,
     )
 
 
@@ -1015,6 +1130,7 @@ __all__ = [
     "STATUSLINE_SPOOL_ENV",
     "RateLimitSnapshot",
     "RateLimitWindow",
+    "default_claude_account_path",
     "default_claude_plan_usage_path",
     "default_claude_statusline_spool_path",
     "default_codex_sessions_root",
@@ -1022,6 +1138,7 @@ __all__ = [
     "normalize_claude_plan_usage_sample",
     "normalize_claude_statusline",
     "normalize_codex_rate_limits",
+    "read_claude_account_identity",
     "read_claude_plan_usage_latest",
     "read_claude_statusline_latest",
     "read_codex_rate_limits_latest",

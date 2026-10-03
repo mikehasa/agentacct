@@ -103,6 +103,15 @@ struct UsageCapacityReading: Identifiable {
     let entry: LimitEntry
 
     var isStale: Bool { entry.stale == true }
+
+    /// The daemon's attribution for this reading's account/source, when it
+    /// proved one. Nil (an older daemon, or a stream with no provable identity)
+    /// renders no label rather than an invented one.
+    var accountLabel: String? {
+        guard let label = entry.accountLabel?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !label.isEmpty else { return nil }
+        return label
+    }
 }
 
 struct UsageCapacityRow: Identifiable {
@@ -168,6 +177,7 @@ struct UsageCapacityRow: Identifiable {
                 : "provider limit not reported")
         } else {
             for reading in readings {
+                if let label = reading.accountLabel { parts.append(label) }
                 let windows = reading.entry.windows ?? []
                 if windows.isEmpty {
                     parts.append("provider reading contained no quota windows")
@@ -506,17 +516,25 @@ private struct UsageCapacityLedgerRow: View {
         } else {
             VStack(alignment: .leading, spacing: Space.m) {
                 ForEach(row.readings) { reading in
-                    if (reading.entry.windows ?? []).isEmpty {
-                        HStack(spacing: Space.s) {
-                            Text("Reading contained no quota windows")
-                                .workFont(.captionSemibold).foregroundStyle(Theme.muted)
-                            if reading.isStale { Chip(text: "stale", tint: Theme.amber) }
+                    VStack(alignment: .leading, spacing: Space.m) {
+                        if let label = reading.accountLabel {
+                            Text(label)
+                                .workFont(.captionSemibold)
+                                .foregroundStyle(Theme.muted)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                    } else {
-                        ForEach(Array((reading.entry.windows ?? []).enumerated()), id: \.offset) { _, window in
-                            UsageCapacityWindowRow(
-                                presentation: LimitWindowPresentation(window: window, stale: reading.isStale)
-                            )
+                        if (reading.entry.windows ?? []).isEmpty {
+                            HStack(spacing: Space.s) {
+                                Text("Reading contained no quota windows")
+                                    .workFont(.captionSemibold).foregroundStyle(Theme.muted)
+                                if reading.isStale { Chip(text: "stale", tint: Theme.amber) }
+                            }
+                        } else {
+                            ForEach(Array((reading.entry.windows ?? []).enumerated()), id: \.offset) { _, window in
+                                UsageCapacityWindowRow(
+                                    presentation: LimitWindowPresentation(window: window, stale: reading.isStale)
+                                )
+                            }
                         }
                     }
                 }

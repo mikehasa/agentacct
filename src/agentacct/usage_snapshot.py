@@ -82,6 +82,12 @@ def finite(value: Any) -> float | None:
     return None
 
 
+def _text_or_none(value: Any) -> str | None:
+    """A non-empty string, or ``None`` (identity fields must never join as non-strings)."""
+
+    return value if isinstance(value, str) and value else None
+
+
 def format_tokens(value: Any) -> str:
     """A thousands-separated integer, or an em-dash when not a real number."""
 
@@ -329,6 +335,9 @@ class ClientLimit:
     origin_label: Optional[str]
     plan_type: Optional[str]
     org: Optional[str]
+    account_email: Optional[str]
+    account_uuid: Optional[str]
+    account_org: Optional[str]
     captured_at: Optional[float]
     windows: list[LimitWindow]
     credits: Optional[Mapping[str, Any]]
@@ -340,6 +349,33 @@ class ClientLimit:
         """The byte-stable public JSON shape (raw windows passed through)."""
 
         return limit_json_entry(self.raw_event)
+
+    @property
+    def account_label(self) -> Optional[str]:
+        """A display label naming the reporting source and account, or ``None``.
+
+        Composed only from facts the stream itself proved: the feed's origin
+        label ("CLI" / "desktop app") plus the account identity — the email when
+        the source proved one (the Claude Code config home's ``oauthAccount``),
+        else the short organization id the ``agentacct limits`` header prints
+        (``org 07c55a50``). Reads as "CLI · huyx1325@gmail.com" or
+        "desktop app · org 07c55a50". ``None`` when the stream carries no
+        identity at all, so a consumer shows no invented attribution. The Claude
+        desktop plan-usage series has no readable email on disk; its org id is
+        the honest identifier.
+        """
+
+        parts: list[str] = []
+        if self.origin_label:
+            parts.append(self.origin_label)
+        email = _text_or_none(self.account_email)
+        if email:
+            parts.append(email)
+        else:
+            org = _text_or_none(self.account_org) or _text_or_none(self.org)
+            if org:
+                parts.append(f"org {org[:8]}")
+        return " · ".join(parts) if parts else None
 
 
 @dataclass(frozen=True)
@@ -545,6 +581,9 @@ def build_client_limits(
                 origin_label=ORIGIN_LABELS.get(str(origin or "")),
                 plan_type=metadata.get("plan_type"),
                 org=metadata.get("org"),
+                account_email=_text_or_none(metadata.get("account_email")),
+                account_uuid=_text_or_none(metadata.get("account_uuid")),
+                account_org=_text_or_none(metadata.get("account_org")),
                 captured_at=_captured_at(event),
                 windows=windows,
                 credits=credits if isinstance(credits, Mapping) else None,

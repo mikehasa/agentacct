@@ -143,6 +143,12 @@ struct LimitEntry: Decodable {
     let streamID: String?
     let origin: String?
     let org: String?
+    /// The daemon's display label for the reporting source and account —
+    /// "CLI · user@example.com", "desktop app · org 07c55a50" — so a second
+    /// Claude account reads as a distinct attributed reading instead of an
+    /// unlabeled stack of meters. Optional and additive: an older daemon omits
+    /// it, and no attribution is invented from the other fields.
+    let accountLabel: String?
     let planType: String?
     let stale: Bool?
     let windows: [LimitWindow]?
@@ -150,6 +156,7 @@ struct LimitEntry: Decodable {
     enum CodingKeys: String, CodingKey {
         case client, origin, org
         case streamID = "stream_id"
+        case accountLabel = "account_label"
         case planType = "plan_type"
         case stale, windows
     }
