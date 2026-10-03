@@ -6,6 +6,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.11] — 2026-10-03
+
+Two Claude accounts on one machine no longer read as one client's contradictory meters: every provider-limit reading is labeled with the account and source it belongs to.
+
 ### Fixed
 
 - The Usage page names which Claude account each provider-limit reading belongs
@@ -1695,7 +1699,8 @@ across all of them. Ships alongside the first signed, notarized macOS app.
   `agentacct-claude`, and `agentacct-codex` console scripts. Local-first,
   observe-only, no telemetry, no provider API keys. Python ≥ 3.11 on macOS / Linux.
 
-[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.10...HEAD
+[Unreleased]: https://github.com/mikehasa/agentacct/compare/v0.12.11...HEAD
+[0.12.11]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.11
 [0.12.10]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.10
 [0.12.9]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.9
 [0.12.8]: https://github.com/mikehasa/agentacct/releases/tag/v0.12.8
