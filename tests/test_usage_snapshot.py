@@ -78,6 +78,9 @@ def _rl_event(
     credits: dict | None = None,
     reached_type: str | None = None,
     source_file: str | None = None,
+    account_email: str | None = None,
+    account_uuid: str | None = None,
+    account_org: str | None = None,
 ) -> dict:
     """A hand-built ``rate_limit_observed`` event (the selection/parsing layer is
     pure over such dicts, so limit tests need no store)."""
@@ -97,6 +100,9 @@ def _rl_event(
             "credits": credits,
             "reached_type": reached_type,
             "source_file": source_file,
+            "account_email": account_email,
+            "account_uuid": account_uuid,
+            "account_org": account_org,
         },
     }
 
@@ -495,6 +501,7 @@ def _limit(captured_age_days, windows_minutes, now):
             for m in windows_minutes]
     captured = None if captured_age_days is None else now - captured_age_days * 86400
     return us.ClientLimit(client="c", origin=None, origin_label=None, plan_type=None, org=None,
+                          account_email=None, account_uuid=None, account_org=None,
                           captured_at=captured, windows=wins, credits=None, reached_type=None,
                           source_file=None, raw_event={})
 
@@ -526,3 +533,76 @@ def test_build_usage_page_model_filter(tmp_path):
     page = us.build_usage_page(service.list_all_events(), model="gpt-5", days=30, now=_NOW, today=_TODAY)
     assert page.model_filter == "gpt-5"
     assert {m["model"] for m in page.by_model} == {"gpt-5"}  # scoped to the one model
+
+
+# ---------------------------------------------------------------------------
+# account attribution (two Claude accounts on one machine)
+# ---------------------------------------------------------------------------
+
+
+def test_client_limit_account_label_composes_only_proven_identity():
+    """The reading label names WHICH account/source a meter belongs to — the
+    email when the source proved one (Claude Code's statusLine stream), else the
+    short org id the ``agentacct limits`` header prints. Nothing proven → no
+    label, and a hostile non-string identity can never join into one."""
+    windows = [us.LimitWindow(kind="7d", label="7-day", used_percent=10.0,
+                              window_minutes=10080, resets_at=None)]
+
+    def limit(**overrides):
+        fields = dict(
+            client="claude-code", origin="claude_statusline", origin_label="CLI",
+            plan_type=None, org=None, account_email=None, account_uuid=None,
+            account_org=None, captured_at=None, windows=windows, credits=None,
+            reached_type=None, source_file=None, raw_event={},
+        )
+        fields.update(overrides)
+        return us.ClientLimit(**fields)
+
+    assert limit(account_email="huyx1325@gmail.com",
+                 account_org="3bea9575-...").account_label == "CLI · huyx1325@gmail.com"
+    # The desktop plan-usage file carries no readable email → its org id is the
+    # honest identifier, rendered exactly as the limits header renders it.
+    assert limit(origin="claude_plan_usage", origin_label="desktop app",
+                 org="07c55a50-ff0f-4284-b4c5-9e0965635373").account_label == "desktop app · org 07c55a50"
+    # The statusLine stream's own account org wins over any legacy `org` value…
+    assert limit(org="legacyorg", account_org="neworg1234567").account_label == "CLI · org neworg12"
+    # …and the email, once proven, is the identifier.
+    assert limit(account_email="a@b.c", org="legacyorg").account_label == "CLI · a@b.c"
+    # Identity-less streams (codex, pre-enrichment rows) claim nothing.
+    assert limit(origin=None, origin_label=None).account_label is None
+    assert limit(origin="codex_session", origin_label=None).account_label is None
+    # A hand-injected non-string identity is dropped, never joined.
+    assert limit(account_email={"x": 1}).account_label == "CLI"
+    assert limit(origin=None, origin_label="CLI", account_email=7, account_org=9).account_label == "CLI"
+
+
+def test_two_claude_accounts_stay_distinguishable_readings():
+    """The real two-account machine shape: one CLI statusLine stream attributed
+    to its signed-in account, plus one desktop plan-usage stream keyed by org.
+    Each keeps its own reading — neither is merged into the other."""
+    events = [
+        _rl_event(
+            client="claude-code", run_id="claude_statusline",
+            origin="claude_statusline", captured_at=_NOW,
+            account_email="huyx1325@gmail.com",
+            account_uuid="b0c0635f",
+            account_org="3bea9575-c88b-42b2-ae53-494d86a67e02",
+            windows=[{"kind": "5h", "used_percent": 39.0, "window_minutes": 300,
+                      "resets_at": None}],
+        ),
+        _rl_event(
+            client="claude-code", run_id="claude_plan_usage_07c55a50-x",
+            origin="claude_plan_usage", captured_at=_NOW - 60,
+            org="07c55a50-ff0f-4284-b4c5-9e0965635373",
+            windows=[{"kind": "7d", "used_percent": 100.0, "window_minutes": 10080,
+                      "resets_at": None}],
+        ),
+    ]
+
+    limits = us.build_client_limits(events)
+
+    assert [(limit.client, limit.account_label) for limit in limits] == [
+        ("claude-code", "desktop app · org 07c55a50"),
+        ("claude-code", "CLI · huyx1325@gmail.com"),
+    ]
+    assert {limit.windows[0].used_percent for limit in limits} == {39.0, 100.0}

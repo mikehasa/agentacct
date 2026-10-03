@@ -96,14 +96,18 @@ def _record_check(service, *, session, section_id, result, at, summary="ok", com
     })
 
 
-def _record_7d(service, *, captured, pct, client="claude-code", index=0, five_hour=None):
+def _record_7d(service, *, captured, pct, client="claude-code", index=0, five_hour=None,
+               origin=None, org=None, account_email=None, account_uuid=None, account_org=None):
     windows = [{"kind": "7d", "window_minutes": 10080, "used_percent": pct}]
     if five_hour is not None:
         windows.append({"kind": "5h", "window_minutes": 300, "used_percent": five_hour})
     service.record_event({
         "event_id": f"evt_rl_{client}_{index}", "created_at": float(captured), "source": client,
         "event_type": "rate_limit_observed",
-        "metadata": {"client": client, "captured_at": float(captured), "windows": windows},
+        "metadata": {"client": client, "captured_at": float(captured), "windows": windows,
+                     "origin": origin, "org": org,
+                     "account_email": account_email, "account_uuid": account_uuid,
+                     "account_org": account_org},
     })
 
 
@@ -1324,6 +1328,36 @@ def test_usage_shows_capacity_and_recorded(tmp_path):
             assert "claude-code" in plain
             assert "47% used" in plain
             assert "RECORDED USAGE" in plain
+
+    _run(scenario())
+
+
+def test_usage_labels_each_claude_accounts_capacity_stream(tmp_path):
+    """Two Claude accounts on one machine must read as two attributed feeds —
+    "CLI · email" and "desktop app · org …" — not one client's contradictory
+    meters (the 100% belongs to the OTHER account's weekly window)."""
+    now = time.time()
+    svc = SentinelService(tmp_path)
+    _record_7d(svc, captured=now - 60, pct=10.0, five_hour=39.0, index=1,
+               origin="claude_statusline", account_email="huyx1325@gmail.com",
+               account_uuid="b0c0635f",
+               account_org="3bea9575-c88b-42b2-ae53-494d86a67e02")
+    _record_7d(svc, captured=now - 3600, pct=100.0, index=2,
+               origin="claude_plan_usage", org="07c55a50-ff0f-4284-b4c5-9e0965635373")
+
+    async def scenario():
+        app = AgentAcctTUI(store_dir=tmp_path, refresh_seconds=3600)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("4")
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            plain = Text.from_markup(app._usage_text).plain
+            assert "CLI · huyx1325@gmail.com" in plain
+            assert "desktop app · org 07c55a50" in plain
 
     _run(scenario())
 

@@ -53,6 +53,69 @@ final class UsageCapacityTests: XCTestCase {
         XCTAssertEqual(row.highestFreshValidUsedPercent, 44)
     }
 
+    func testBuildKeepsEachClaudeAccountsReadingAndItsAccountLabel() throws {
+        // The two-account machine shape: a CLI statusLine stream attributed to
+        // its signed-in account plus a desktop plan-usage stream keyed by org —
+        // both under the one `claude-code` client, each keeping its own label.
+        let limits = try decode([LimitEntry].self, from: """
+        [
+          {
+            "client":"claude-code",
+            "stream_id":"claude_statusline",
+            "origin":"claude_statusline",
+            "account_label":"CLI · huyx1325@gmail.com",
+            "windows":[{"kind":"5h","used_percent":39},{"kind":"7d","used_percent":10}]
+          },
+          {
+            "client":"claude-code",
+            "stream_id":"claude_plan_usage_07c55a50",
+            "origin":"claude_plan_usage",
+            "org":"07c55a50-ff0f-4284-b4c5-9e0965635373",
+            "account_label":"desktop app · org 07c55a50",
+            "windows":[{"kind":"7d","used_percent":100}]
+          }
+        ]
+        """)
+
+        let result = UsageCapacitySnapshot.build(
+            usage: [], limits: limits, plans: [], showStale: false
+        )
+
+        let row = try XCTUnwrap(result.rows.first)
+        XCTAssertEqual(result.rows.count, 1)
+        XCTAssertEqual(row.client, "claude-code")
+        XCTAssertEqual(row.readings.count, 2)
+        XCTAssertEqual(row.readings.compactMap(\.accountLabel), [
+            "CLI · huyx1325@gmail.com",
+            "desktop app · org 07c55a50",
+        ])
+        // Attribution never changes the risk reading: the desktop account's
+        // 100% is still the row's highest fresh valid percent.
+        XCTAssertEqual(row.highestFreshValidUsedPercent, 100)
+        let summary = row.accessibilitySummary(days: 7)
+        XCTAssertTrue(summary.contains("CLI · huyx1325@gmail.com"))
+        XCTAssertTrue(summary.contains("desktop app · org 07c55a50"))
+        XCTAssertTrue(summary.contains("limit reached"))
+    }
+
+    func testAccountLabelIsOptionalAndNeverInvented() throws {
+        let limits = try decode([LimitEntry].self, from: """
+        [
+          {"client":"claude-code","origin":"claude_statusline","windows":[{"kind":"7d","used_percent":10}]},
+          {"client":"claude-code","account_label":"   ","windows":[{"kind":"7d","used_percent":20}]}
+        ]
+        """)
+        let row = try XCTUnwrap(UsageCapacitySnapshot.build(
+            usage: [], limits: limits, plans: [], showStale: false
+        ).rows.first)
+
+        // An older daemon's payload (no label) and a blank label both render
+        // nothing — the app never composes an attribution locally.
+        XCTAssertEqual(row.readings.compactMap(\.accountLabel), [])
+        XCTAssertEqual(row.readings.count, 2)
+        XCTAssertEqual(row.highestFreshValidUsedPercent, 20)
+    }
+
     func testBuildKeepsFreshAndStaleSiblingsWithoutLettingStaleDriveRisk() throws {
         let limits = try decode([LimitEntry].self, from: """
         [

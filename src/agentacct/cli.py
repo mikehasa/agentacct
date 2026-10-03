@@ -11160,6 +11160,9 @@ def limits(
         org = metadata.get("org")
         if org:
             header += f"  org: {str(org)[:8]}"
+        email = metadata.get("account_email")
+        if isinstance(email, str) and email:
+            header += f"  account: {email}"
         captured = metadata.get("captured_at")
         if not isinstance(captured, (int, float)) or isinstance(captured, bool):
             created = event.get("created_at")

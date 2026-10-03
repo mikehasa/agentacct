@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The Usage page names which Claude account each provider-limit reading belongs
+  to, so two Claude accounts (e.g. one signed into the terminal CLI, one into
+  the desktop app) no longer read as one client's contradictory meters. The
+  terminal statusLine stream is attributed to the account its config home is
+  signed in as — email and org uuid only, read from that home's own
+  `.claude.json` `oauthAccount`; credentials are never touched — and every
+  reading renders with its source/account label ("CLI · you@example.com",
+  "desktop app · org 07c55a50") in the macOS app, the TUI, and `agentacct
+  limits`. Attribution is additive: `limits --json` keeps its byte-stable
+  shape, and pre-existing streams keep their signatures.
+
 ## [0.12.10] — 2026-10-01
 
 The macOS app stops piling up recovery notifications and identifies which source issue recovered.

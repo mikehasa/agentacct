@@ -731,10 +731,13 @@ def build_glance_snapshot(
         # The snapshot layer keeps independent streams by
         # (client, org, run_id). Preserve that identity for native-shell rows
         # so two provider buckets with the same visible labels cannot collide.
-        # This is glance-only and additive: the shared `limits --json` shape
-        # remains byte-stable.
+        # `account_label` composes the same attribution the TUI prints (origin
+        # + account email / short org id) so a native shell can name WHICH
+        # account a reading belongs to. Both additions are glance-only and
+        # additive: the shared `limits --json` shape remains byte-stable.
         entry["stream_id"] = limit.raw_event.get("run_id")
         entry["stale"] = limit_is_stale(limit, moment)
+        entry["account_label"] = limit.account_label
         limits.append(entry)
 
     # Plan calibration per plan-bearing client (calibrated-or-nothing; see

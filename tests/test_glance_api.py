@@ -328,13 +328,16 @@ def test_glance_payload_shape_and_agreement(tmp_path):
     assert windows["all time"]["total_tokens_including_cached"] == 3_000
     assert payload["usage"]["usage_record_count"] == 1
 
-    # Limits: the byte-stable limit_json_entry shape plus the stale flag.
+    # Limits: the byte-stable limit_json_entry shape plus the glance-only
+    # stream/stale/account attribution. No identity was proved on this stream,
+    # so no account label is invented.
     assert len(payload["limits"]) == 1
     limit = payload["limits"][0]
     assert limit["client"] == "claude-code"
     assert limit["stream_id"] == "test-limit:claude-code"
     assert limit["stale"] is False
     assert limit["windows"][0]["used_percent"] == 37.5
+    assert limit["account_label"] is None
 
     # Plan: both plan-bearing clients report an honest confidence string
     # (nothing calibrates from one seeded interval — and no number is invented).
@@ -349,6 +352,54 @@ def test_glance_payload_shape_and_agreement(tmp_path):
     assert sessions[0]["status"] == "completed"
     assert sessions[0]["title"] == "fix the login bug"
     assert sessions[0]["plan_pct"] is None
+
+
+def test_glance_labels_each_claude_accounts_limit_stream(tmp_path):
+    """Two Claude accounts, one client: each glance limit entry carries its own
+    stream identity plus the exact label the app/TUI print, so the native
+    surfaces can attribute a reading to its account instead of stacking two
+    unlabeled meters under one client row."""
+    service = SentinelService(tmp_path)
+    now = time.time()
+    service.record_event({
+        "event_id": "evt_rl_cli",
+        "created_at": now - 30,
+        "source": "claude-code-statusline",
+        "run_id": "claude_statusline",
+        "event_type": "rate_limit_observed",
+        "metadata": {
+            "client": "claude-code",
+            "origin": "claude_statusline",
+            "captured_at": now - 30,
+            "account_email": "huyx1325@gmail.com",
+            "account_uuid": "b0c0635f",
+            "account_org": "3bea9575-c88b-42b2-ae53-494d86a67e02",
+            "windows": [{"kind": "7d", "window_minutes": 10080, "used_percent": 10.0}],
+        },
+    })
+    service.record_event({
+        "event_id": "evt_rl_desktop",
+        "created_at": now - 3600,
+        "source": "claude-desktop-plan-usage",
+        "run_id": "claude_plan_usage_07c55a50",
+        "event_type": "rate_limit_observed",
+        "metadata": {
+            "client": "claude-code",
+            "origin": "claude_plan_usage",
+            "org": "07c55a50-ff0f-4284-b4c5-9e0965635373",
+            "captured_at": now - 3600,
+            "windows": [{"kind": "7d", "window_minutes": 10080, "used_percent": 100.0}],
+        },
+    })
+
+    api_client = TestClient(create_local_api_app(store_dir=tmp_path, v1_auth_token=TOKEN))
+    payload = api_client.get("/v1/glance", headers={"Authorization": f"Bearer {TOKEN}"}).json()
+
+    labels = {entry["stream_id"]: entry["account_label"] for entry in payload["limits"]}
+    assert labels == {
+        "claude_plan_usage_07c55a50": "desktop app · org 07c55a50",
+        "claude_statusline": "CLI · huyx1325@gmail.com",
+    }
 
 
 def test_glance_cache_rebuilds_only_on_event_change(tmp_path, monkeypatch):

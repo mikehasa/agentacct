@@ -539,3 +539,35 @@ def test_limits_command_client_all_and_invalid(tmp_path):
     # an unknown client value errors instead of silently reporting no data
     bad = CliRunner().invoke(app, ["limits", "--store-dir", str(tmp_path), "--client", "claude"])
     assert bad.exit_code != 0
+
+
+def test_limits_command_names_the_account_without_changing_json_shape(tmp_path):
+    """A statusLine reading attributed to its signed-in account prints that
+    account in the text header; ``limits --json`` keeps its historical shape
+    (attribution is glance-only), so JSON consumers see no new keys."""
+    service = SentinelService(tmp_path)
+    snapshot = rl.normalize_claude_statusline(
+        {"rate_limits": {
+            "five_hour": {"used_percentage": 39, "resets_at": 1785600000},
+            "seven_day": {"used_percentage": 10, "resets_at": 1785900000},
+        }},
+        account={"email": "huyx1325@gmail.com", "account_uuid": "acct-1",
+                 "organization_uuid": "org-1"},
+    )
+    service.record_event(rl.snapshot_to_event(snapshot))
+
+    human = CliRunner().invoke(app, ["limits", "--store-dir", str(tmp_path)])
+    assert human.exit_code == 0
+    assert "(CLI)" in human.stdout
+    assert "account: huyx1325@gmail.com" in human.stdout
+
+    js = CliRunner().invoke(app, ["limits", "--store-dir", str(tmp_path), "--json"])
+    payload = json.loads(js.stdout)
+    entry = payload["limits"][0]
+    assert entry["client"] == "claude-code"
+    assert entry["org"] is None
+    # The byte-stable public shape: attribution fields are deliberately absent.
+    assert set(entry) == {
+        "client", "origin", "plan_type", "org", "captured_at",
+        "windows", "credits", "reached_type", "source_file",
+    }
