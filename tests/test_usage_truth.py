@@ -39,7 +39,8 @@ def test_usage_truth_table_has_expected_integrations() -> None:
     assert "estimated_from_tokens" in rows["claude-code local usage import"]["cost_confidence"]
     assert "unknown" in rows["claude-code local usage import"]["cost_confidence"]
     assert "assistant message rows" in rows["claude-code local usage import"]["update_timing"]
-    assert rows["opencode JSON event stream import"]["cost_confidence"] == "client_reported"
+    assert "client_reported" in rows["opencode JSON event stream import"]["cost_confidence"]
+    assert "otherwise unknown" in rows["opencode JSON event stream import"]["cost_confidence"]
     assert "step-finish" in rows["opencode JSON event stream import"]["update_timing"]
     assert rows["hermes local state import"]["cost_confidence"] == "client_reported"
     assert "provider invoices" in " ".join(rows["hermes local state import"]["limitations"])
