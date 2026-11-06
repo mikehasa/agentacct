@@ -9875,7 +9875,7 @@ def _read_opencode_json_usage(
     session_id: str | None = None
     model: str | None = None
     cost = 0.0
-    saw_cost = False
+    cost_turn_count = 0
     with _open_regular_source_text(source) as handle:
         for line in handle:
             try:
@@ -9911,10 +9911,11 @@ def _read_opencode_json_usage(
                     totals["cache_read_tokens_reported"] = True
                 if "write" in cache:
                     totals["cache_write_tokens_reported"] = True
-            maybe_cost = _optional_float(part.get("cost"))
-            if maybe_cost is not None:
+            raw_cost = part.get("cost")
+            maybe_cost = _optional_float(raw_cost)
+            if not isinstance(raw_cost, bool) and maybe_cost is not None and math.isfinite(maybe_cost):
                 cost += maybe_cost
-                saw_cost = True
+                cost_turn_count += 1
             totals["turn_count"] += 1
     if totals["turn_count"] <= 0:
         return None
@@ -9922,7 +9923,8 @@ def _read_opencode_json_usage(
         **totals,
         "session_id": session_id or source.path.stem,
         "model": model,
-        "cost_usd": cost if saw_cost else None,
+        # One session row cannot represent a known subtotal plus missing turns.
+        "cost_usd": cost if cost_turn_count == totals["turn_count"] else None,
     }
 
 
@@ -9990,7 +9992,7 @@ def _read_openclaw_jsonl_usage(
     current_provider: str | None = None
     first_started_at: int | None = None
     cost = 0.0
-    saw_cost = False
+    cost_turn_count = 0
     seen_records: set[tuple[object, ...]] = set()
     with _open_regular_source_text(source) as handle:
         for line in handle:
@@ -10042,7 +10044,7 @@ def _read_openclaw_jsonl_usage(
             maybe_cost = _openclaw_cost_total(usage)
             if maybe_cost is not None and maybe_cost > 0:
                 cost += maybe_cost
-                saw_cost = True
+                cost_turn_count += 1
     if totals["turn_count"] <= 0:
         return None
     return {
@@ -10051,7 +10053,9 @@ def _read_openclaw_jsonl_usage(
         "model": current_model,
         "provider": current_provider or "openclaw",
         "started_at": first_started_at,
-        "cost_usd": cost if saw_cost else None,
+        # Zero can be an unpriced placeholder, so only positive-cost turns
+        # establish the existing client-reported cost semantics.
+        "cost_usd": cost if cost_turn_count == totals["turn_count"] else None,
     }
 
 
@@ -10063,8 +10067,11 @@ def _openclaw_cost_total(usage: dict[str, Any]) -> float | None:
     cost = usage.get("cost")
     if not isinstance(cost, dict):
         return None
-    maybe_total = _optional_float(cost.get("total"))
-    if maybe_total is None or maybe_total < 0:
+    raw_total = cost.get("total")
+    if isinstance(raw_total, bool):
+        return None
+    maybe_total = _optional_float(raw_total)
+    if maybe_total is None or not math.isfinite(maybe_total) or maybe_total < 0:
         return None
     return maybe_total
 
